@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, RenderPass, SwapChain, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, RenderPass, SwapChain, VulkanError};
 use ash::vk;
 use ash::vk::{Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
 use std::rc::Rc;
@@ -94,10 +94,7 @@ impl Pipeline {
             device
                 .inner
                 .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "Cannot create pipeline layout".into(),
-                })?
+                .map_to_err("Cannot create pipeline layout")?
         };
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo {

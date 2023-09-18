@@ -1,10 +1,12 @@
+use crate::vulkan::IntoVulkanError;
 use ash::{vk, Entry, Instance as RawInstance};
+use log::warn;
 use std::ffi::{CStr, CString};
 
 use super::{VulkanError, VALIDATION_LAYER};
 
 pub struct Instance {
-    pub instance: RawInstance,
+    pub inner: RawInstance,
 }
 
 impl Instance {
@@ -25,7 +27,7 @@ impl Instance {
             .map(|e| CString::new(e.as_ref()).unwrap())
             .collect::<Vec<_>>();
 
-        let instance_layers = get_instance_layers(entry);
+        let instance_layers = get_instance_layers(entry)?;
 
         let instance_ext_ptrs = instance_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
         let instance_layers_ptrs = instance_layers.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
@@ -40,52 +42,22 @@ impl Instance {
         };
 
         let instance = unsafe {
-            entry.create_instance(&create_info, None).map_err(|code| VulkanError {
-                msg: "Cannot create instance".into(),
-                code,
-            })?
+            entry
+                .create_instance(&create_info, None)
+                .map_to_err("Cannot create instance")?
         };
 
-        Ok(Self { instance })
-    }
-
-    #[allow(dead_code)]
-    pub fn list_instance_extensions(entry: &Entry) {
-        let extensions = entry
-            .enumerate_instance_extension_properties(None)
-            .expect("cannot get possible extensions");
-
-        println!("Listing available instance extensions...");
-        for ext in extensions {
-            let name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
-
-            println!("{}", name.to_str().unwrap());
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn list_instance_layers(entry: &Entry) {
-        let layers = entry
-            .enumerate_instance_layer_properties()
-            .expect("cannot get possible layers");
-
-        println!("Listing available instance layers...");
-        for layer in layers {
-            let name = unsafe { CStr::from_ptr(layer.layer_name.as_ptr()) };
-            let desc = unsafe { CStr::from_ptr(layer.description.as_ptr()) };
-
-            println!("{} - {}", name.to_str().unwrap(), desc.to_str().unwrap());
-        }
+        Ok(Self { inner: instance })
     }
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
-        unsafe { self.instance.destroy_instance(None) };
+        unsafe { self.inner.destroy_instance(None) };
     }
 }
 
-fn get_instance_layers(entry: &Entry) -> Vec<CString> {
+fn get_instance_layers(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
     #[cfg(not(debug_assertions))]
     {
         return Vec::new();
@@ -93,7 +65,7 @@ fn get_instance_layers(entry: &Entry) -> Vec<CString> {
 
     let layers = entry
         .enumerate_instance_layer_properties()
-        .expect("cannot get possible layers");
+        .map_to_err("cannot get possible layers")?;
 
     let has_validation = layers
         .iter()
@@ -106,9 +78,9 @@ fn get_instance_layers(entry: &Entry) -> Vec<CString> {
         != 0;
 
     if has_validation {
-        vec![CString::new(VALIDATION_LAYER).unwrap()]
+        Ok(vec![CString::new(VALIDATION_LAYER).unwrap()])
     } else {
-        eprintln!("{} not found", VALIDATION_LAYER);
-        vec![]
+        warn!("{} not found", VALIDATION_LAYER);
+        Ok(vec![])
     }
 }

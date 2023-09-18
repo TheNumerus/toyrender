@@ -12,7 +12,7 @@ pub struct Surface {
 impl Surface {
     pub fn new(instance: &Instance, entry: &Entry, raw: VkSurfaceKHR) -> Result<Self, VulkanError> {
         let surface = SurfaceKHR::from_raw(raw);
-        let loader = SurfaceLoader::new(&entry, &instance.instance);
+        let loader = SurfaceLoader::new(entry, &instance.inner);
 
         Ok(Self { surface, loader })
     }

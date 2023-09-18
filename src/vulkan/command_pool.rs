@@ -1,4 +1,5 @@
-use crate::vulkan::{Device, VulkanError};
+use crate::vulkan::command_buffer::CommandBuffer;
+use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
 use ash::vk::CommandPool as RawCommandPool;
 use std::rc::Rc;
@@ -20,13 +21,31 @@ impl CommandPool {
             device
                 .inner
                 .create_command_pool(&command_pool, None)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "Cannot create command pool".into(),
-                })?
+                .map_to_err("Cannot create command pool")?
         };
 
         Ok(Self { device, inner })
+    }
+
+    pub fn allocate_cmd_buffers(&self, count: u32) -> Result<Vec<CommandBuffer>, VulkanError> {
+        let alloc_info = vk::CommandBufferAllocateInfo {
+            command_pool: self.inner,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: count,
+            ..Default::default()
+        };
+
+        let command_buffers = unsafe {
+            self.device
+                .inner
+                .allocate_command_buffers(&alloc_info)
+                .map_to_err("Cannot allocate command buffer")?
+        };
+
+        Ok(command_buffers
+            .into_iter()
+            .map(|inner| CommandBuffer::new(self.device.clone(), inner))
+            .collect::<Vec<_>>())
     }
 }
 

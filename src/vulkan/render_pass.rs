@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
 use ash::vk::Format;
 use ash::vk::RenderPass as RawRenderPass;
@@ -59,10 +59,7 @@ impl RenderPass {
             device
                 .inner
                 .create_render_pass(&render_pass, None)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "Cannot create render pass".into(),
-                })?
+                .map_to_err("Cannot create render pass")?
         };
 
         Ok(Self { inner, device })

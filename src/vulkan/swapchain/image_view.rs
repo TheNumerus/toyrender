@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, SwapChain, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, SwapChain, VulkanError};
 use ash::vk;
 use ash::vk::{Image, ImageView};
 use std::rc::Rc;
@@ -29,10 +29,7 @@ impl SwapChainImageView {
             device
                 .inner
                 .create_image_view(&create_info, None)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "Cannot create image view".into(),
-                })?
+                .map_to_err("Cannot create image view")?
         };
 
         Ok(Self { inner, device })

@@ -6,7 +6,7 @@ use vk::PresentModeKHR;
 
 use super::{Instance, VulkanError};
 use crate::app::App;
-use crate::vulkan::{Device, Surface, SwapChainSupport};
+use crate::vulkan::{Device, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
 pub mod framebuffer;
 pub mod image_view;
@@ -22,7 +22,7 @@ pub struct SwapChain {
 
 impl SwapChain {
     pub fn new(device: Rc<Device>, instance: &Instance, app: &App, surface: &Surface) -> Result<Self, VulkanError> {
-        let swapchain_support = Device::query_swapchain_support(device.physical_device, surface);
+        let swapchain_support = Device::query_swapchain_support(device.physical_device, surface)?;
 
         let swap_format = Self::choose_swap_surface_format(&swapchain_support);
         let swap_present_mode = Self::choose_swap_present_mode(&swapchain_support);
@@ -57,22 +57,18 @@ impl SwapChain {
             ..Default::default()
         };
 
-        let loader = SwapchainLoader::new(&instance.instance, &device.inner);
+        let loader = SwapchainLoader::new(&instance.inner, &device.inner);
 
         let swapchain = unsafe {
             loader
                 .create_swapchain(&swapchain_create_info, None)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "Cannot create swapchain".into(),
-                })?
+                .map_to_err("Cannot create swapchain")?
         };
 
         let images = unsafe {
-            loader.get_swapchain_images(swapchain).map_err(|code| VulkanError {
-                code,
-                msg: "Cannot get swapchain images".into(),
-            })?
+            loader
+                .get_swapchain_images(swapchain)
+                .map_to_err("Cannot get swapchain images")?
         };
 
         Ok(Self {
@@ -90,6 +86,14 @@ impl SwapChain {
             .iter()
             .map(|&image| image_view::SwapChainImageView::new(self.device.clone(), image, self))
             .collect::<Result<Vec<_>, _>>()
+    }
+
+    pub fn acquire_next_image(&self, semaphore: &Semaphore) -> Result<(u32, bool), VulkanError> {
+        unsafe {
+            self.loader
+                .acquire_next_image(self.swapchain, u64::MAX, semaphore.inner, vk::Fence::null())
+                .map_to_err("cannot acquire image")
+        }
     }
 
     fn choose_swap_surface_format(swapchain_support: &SwapChainSupport) -> SurfaceFormatKHR {

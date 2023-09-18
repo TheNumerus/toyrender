@@ -1,4 +1,5 @@
 use ash::{vk, Entry};
+use log::info;
 use sdl2::event::{Event, WindowEvent};
 use std::ffi::CString;
 
@@ -7,10 +8,13 @@ mod err;
 mod vulkan;
 
 use err::AppError;
+use vulkan::VulkanError;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 fn main() -> Result<(), AppError> {
+    env_logger::init();
+
     let mut app = app::App::create();
 
     let entry = unsafe { Entry::load().expect("cannot load vulkan entry") };
@@ -18,13 +22,12 @@ fn main() -> Result<(), AppError> {
     let instance = vulkan::Instance::new(&entry, &app.window.vulkan_instance_extensions().unwrap())?;
     let surface = vulkan::Surface::new(&instance, &entry, app.create_vulkan_surface(&instance)?)?;
 
-    let devices = match vulkan::Device::query_applicable(&instance, &surface) {
+    let devices = match vulkan::Device::query_applicable(&instance, &surface)? {
+        vulkan::DeviceQueryResult::ApplicableDevices(d) => Ok(d),
         vulkan::DeviceQueryResult::NoDevice => Err(AppError::Other("no GPUs with Vulkan support found".into())),
         vulkan::DeviceQueryResult::NoApplicableDevice => {
             Err(AppError::Other("No suitable physical device found".into()))
         }
-        vulkan::DeviceQueryResult::ApplicableDevices(d) => Ok(d),
-        vulkan::DeviceQueryResult::VulkanError(e) => Err(e.into()),
     }?;
 
     let device = std::rc::Rc::new(vulkan::Device::new(&instance, devices[0], &surface)?);
@@ -63,20 +66,7 @@ fn main() -> Result<(), AppError> {
         .collect::<Result<Vec<_>, _>>()?;
 
     let command_pool = vulkan::CommandPool::new(device.clone())?;
-
-    let alloc_info = vk::CommandBufferAllocateInfo {
-        command_pool: command_pool.inner,
-        level: vk::CommandBufferLevel::PRIMARY,
-        command_buffer_count: MAX_FRAMES_IN_FLIGHT as u32,
-        ..Default::default()
-    };
-
-    let command_buffers = unsafe {
-        device
-            .inner
-            .allocate_command_buffers(&alloc_info)
-            .expect("cannot allocate command buffer")
-    };
+    let command_buffers = command_pool.allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
 
     let mut img_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
     let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -109,37 +99,19 @@ fn main() -> Result<(), AppError> {
         }
 
         in_flight[current_frame].wait()?;
-
-        let (image_index, _is_suboptimal);
-
-        unsafe {
-            (image_index, _is_suboptimal) = swapchain
-                .loader
-                .acquire_next_image(
-                    swapchain.swapchain,
-                    u64::MAX,
-                    img_available[current_frame].inner,
-                    vk::Fence::null(),
-                )
-                .expect("cannot acquire image");
-
-            in_flight[current_frame].reset()?;
-
-            device
-                .inner
-                .reset_command_buffer(command_buffers[current_frame], vk::CommandBufferResetFlags::empty())
-                .expect("cannot reset command buffer");
-        }
+        let (image_index, _is_suboptimal) = swapchain.acquire_next_image(&img_available[current_frame])?;
+        in_flight[current_frame].reset()?;
+        command_buffers[current_frame].reset()?;
 
         record_command_buffer(
-            command_buffers[current_frame],
+            &command_buffers[current_frame],
             image_index,
             &device,
             &render_pass,
             &swapchain_framebuffers,
             &swapchain,
             &pipeline,
-        );
+        )?;
 
         let wait_semaphores = [img_available[current_frame].inner];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -150,7 +122,7 @@ fn main() -> Result<(), AppError> {
             p_wait_semaphores: wait_semaphores.as_ptr(),
             p_wait_dst_stage_mask: wait_stages.as_ptr(),
             command_buffer_count: 1,
-            p_command_buffers: &command_buffers[current_frame],
+            p_command_buffers: &command_buffers[current_frame].inner,
             signal_semaphore_count: 1,
             p_signal_semaphores: signal_semaphores.as_ptr(),
             ..Default::default()
@@ -200,26 +172,21 @@ fn main() -> Result<(), AppError> {
         current_frame = (current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
 
+    info!("Quitting app...");
+
     Ok(())
 }
 
 fn record_command_buffer(
-    command_buffer: vk::CommandBuffer,
+    command_buffer: &vulkan::CommandBuffer,
     image_index: u32,
     device: &std::rc::Rc<vulkan::Device>,
     render_pass: &vulkan::RenderPass,
     swapchain_fbs: &[vulkan::SwapChainFramebuffer],
     swapchain: &vulkan::SwapChain,
     pipeline: &vulkan::Pipeline,
-) {
-    let begin_info = vk::CommandBufferBeginInfo::default();
-
-    unsafe {
-        device
-            .inner
-            .begin_command_buffer(command_buffer, &begin_info)
-            .expect("cannot begin recording")
-    };
+) -> Result<(), VulkanError> {
+    command_buffer.begin()?;
 
     let clear_color = vk::ClearValue {
         color: vk::ClearColorValue {
@@ -242,17 +209,19 @@ fn record_command_buffer(
     unsafe {
         device
             .inner
-            .cmd_begin_render_pass(command_buffer, &render_pass_info, vk::SubpassContents::INLINE);
+            .cmd_begin_render_pass(command_buffer.inner, &render_pass_info, vk::SubpassContents::INLINE);
         device
             .inner
-            .cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline.inner);
-        device.inner.cmd_set_viewport(command_buffer, 0, &[pipeline.viewport]);
-        device.inner.cmd_set_scissor(command_buffer, 0, &[pipeline.scissor]);
-        device.inner.cmd_draw(command_buffer, 3, 1, 0, 0);
-        device.inner.cmd_end_render_pass(command_buffer);
+            .cmd_bind_pipeline(command_buffer.inner, vk::PipelineBindPoint::GRAPHICS, pipeline.inner);
         device
             .inner
-            .end_command_buffer(command_buffer)
-            .expect("cannot end command buffer");
+            .cmd_set_viewport(command_buffer.inner, 0, &[pipeline.viewport]);
+        device
+            .inner
+            .cmd_set_scissor(command_buffer.inner, 0, &[pipeline.scissor]);
+        device.inner.cmd_draw(command_buffer.inner, 3, 1, 0, 0);
+        device.inner.cmd_end_render_pass(command_buffer.inner);
     }
+
+    command_buffer.end()
 }

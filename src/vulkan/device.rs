@@ -1,7 +1,8 @@
-use crate::vulkan::{Instance, Surface, VulkanError, SWAPCHAIN_EXTENSION};
+use crate::vulkan::{Instance, IntoVulkanError, Surface, VulkanError, SWAPCHAIN_EXTENSION};
 use ash::vk;
 use ash::vk::{PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
 use ash::Device as RawDevice;
+use log::info;
 use std::collections::HashSet;
 use std::ffi::CStr;
 
@@ -15,21 +16,16 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn query_applicable(instance: &Instance, surface: &Surface) -> DeviceQueryResult {
-        let devices = unsafe { instance.instance.enumerate_physical_devices() };
-
-        let devices = match devices {
-            Ok(d) => d,
-            Err(code) => {
-                return DeviceQueryResult::VulkanError(VulkanError {
-                    code,
-                    msg: "Cannot enumerate physical devices".into(),
-                })
-            }
+    pub fn query_applicable(instance: &Instance, surface: &Surface) -> Result<DeviceQueryResult, VulkanError> {
+        let devices = unsafe {
+            instance
+                .inner
+                .enumerate_physical_devices()
+                .map_to_err("Cannot enumerate physical devices")?
         };
 
         if devices.is_empty() {
-            return DeviceQueryResult::NoDevice;
+            return Ok(DeviceQueryResult::NoDevice);
         }
 
         let mut applicable_devices = Vec::new();
@@ -37,9 +33,9 @@ impl Device {
         for device in devices {
             let extensions = unsafe {
                 instance
-                    .instance
+                    .inner
                     .enumerate_device_extension_properties(device)
-                    .expect("cannot get device extensions")
+                    .map_to_err("cannot get device extensions")?
             };
 
             let has_swapchain = extensions
@@ -52,13 +48,8 @@ impl Device {
                 .count()
                 != 0;
 
-            let queue_families = Self::find_device_queue_families(device, instance, surface);
-            let queue_families = match queue_families {
-                Ok(q) => q,
-                Err(e) => return DeviceQueryResult::VulkanError(e),
-            };
-
-            let swapchain_support = Self::query_swapchain_support(device, surface);
+            let queue_families = Self::find_device_queue_families(device, instance, surface)?;
+            let swapchain_support = Self::query_swapchain_support(device, surface)?;
 
             if queue_families.graphics.is_some()
                 && queue_families.present.is_some()
@@ -71,9 +62,9 @@ impl Device {
         }
 
         if !applicable_devices.is_empty() {
-            DeviceQueryResult::ApplicableDevices(applicable_devices)
+            Ok(DeviceQueryResult::ApplicableDevices(applicable_devices))
         } else {
-            DeviceQueryResult::NoApplicableDevice
+            Ok(DeviceQueryResult::NoApplicableDevice)
         }
     }
 
@@ -106,13 +97,25 @@ impl Device {
 
         let inner = unsafe {
             instance
-                .instance
+                .inner
                 .create_device(physical_device, &create_info, None)
-                .expect("cannot create logical device")
+                .map_to_err("cannot create logical device")?
         };
 
         let graphics_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
         let present_queue = unsafe { inner.get_device_queue(queue_families.present.unwrap() as u32, 0) };
+
+        let properties = Self::get_device_properties(instance, physical_device);
+
+        info!(
+            "{} - Vulkan {}.{}.{}",
+            unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+                .to_str()
+                .unwrap(),
+            vk::api_version_major(properties.api_version),
+            vk::api_version_minor(properties.api_version),
+            vk::api_version_patch(properties.api_version)
+        );
 
         Ok(Self {
             inner,
@@ -124,42 +127,44 @@ impl Device {
         })
     }
 
-    pub fn query_swapchain_support(physical_device: PhysicalDevice, surface: &Surface) -> SwapChainSupport {
+    pub fn query_swapchain_support(
+        physical_device: PhysicalDevice,
+        surface: &Surface,
+    ) -> Result<SwapChainSupport, VulkanError> {
         let capabilities = unsafe {
             surface
                 .loader
                 .get_physical_device_surface_capabilities(physical_device, surface.surface)
-                .expect("cannot get surface capabilities")
+                .map_to_err("cannot get surface capabilities")?
         };
 
         let formats = unsafe {
             surface
                 .loader
                 .get_physical_device_surface_formats(physical_device, surface.surface)
-                .expect("cannot get device surface formats")
+                .map_to_err("cannot get device surface formats")?
         };
 
         let present_modes = unsafe {
             surface
                 .loader
                 .get_physical_device_surface_present_modes(physical_device, surface.surface)
-                .expect("cannot get device surface formats")
+                .map_to_err("cannot get device surface formats")?
         };
 
-        SwapChainSupport {
+        Ok(SwapChainSupport {
             capabilities,
             formats,
             present_modes,
-        }
+        })
     }
 
     pub fn wait_idle(&self) -> Result<(), VulkanError> {
-        unsafe {
-            self.inner.device_wait_idle().map_err(|code| VulkanError {
-                code,
-                msg: "Cannot wait for device idle".into(),
-            })
-        }
+        unsafe { self.inner.device_wait_idle().map_to_err("Cannot wait for device idle") }
+    }
+
+    fn get_device_properties(instance: &Instance, physical_device: PhysicalDevice) -> vk::PhysicalDeviceProperties {
+        unsafe { instance.inner.get_physical_device_properties(physical_device) }
     }
 
     fn find_device_queue_families(
@@ -169,7 +174,7 @@ impl Device {
     ) -> Result<QueueFamilyIndices, VulkanError> {
         let queue_families = unsafe {
             instance
-                .instance
+                .inner
                 .get_physical_device_queue_family_properties(physical_device)
         };
 
@@ -185,10 +190,7 @@ impl Device {
                 surface
                     .loader
                     .get_physical_device_surface_support(physical_device, i as u32, surface.surface)
-                    .map_err(|code| VulkanError {
-                        code,
-                        msg: "error getting present support".into(),
-                    })?
+                    .map_to_err("error getting present support")?
             };
 
             if has_present_support {
@@ -213,7 +215,6 @@ pub enum DeviceQueryResult {
     NoDevice,
     NoApplicableDevice,
     ApplicableDevices(Vec<PhysicalDevice>),
-    VulkanError(VulkanError),
 }
 
 struct QueueFamilyIndices {

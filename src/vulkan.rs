@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 use thiserror::Error;
 
+mod command_buffer;
 mod command_pool;
 mod device;
 mod instance;
@@ -13,6 +14,7 @@ mod surface;
 mod swapchain;
 mod sync;
 
+pub use command_buffer::CommandBuffer;
 pub use command_pool::CommandPool;
 pub use device::{Device, DeviceQueryResult, SwapChainSupport};
 pub use instance::Instance;
@@ -31,4 +33,14 @@ pub const SWAPCHAIN_EXTENSION: &CStr = ash::extensions::khr::Swapchain::name();
 pub struct VulkanError {
     msg: Cow<'static, str>,
     code: vk::Result,
+}
+
+pub trait IntoVulkanError<T> {
+    fn map_to_err(self, msg: impl Into<Cow<'static, str>>) -> Result<T, VulkanError>;
+}
+
+impl<T> IntoVulkanError<T> for ash::prelude::VkResult<T> {
+    fn map_to_err(self, msg: impl Into<Cow<'static, str>>) -> Result<T, VulkanError> {
+        self.map_err(|code| VulkanError { code, msg: msg.into() })
+    }
 }

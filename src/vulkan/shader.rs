@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
 use std::rc::Rc;
 
@@ -19,10 +19,7 @@ impl ShaderModule {
             device
                 .inner
                 .create_shader_module(&create_info, None)
-                .map_err(|code| VulkanError {
-                    msg: "cannot create shader module".into(),
-                    code,
-                })?
+                .map_to_err("cannot create shader module")?
         };
 
         Ok(Self { inner, device })

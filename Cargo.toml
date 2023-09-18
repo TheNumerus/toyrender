@@ -8,5 +8,7 @@ build = "build.rs"
 
 [dependencies]
 ash = "0.37.3"
+env_logger = "0.10.0"
+log = "0.4.20"
 sdl2 = "0.35.2"
 thiserror = "1.0.48"

@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
 use ash::vk::Fence as RawFence;
 use ash::vk::Semaphore as RawSemaphore;
@@ -13,10 +13,10 @@ impl Semaphore {
         let info = vk::SemaphoreCreateInfo::default();
 
         let inner = unsafe {
-            device.inner.create_semaphore(&info, None).map_err(|code| VulkanError {
-                code,
-                msg: "Cannot create semaphore".into(),
-            })?
+            device
+                .inner
+                .create_semaphore(&info, None)
+                .map_to_err("Cannot create semaphore")?
         };
 
         Ok(Self { inner, device })
@@ -42,10 +42,10 @@ impl Fence {
         };
 
         let inner = unsafe {
-            device.inner.create_fence(&info, None).map_err(|code| VulkanError {
-                code,
-                msg: "Cannot create fence".into(),
-            })?
+            device
+                .inner
+                .create_fence(&info, None)
+                .map_to_err("Cannot create fence")?
         };
 
         Ok(Self { inner, device })
@@ -56,10 +56,7 @@ impl Fence {
             self.device
                 .inner
                 .wait_for_fences(&[self.inner], true, u64::MAX)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "failed to wait for fence".into(),
-                })
+                .map_to_err("failed to wait for fence")
         }
     }
 
@@ -68,10 +65,7 @@ impl Fence {
             self.device
                 .inner
                 .reset_fences(&[self.inner])
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "failed to reset fence".into(),
-                })
+                .map_to_err("failed to reset fence")
         }
     }
 }

@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, RenderPass, SwapChain, SwapChainImageView, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, RenderPass, SwapChain, SwapChainImageView, VulkanError};
 use ash::vk;
 use ash::vk::Framebuffer;
 use std::rc::Rc;
@@ -31,10 +31,7 @@ impl SwapChainFramebuffer {
             device
                 .inner
                 .create_framebuffer(&framebuffer_info, None)
-                .map_err(|code| VulkanError {
-                    code,
-                    msg: "cannot create framebuffer".into(),
-                })?
+                .map_to_err("cannot create framebuffer")?
         };
 
         Ok(Self { device, inner })

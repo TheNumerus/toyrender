@@ -33,7 +33,7 @@ impl App {
 
     pub fn create_vulkan_surface(&self, instance: &Instance) -> Result<VkSurfaceKHR, AppError> {
         self.window
-            .vulkan_create_surface(instance.instance.handle().as_raw() as usize)
+            .vulkan_create_surface(instance.inner.handle().as_raw() as usize)
             .map_err(AppError::Other)
     }
 }
