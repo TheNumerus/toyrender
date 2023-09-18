@@ -1,0 +1,139 @@
+use ash::extensions::khr::Swapchain as SwapchainLoader;
+use ash::vk;
+use ash::vk::{Extent2D, Image, SurfaceFormatKHR, SwapchainKHR};
+use std::rc::Rc;
+use vk::PresentModeKHR;
+
+use super::{Instance, VulkanError};
+use crate::app::App;
+use crate::vulkan::{Device, Surface, SwapChainSupport};
+
+pub mod framebuffer;
+pub mod image_view;
+
+pub struct SwapChain {
+    pub swapchain: SwapchainKHR,
+    pub format: SurfaceFormatKHR,
+    pub extent: Extent2D,
+    pub loader: SwapchainLoader,
+    pub images: Vec<Image>,
+    device: Rc<Device>,
+}
+
+impl SwapChain {
+    pub fn new(device: Rc<Device>, instance: &Instance, app: &App, surface: &Surface) -> Result<Self, VulkanError> {
+        let swapchain_support = Device::query_swapchain_support(device.physical_device, surface);
+
+        let swap_format = Self::choose_swap_surface_format(&swapchain_support);
+        let swap_present_mode = Self::choose_swap_present_mode(&swapchain_support);
+        let swap_extent = Self::choose_swap_extent(&swapchain_support, app);
+
+        let image_count = swapchain_support.capabilities.min_image_count + 1;
+
+        let indices = [device.graphics_queue_family as u32, device.present_queue_family as u32];
+
+        let (sharing_mode, index_count, indices_ptr) = if device.present_queue_family != device.graphics_queue_family {
+            (vk::SharingMode::CONCURRENT, 2, indices.as_ptr())
+        } else {
+            (vk::SharingMode::EXCLUSIVE, 0, std::ptr::null())
+        };
+
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR {
+            min_image_count: image_count,
+            image_format: swap_format.format,
+            image_color_space: swap_format.color_space,
+            image_extent: swap_extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_sharing_mode: sharing_mode,
+            queue_family_index_count: index_count,
+            p_queue_family_indices: indices_ptr,
+            pre_transform: swapchain_support.capabilities.current_transform,
+            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+            present_mode: swap_present_mode,
+            clipped: vk::TRUE,
+            old_swapchain: SwapchainKHR::null(),
+            surface: surface.surface,
+            ..Default::default()
+        };
+
+        let loader = SwapchainLoader::new(&instance.instance, &device.inner);
+
+        let swapchain = unsafe {
+            loader
+                .create_swapchain(&swapchain_create_info, None)
+                .map_err(|code| VulkanError {
+                    code,
+                    msg: "Cannot create swapchain".into(),
+                })?
+        };
+
+        let images = unsafe {
+            loader.get_swapchain_images(swapchain).map_err(|code| VulkanError {
+                code,
+                msg: "Cannot get swapchain images".into(),
+            })?
+        };
+
+        Ok(Self {
+            swapchain,
+            format: swap_format,
+            extent: swap_extent,
+            loader,
+            images,
+            device,
+        })
+    }
+
+    pub fn create_image_views(&self) -> Result<Vec<image_view::SwapChainImageView>, VulkanError> {
+        self.images
+            .iter()
+            .map(|&image| image_view::SwapChainImageView::new(self.device.clone(), image, self))
+            .collect::<Result<Vec<_>, _>>()
+    }
+
+    fn choose_swap_surface_format(swapchain_support: &SwapChainSupport) -> SurfaceFormatKHR {
+        for format in &swapchain_support.formats {
+            if format.format == vk::Format::B8G8R8A8_SRGB && format.color_space == vk::ColorSpaceKHR::SRGB_NONLINEAR {
+                return *format;
+            }
+        }
+
+        swapchain_support.formats[0]
+    }
+
+    fn choose_swap_present_mode(swapchain_support: &SwapChainSupport) -> PresentModeKHR {
+        for present_mode in &swapchain_support.present_modes {
+            if *present_mode == PresentModeKHR::MAILBOX {
+                return *present_mode;
+            }
+        }
+
+        PresentModeKHR::FIFO
+    }
+
+    fn choose_swap_extent(swapchain_support: &SwapChainSupport, app: &App) -> Extent2D {
+        if swapchain_support.capabilities.current_extent.width != u32::MAX {
+            swapchain_support.capabilities.current_extent
+        } else {
+            let (width, height) = app.window.vulkan_drawable_size();
+
+            Extent2D {
+                width: width.clamp(
+                    swapchain_support.capabilities.min_image_extent.width,
+                    swapchain_support.capabilities.max_image_extent.width,
+                ),
+                height: height.clamp(
+                    swapchain_support.capabilities.min_image_extent.height,
+                    swapchain_support.capabilities.max_image_extent.height,
+                ),
+            }
+        }
+    }
+}
+
+impl Drop for SwapChain {
+    fn drop(&mut self) {
+        unsafe { self.loader.destroy_swapchain(self.swapchain, None) };
+    }
+}
