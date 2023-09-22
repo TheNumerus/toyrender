@@ -58,9 +58,8 @@ impl Drop for Instance {
 }
 
 fn get_instance_layers(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
-    #[cfg(not(debug_assertions))]
-    {
-        return Vec::new();
+    if cfg!(not(debug_assertions)) {
+        return Ok(vec![]);
     }
 
     let layers = entry

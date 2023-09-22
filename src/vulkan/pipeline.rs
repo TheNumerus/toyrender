@@ -1,3 +1,4 @@
+use crate::vulkan::vertex::Vertex;
 use crate::vulkan::{Device, IntoVulkanError, RenderPass, SwapChain, VulkanError};
 use ash::vk;
 use ash::vk::{Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
@@ -25,9 +26,14 @@ impl Pipeline {
             ..Default::default()
         };
 
+        let vertex_binds = Vertex::binding_description();
+        let vertex_atts = Vertex::attribute_description();
+
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo {
-            vertex_binding_description_count: 0,
-            vertex_attribute_description_count: 0,
+            vertex_binding_description_count: 1,
+            vertex_attribute_description_count: vertex_atts.len() as u32,
+            p_vertex_binding_descriptions: &vertex_binds,
+            p_vertex_attribute_descriptions: vertex_atts.as_ptr(),
             ..Default::default()
         };
 

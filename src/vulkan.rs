@@ -13,6 +13,7 @@ mod shader;
 mod surface;
 mod swapchain;
 mod sync;
+mod vertex;
 
 pub use command_buffer::CommandBuffer;
 pub use command_pool::CommandPool;

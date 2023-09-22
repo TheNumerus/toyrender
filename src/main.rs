@@ -35,8 +35,8 @@ fn main() -> Result<(), AppError> {
     let mut swapchain = vulkan::SwapChain::new(device.clone(), &instance, &app, &surface)?;
     let mut swapchain_image_views = swapchain.create_image_views()?;
 
-    let vert_module = vulkan::ShaderModule::new(include_bytes!("../build/vert.spv"), device.clone())?;
-    let frag_module = vulkan::ShaderModule::new(include_bytes!("../build/frag.spv"), device.clone())?;
+    let vert_module = vulkan::ShaderModule::new(include_bytes!("../build/triangle_vert.spv"), device.clone())?;
+    let frag_module = vulkan::ShaderModule::new(include_bytes!("../build/triangle_frag.spv"), device.clone())?;
 
     let shader_entry = CString::new("main").unwrap();
 
