@@ -1,5 +1,6 @@
 use ash::{vk, Entry};
 use log::info;
+use nalgebra_glm::{vec3, vec4};
 use sdl2::event::{Event, WindowEvent};
 use std::ffi::CString;
 
@@ -57,6 +58,24 @@ fn main() -> Result<(), AppError> {
     let stages = [vert_stage_info, frag_stage_info];
 
     let render_pass = vulkan::RenderPass::new(device.clone(), swapchain.format.format)?;
+
+    let triangle = [
+        vulkan::Vertex {
+            pos: vec3(0.0, -0.5, 0.0),
+            color: vec4(1.0, 0.0, 0.0, 0.0),
+            uv: Default::default(),
+        },
+        vulkan::Vertex {
+            pos: vec3(0.5, 0.5, 0.0),
+            color: vec4(0.0, 1.0, 0.0, 0.0),
+            uv: Default::default(),
+        },
+        vulkan::Vertex {
+            pos: vec3(-0.5, 0.5, 0.0),
+            color: vec4(0.0, 0.0, 1.0, 0.0),
+            uv: Default::default(),
+        },
+    ];
 
     let mut pipeline = vulkan::Pipeline::new(device.clone(), &swapchain, &render_pass, &stages)?;
 

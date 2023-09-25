@@ -159,6 +159,13 @@ impl Device {
         })
     }
 
+    pub fn get_memory_properties(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
+    ) -> vk::PhysicalDeviceMemoryProperties {
+        unsafe { instance.inner.get_physical_device_memory_properties(physical_device) }
+    }
+
     pub fn wait_idle(&self) -> Result<(), VulkanError> {
         unsafe { self.inner.device_wait_idle().map_to_err("Cannot wait for device idle") }
     }

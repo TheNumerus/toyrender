@@ -25,6 +25,7 @@ pub use shader::ShaderModule;
 pub use surface::Surface;
 pub use swapchain::{framebuffer::SwapChainFramebuffer, image_view::SwapChainImageView, SwapChain};
 pub use sync::{Fence, Semaphore};
+pub use vertex::{Vertex, VertexBuffer};
 
 pub const VALIDATION_LAYER: &str = "VK_LAYER_KHRONOS_validation";
 pub const SWAPCHAIN_EXTENSION: &CStr = ash::extensions::khr::Swapchain::name();
