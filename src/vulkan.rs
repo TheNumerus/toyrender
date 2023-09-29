@@ -21,7 +21,7 @@ pub use device::{Device, DeviceQueryResult, SwapChainSupport};
 pub use instance::Instance;
 pub use pipeline::Pipeline;
 pub use render_pass::RenderPass;
-pub use shader::ShaderModule;
+pub use shader::{ShaderModule, ShaderStage};
 pub use surface::Surface;
 pub use swapchain::{framebuffer::SwapChainFramebuffer, image_view::SwapChainImageView, SwapChain};
 pub use sync::{Fence, Semaphore};

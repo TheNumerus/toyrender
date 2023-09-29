@@ -81,6 +81,62 @@ impl SwapChain {
         })
     }
 
+    pub fn recreate(&mut self, device: Rc<Device>, app: &App, surface: &Surface) -> Result<(), VulkanError> {
+        self.images.clear();
+
+        let swapchain_support = Device::query_swapchain_support(device.physical_device, surface)?;
+
+        let swap_present_mode = Self::choose_swap_present_mode(&swapchain_support);
+        self.extent = Self::choose_swap_extent(&swapchain_support, app);
+
+        let image_count = swapchain_support.capabilities.min_image_count + 1;
+
+        let indices = [device.graphics_queue_family as u32, device.present_queue_family as u32];
+
+        let (sharing_mode, index_count, indices_ptr) = if device.present_queue_family != device.graphics_queue_family {
+            (vk::SharingMode::CONCURRENT, 2, indices.as_ptr())
+        } else {
+            (vk::SharingMode::EXCLUSIVE, 0, std::ptr::null())
+        };
+
+        let old_swapchain = self.swapchain;
+
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR {
+            min_image_count: image_count,
+            image_format: self.format.format,
+            image_color_space: self.format.color_space,
+            image_extent: self.extent,
+            image_array_layers: 1,
+            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_sharing_mode: sharing_mode,
+            queue_family_index_count: index_count,
+            p_queue_family_indices: indices_ptr,
+            pre_transform: swapchain_support.capabilities.current_transform,
+            composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+            present_mode: swap_present_mode,
+            clipped: vk::TRUE,
+            old_swapchain,
+            surface: surface.surface,
+            ..Default::default()
+        };
+
+        self.swapchain = unsafe {
+            self.loader
+                .create_swapchain(&swapchain_create_info, None)
+                .map_to_err("Cannot create swapchain")?
+        };
+
+        unsafe { self.loader.destroy_swapchain(old_swapchain, None) };
+
+        self.images = unsafe {
+            self.loader
+                .get_swapchain_images(self.swapchain)
+                .map_to_err("Cannot get swapchain images")?
+        };
+
+        Ok(())
+    }
+
     pub fn create_image_views(&self) -> Result<Vec<image_view::SwapChainImageView>, VulkanError> {
         self.images
             .iter()

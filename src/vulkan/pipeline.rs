@@ -1,7 +1,7 @@
 use crate::vulkan::vertex::Vertex;
-use crate::vulkan::{Device, IntoVulkanError, RenderPass, SwapChain, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, RenderPass, VulkanError};
 use ash::vk;
-use ash::vk::{Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
+use ash::vk::{Extent2D, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
 use std::rc::Rc;
 
 pub struct Pipeline {
@@ -14,7 +14,7 @@ pub struct Pipeline {
 impl Pipeline {
     pub fn new(
         device: Rc<Device>,
-        swapchain: &SwapChain,
+        default_extent: Extent2D,
         render_pass: &RenderPass,
         stages: &[PipelineShaderStageCreateInfo],
     ) -> Result<Self, VulkanError> {
@@ -46,15 +46,15 @@ impl Pipeline {
         let viewport = Viewport {
             x: 0.0,
             y: 0.0,
-            width: swapchain.extent.width as f32,
-            height: swapchain.extent.height as f32,
+            width: default_extent.width as f32,
+            height: default_extent.height as f32,
             min_depth: 0.0,
             max_depth: 1.0,
         };
 
         let scissor = Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
-            extent: swapchain.extent,
+            extent: default_extent,
         };
 
         let viewport_state = vk::PipelineViewportStateCreateInfo {

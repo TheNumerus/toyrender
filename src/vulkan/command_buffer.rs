@@ -1,6 +1,6 @@
-use crate::vulkan::{Device, IntoVulkanError, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, Pipeline, VertexBuffer, VulkanError};
 use ash::vk;
-use ash::vk::CommandBuffer as RawCommandBuffer;
+use ash::vk::{CommandBuffer as RawCommandBuffer, Rect2D, Viewport};
 use std::rc::Rc;
 
 pub struct CommandBuffer {
@@ -20,6 +20,44 @@ impl CommandBuffer {
                 .reset_command_buffer(self.inner, vk::CommandBufferResetFlags::empty())
                 .map_to_err("Cannot reset command buffer")
         }
+    }
+
+    pub fn bind_vertex_buffers(&self, buffers: &[VertexBuffer], offsets: &[u64]) {
+        let buffers = buffers.iter().map(|vb| vb.inner).collect::<Vec<_>>();
+
+        unsafe {
+            self.device
+                .inner
+                .cmd_bind_vertex_buffers(self.inner, 0, &buffers, offsets);
+        }
+    }
+
+    pub fn begin_render_pass(&self, render_pass_info: &vk::RenderPassBeginInfo, contents: vk::SubpassContents) {
+        unsafe {
+            self.device
+                .inner
+                .cmd_begin_render_pass(self.inner, render_pass_info, contents)
+        }
+    }
+
+    pub fn bind_pipeline(&self, pipeline: &Pipeline, bind_point: vk::PipelineBindPoint) {
+        unsafe {
+            self.device
+                .inner
+                .cmd_bind_pipeline(self.inner, bind_point, pipeline.inner)
+        }
+    }
+
+    pub fn set_viewport(&self, viewport: Viewport) {
+        unsafe { self.device.inner.cmd_set_viewport(self.inner, 0, &[viewport]) }
+    }
+
+    pub fn set_scissor(&self, scissor: Rect2D) {
+        unsafe { self.device.inner.cmd_set_scissor(self.inner, 0, &[scissor]) }
+    }
+
+    pub fn end_render_pass(&self) {
+        unsafe { self.device.inner.cmd_end_render_pass(self.inner) }
     }
 
     pub fn begin(&self) -> Result<(), VulkanError> {

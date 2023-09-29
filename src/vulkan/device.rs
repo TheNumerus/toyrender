@@ -5,6 +5,7 @@ use ash::Device as RawDevice;
 use log::info;
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::rc::Rc;
 
 pub struct Device {
     pub inner: RawDevice,
@@ -13,6 +14,7 @@ pub struct Device {
     pub present_queue: Queue,
     pub present_queue_family: usize,
     pub physical_device: PhysicalDevice,
+    instance: Rc<Instance>,
 }
 
 impl Device {
@@ -68,8 +70,12 @@ impl Device {
         }
     }
 
-    pub fn new(instance: &Instance, physical_device: PhysicalDevice, surface: &Surface) -> Result<Self, VulkanError> {
-        let queue_families = Self::find_device_queue_families(physical_device, instance, surface)?;
+    pub fn new(
+        instance: Rc<Instance>,
+        physical_device: PhysicalDevice,
+        surface: &Surface,
+    ) -> Result<Self, VulkanError> {
+        let queue_families = Self::find_device_queue_families(physical_device, &instance, surface)?;
 
         let unique_queue_families = HashSet::from([queue_families.graphics.unwrap(), queue_families.present.unwrap()]);
 
@@ -105,7 +111,7 @@ impl Device {
         let graphics_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
         let present_queue = unsafe { inner.get_device_queue(queue_families.present.unwrap() as u32, 0) };
 
-        let properties = Self::get_device_properties(instance, physical_device);
+        let properties = Self::get_device_properties(&instance, physical_device);
 
         info!(
             "{} - Vulkan {}.{}.{}",
@@ -124,6 +130,7 @@ impl Device {
             present_queue,
             present_queue_family: queue_families.present.unwrap(),
             physical_device,
+            instance,
         })
     }
 
@@ -159,15 +166,32 @@ impl Device {
         })
     }
 
-    pub fn get_memory_properties(
-        instance: &Instance,
-        physical_device: PhysicalDevice,
-    ) -> vk::PhysicalDeviceMemoryProperties {
-        unsafe { instance.inner.get_physical_device_memory_properties(physical_device) }
+    pub fn find_memory_type_index(&self, type_filter: u32, property_flags: vk::MemoryPropertyFlags) -> Option<u32> {
+        let memory_properties = Self::get_memory_properties(&self.instance, self.physical_device);
+
+        for i in 0..memory_properties.memory_type_count {
+            let property = memory_properties.memory_types[i as usize];
+
+            let passes_filter = (type_filter & (1 << i)) != 0;
+            let acceptable = property.property_flags.contains(property_flags);
+
+            if passes_filter && acceptable {
+                return Some(i);
+            }
+        }
+
+        None
     }
 
     pub fn wait_idle(&self) -> Result<(), VulkanError> {
         unsafe { self.inner.device_wait_idle().map_to_err("Cannot wait for device idle") }
+    }
+
+    fn get_memory_properties(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
+    ) -> vk::PhysicalDeviceMemoryProperties {
+        unsafe { instance.inner.get_physical_device_memory_properties(physical_device) }
     }
 
     fn get_device_properties(instance: &Instance, physical_device: PhysicalDevice) -> vk::PhysicalDeviceProperties {
