@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, IntoVulkanError, Pipeline, VertexBuffer, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, Pipeline, VertexIndexBuffer, VulkanError};
 use ash::vk;
 use ash::vk::{CommandBuffer as RawCommandBuffer, Rect2D, Viewport};
 use std::rc::Rc;
@@ -22,8 +22,8 @@ impl CommandBuffer {
         }
     }
 
-    pub fn bind_vertex_buffers(&self, buffers: &[VertexBuffer], offsets: &[u64]) {
-        let buffers = buffers.iter().map(|vb| vb.inner).collect::<Vec<_>>();
+    pub fn bind_vertex_buffers(&self, buffers: &[&VertexIndexBuffer], offsets: &[u64]) {
+        let buffers = buffers.iter().map(|vb| vb.inner.inner).collect::<Vec<_>>();
 
         unsafe {
             self.device
@@ -62,6 +62,20 @@ impl CommandBuffer {
 
     pub fn begin(&self) -> Result<(), VulkanError> {
         let begin_info = vk::CommandBufferBeginInfo::default();
+
+        unsafe {
+            self.device
+                .inner
+                .begin_command_buffer(self.inner, &begin_info)
+                .map_to_err("cannot begin recording")
+        }
+    }
+
+    pub fn begin_one_time(&self) -> Result<(), VulkanError> {
+        let begin_info = vk::CommandBufferBeginInfo {
+            flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+            ..Default::default()
+        };
 
         unsafe {
             self.device

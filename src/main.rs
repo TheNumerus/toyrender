@@ -4,8 +4,8 @@ use sdl2::event::{Event, WindowEvent};
 
 mod app;
 mod err;
+mod mesh;
 mod renderer;
-mod shapes;
 mod vulkan;
 
 use err::AppError;
@@ -17,12 +17,8 @@ fn main() -> Result<(), AppError> {
     let mut app = app::App::create();
     let mut renderer = renderer::VulkanRenderer::init(&app)?;
 
-    let triangle = shapes::square();
-    let buffer = vulkan::VertexBuffer::new(renderer.device.clone(), triangle.len())?;
-    buffer.fill(triangle.as_slice())?;
-
-    let vertex_buffers = [buffer];
-    let offsets = [0];
+    let (shape, indices) = mesh::square();
+    let mesh = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
 
     'running: loop {
         let mut resized = false;
@@ -48,9 +44,7 @@ fn main() -> Result<(), AppError> {
             }
         }
 
-        renderer.render_frame(&app, |renderer, cb, fb| {
-            record_command_buffer(renderer, cb, fb, &vertex_buffers, &offsets)
-        })?;
+        renderer.render_frame(&app, |renderer, cb, fb| record_command_buffer(renderer, cb, fb, &mesh))?;
 
         if resized {
             renderer.resize(&app)?;
@@ -66,8 +60,7 @@ fn record_command_buffer(
     renderer: &renderer::VulkanRenderer,
     command_buffer: &vulkan::CommandBuffer,
     framebuffer: &vulkan::SwapChainFramebuffer,
-    vertex_buffers: &[vulkan::VertexBuffer],
-    offsets: &[u64],
+    mesh: &mesh::Mesh,
 ) -> Result<(), VulkanError> {
     command_buffer.begin()?;
 
@@ -94,13 +87,20 @@ fn record_command_buffer(
     command_buffer.bind_pipeline(&renderer.pipeline, vk::PipelineBindPoint::GRAPHICS);
     command_buffer.set_viewport(renderer.pipeline.viewport);
     command_buffer.set_scissor(renderer.pipeline.scissor);
-    command_buffer.bind_vertex_buffers(vertex_buffers, offsets);
+    command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
 
     unsafe {
+        renderer.device.inner.cmd_bind_index_buffer(
+            command_buffer.inner,
+            mesh.buf.inner.inner,
+            mesh.indices_offset,
+            vk::IndexType::UINT32,
+        );
+
         renderer
             .device
             .inner
-            .cmd_draw(command_buffer.inner, vertex_buffers[0].vertices as u32, 1, 0, 0);
+            .cmd_draw_indexed(command_buffer.inner, mesh.index_count as u32, 1, 0, 0, 0);
     }
 
     command_buffer.end_render_pass();

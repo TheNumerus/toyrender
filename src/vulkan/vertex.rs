@@ -1,7 +1,6 @@
-use crate::vulkan::{Device, IntoVulkanError, VulkanError};
+use crate::vulkan::{Buffer, CommandPool, Device, IntoVulkanError, VulkanError};
 use ash::vk;
 use nalgebra_glm::{Vec2, Vec3, Vec4};
-use std::ffi::c_void;
 use std::rc::Rc;
 
 #[repr(C)]
@@ -44,89 +43,66 @@ impl Vertex {
     }
 }
 
-pub struct VertexBuffer {
-    pub inner: vk::Buffer,
-    pub memory: vk::DeviceMemory,
-    pub vertices: usize,
-    device: Rc<Device>,
+pub struct VertexIndexBuffer {
+    pub inner: Buffer,
 }
 
-impl VertexBuffer {
-    pub fn new(device: Rc<Device>, vertices: usize) -> Result<Self, VulkanError> {
-        let info = vk::BufferCreateInfo {
-            size: vertices as u64 * std::mem::size_of::<Vertex>() as u64,
-            usage: vk::BufferUsageFlags::VERTEX_BUFFER,
-            sharing_mode: vk::SharingMode::EXCLUSIVE,
-            ..Default::default()
-        };
-
-        let inner = unsafe {
-            device
-                .inner
-                .create_buffer(&info, None)
-                .map_to_err("Cannot create vertex buffer")?
-        };
-
-        let mem_req = unsafe { device.inner.get_buffer_memory_requirements(inner) };
-
-        let alloc_info = vk::MemoryAllocateInfo {
-            allocation_size: mem_req.size,
-            memory_type_index: device
-                .find_memory_type_index(
-                    mem_req.memory_type_bits,
-                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                )
-                .ok_or(VulkanError {
-                    msg: "Cannot find memory type".into(),
-                    code: vk::Result::ERROR_UNKNOWN,
-                })?,
-            ..Default::default()
-        };
-
-        let memory = unsafe {
-            device
-                .inner
-                .allocate_memory(&alloc_info, None)
-                .map_to_err("Cannot allocate memory")?
-        };
+impl VertexIndexBuffer {
+    pub fn new(device: Rc<Device>, cmd_pool: &CommandPool, data: &[u8]) -> Result<Self, VulkanError> {
+        let staging = Buffer::new(
+            device.clone(),
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            data.len() as u64,
+        )?;
 
         unsafe {
-            device
-                .inner
-                .bind_buffer_memory(inner, memory, 0)
-                .map_to_err("Cannot bind memory to buffer")
-        }?;
-
-        Ok(Self {
-            inner,
-            vertices,
-            device,
-            memory,
-        })
-    }
-
-    pub fn fill(&self, data: &[Vertex]) -> Result<(), VulkanError> {
-        unsafe {
-            let size = self.vertices as u64 * std::mem::size_of::<Vertex>() as u64;
-
-            let ptr = self
-                .device
-                .inner
-                .map_memory(self.memory, 0, size, vk::MemoryMapFlags::empty())
-                .map_to_err("Cannot map memory")?;
-
-            ptr.copy_from(data.as_ptr() as *const c_void, size as usize);
-
-            self.device.inner.unmap_memory(self.memory);
+            staging.fill_host(data)?;
         }
 
-        Ok(())
-    }
-}
+        let inner = Buffer::new(
+            device.clone(),
+            vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::INDEX_BUFFER,
+            vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            data.len() as u64,
+        )?;
 
-impl Drop for VertexBuffer {
-    fn drop(&mut self) {
-        unsafe { self.device.inner.destroy_buffer(self.inner, None) }
-        unsafe { self.device.inner.free_memory(self.memory, None) }
+        let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
+        cmd_buf.begin_one_time()?;
+
+        unsafe {
+            let region = vk::BufferCopy {
+                size: data.len() as u64,
+                src_offset: 0,
+                dst_offset: 0,
+            };
+
+            device
+                .inner
+                .cmd_copy_buffer(cmd_buf.inner, staging.inner, inner.inner, &[region]);
+        }
+
+        cmd_buf.end()?;
+
+        let submit_info = vk::SubmitInfo {
+            command_buffer_count: 1,
+            p_command_buffers: &cmd_buf.inner,
+            ..Default::default()
+        };
+
+        unsafe {
+            device
+                .inner
+                .queue_submit(device.graphics_queue, &[submit_info], vk::Fence::null())
+                .map_to_err("Cannot submit queue")?;
+            device
+                .inner
+                .queue_wait_idle(device.graphics_queue)
+                .map_to_err("Cannot wait idle")?;
+        }
+
+        Ok(Self { inner })
     }
 }

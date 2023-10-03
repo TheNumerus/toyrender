@@ -3,6 +3,7 @@ use std::borrow::Cow;
 use std::ffi::CStr;
 use thiserror::Error;
 
+mod buffer;
 mod command_buffer;
 mod command_pool;
 mod device;
@@ -15,6 +16,7 @@ mod swapchain;
 mod sync;
 mod vertex;
 
+pub use buffer::Buffer;
 pub use command_buffer::CommandBuffer;
 pub use command_pool::CommandPool;
 pub use device::{Device, DeviceQueryResult, SwapChainSupport};
@@ -25,7 +27,7 @@ pub use shader::{ShaderModule, ShaderStage};
 pub use surface::Surface;
 pub use swapchain::{framebuffer::SwapChainFramebuffer, image_view::SwapChainImageView, SwapChain};
 pub use sync::{Fence, Semaphore};
-pub use vertex::{Vertex, VertexBuffer};
+pub use vertex::{Vertex, VertexIndexBuffer};
 
 pub const VALIDATION_LAYER: &str = "VK_LAYER_KHRONOS_validation";
 pub const SWAPCHAIN_EXTENSION: &CStr = ash::extensions::khr::Swapchain::name();
