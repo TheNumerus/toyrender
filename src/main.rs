@@ -20,6 +20,8 @@ fn main() -> Result<(), AppError> {
     let (shape, indices) = mesh::square();
     let mesh = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
 
+    let start = std::time::Instant::now();
+
     'running: loop {
         let mut resized = false;
 
@@ -44,7 +46,13 @@ fn main() -> Result<(), AppError> {
             }
         }
 
-        renderer.render_frame(&app, |renderer, cb, fb| record_command_buffer(renderer, cb, fb, &mesh))?;
+        let end = std::time::Instant::now();
+
+        let push_constants = end.duration_since(start).as_secs_f32();
+
+        renderer.render_frame(&app, |renderer, cb, fb| {
+            record_command_buffer(renderer, cb, fb, &mesh, &push_constants)
+        })?;
 
         if resized {
             renderer.resize(&app)?;
@@ -61,6 +69,7 @@ fn record_command_buffer(
     command_buffer: &vulkan::CommandBuffer,
     framebuffer: &vulkan::SwapChainFramebuffer,
     mesh: &mesh::Mesh,
+    push_constants: &f32,
 ) -> Result<(), VulkanError> {
     command_buffer.begin()?;
 
@@ -90,6 +99,14 @@ fn record_command_buffer(
     command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
 
     unsafe {
+        renderer.device.inner.cmd_push_constants(
+            command_buffer.inner,
+            renderer.pipeline.layout,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            0,
+            &(push_constants).to_le_bytes(),
+        );
+
         renderer.device.inner.cmd_bind_index_buffer(
             command_buffer.inner,
             mesh.buf.inner.inner,

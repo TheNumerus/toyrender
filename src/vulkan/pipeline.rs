@@ -94,7 +94,17 @@ impl Pipeline {
             ..Default::default()
         };
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let ranges = [vk::PushConstantRange {
+            offset: 0,
+            size: 4,
+            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+        }];
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+            p_push_constant_ranges: ranges.as_ptr(),
+            push_constant_range_count: 1,
+            ..Default::default()
+        };
 
         let layout = unsafe {
             device

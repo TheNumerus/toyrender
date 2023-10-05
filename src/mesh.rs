@@ -15,25 +15,17 @@ impl Mesh {
         vertices: &[Vertex],
         indices: &[u32],
     ) -> Result<Self, VulkanError> {
-        let total_size = vertices.len() * std::mem::size_of::<Vertex>() + indices.len() * std::mem::size_of::<u32>();
+        let total_size = std::mem::size_of_val(vertices) + std::mem::size_of_val(indices);
 
-        let mut data = Vec::with_capacity(total_size);
-
-        data.resize(total_size, 0);
+        let mut data = vec![0; total_size];
 
         let indices_offset = vertices.len() as u64 * std::mem::size_of::<Vertex>() as u64;
 
         data[0..indices_offset as usize].copy_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                vertices.as_ptr() as *const u8,
-                vertices.len() * std::mem::size_of::<Vertex>(),
-            )
+            std::slice::from_raw_parts(vertices.as_ptr() as *const u8, std::mem::size_of_val(vertices))
         });
         data[indices_offset as usize..].copy_from_slice(unsafe {
-            std::slice::from_raw_parts(
-                indices.as_ptr() as *const u8,
-                indices.len() * std::mem::size_of::<u32>(),
-            )
+            std::slice::from_raw_parts(indices.as_ptr() as *const u8, std::mem::size_of_val(indices))
         });
 
         let buf = VertexIndexBuffer::new(device, cmd_pool, &data)?;
