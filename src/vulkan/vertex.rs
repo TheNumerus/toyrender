@@ -54,6 +54,7 @@ impl VertexIndexBuffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             data.len() as u64,
+            false,
         )?;
 
         unsafe {
@@ -67,6 +68,7 @@ impl VertexIndexBuffer {
                 | vk::BufferUsageFlags::INDEX_BUFFER,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
             data.len() as u64,
+            false,
         )?;
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();

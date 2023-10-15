@@ -50,8 +50,8 @@ fn main() -> Result<(), AppError> {
 
         let push_constants = end.duration_since(start).as_secs_f32();
 
-        renderer.render_frame(&app, |renderer, cb, fb| {
-            record_command_buffer(renderer, cb, fb, &mesh, &push_constants)
+        renderer.render_frame(&app, |renderer, cb, fb, ds| {
+            record_command_buffer(renderer, cb, fb, ds, &mesh, &push_constants)
         })?;
 
         if resized {
@@ -68,6 +68,7 @@ fn record_command_buffer(
     renderer: &renderer::VulkanRenderer,
     command_buffer: &vulkan::CommandBuffer,
     framebuffer: &vulkan::SwapChainFramebuffer,
+    descriptor_set: &vulkan::DescriptorSet,
     mesh: &mesh::Mesh,
     push_constants: &f32,
 ) -> Result<(), VulkanError> {
@@ -112,6 +113,15 @@ fn record_command_buffer(
             mesh.buf.inner.inner,
             mesh.indices_offset,
             vk::IndexType::UINT32,
+        );
+
+        renderer.device.inner.cmd_bind_descriptor_sets(
+            command_buffer.inner,
+            vk::PipelineBindPoint::GRAPHICS,
+            renderer.pipeline.layout,
+            0,
+            &[descriptor_set.inner],
+            &[],
         );
 
         renderer

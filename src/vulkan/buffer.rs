@@ -6,6 +6,7 @@ use std::rc::Rc;
 pub struct Buffer {
     pub inner: vk::Buffer,
     pub memory: vk::DeviceMemory,
+    persistent_ptr: Option<*mut c_void>,
     device: Rc<Device>,
 }
 
@@ -15,6 +16,7 @@ impl Buffer {
         usage: vk::BufferUsageFlags,
         properties: vk::MemoryPropertyFlags,
         size: u64,
+        is_persistent: bool,
     ) -> Result<Self, VulkanError> {
         let info = vk::BufferCreateInfo {
             size,
@@ -57,19 +59,42 @@ impl Buffer {
                 .map_to_err("Cannot bind memory to buffer")
         }?;
 
-        Ok(Self { inner, device, memory })
+        let persistent_ptr = if is_persistent {
+            unsafe {
+                Some(
+                    device
+                        .inner
+                        .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
+                        .map_to_err("Cannot map memory")?,
+                )
+            }
+        } else {
+            None
+        };
+
+        Ok(Self {
+            inner,
+            device,
+            memory,
+            persistent_ptr,
+        })
     }
 
     pub unsafe fn fill_host(&self, data: &[u8]) -> Result<(), VulkanError> {
-        let ptr = self
-            .device
-            .inner
-            .map_memory(self.memory, 0, data.len() as u64, vk::MemoryMapFlags::empty())
-            .map_to_err("Cannot map memory")?;
+        let ptr = match self.persistent_ptr {
+            Some(p) => p,
+            None => self
+                .device
+                .inner
+                .map_memory(self.memory, 0, data.len() as u64, vk::MemoryMapFlags::empty())
+                .map_to_err("Cannot map memory")?,
+        };
 
         ptr.copy_from(data.as_ptr() as *const c_void, data.len());
 
-        self.device.inner.unmap_memory(self.memory);
+        if self.persistent_ptr.is_none() {
+            self.device.inner.unmap_memory(self.memory);
+        }
 
         Ok(())
     }
