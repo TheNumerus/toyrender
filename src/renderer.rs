@@ -91,7 +91,7 @@ impl VulkanRenderer {
 
         let descriptor_pool = DescriptorPool::new(device.clone(), MAX_FRAMES_IN_FLIGHT as u32)?;
         let descriptor_sets =
-            descriptor_pool.allocate_sets(&vec![descriptor_layouts[0].inner, descriptor_layouts[0].inner])?;
+            descriptor_pool.allocate_sets(&[descriptor_layouts[0].inner, descriptor_layouts[0].inner])?;
 
         let command_pool = CommandPool::new(device.clone())?;
         let command_buffers = command_pool.allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
@@ -163,7 +163,8 @@ impl VulkanRenderer {
     pub fn render_frame(
         &mut self,
         app: &App,
-        record_cmd_buffer: impl Fn(&Self, &CommandBuffer, &SwapChainFramebuffer, &DescriptorSet) -> Result<(), VulkanError>,
+        scene: &crate::scene::Scene,
+        context: &FrameContext,
     ) -> Result<(), VulkanError> {
         self.in_flight[self.current_frame].wait()?;
         let (image_index, _is_suboptimal) = self
@@ -176,9 +177,12 @@ impl VulkanRenderer {
         let framebuffer = &self.swap_chain_fbs[image_index as usize];
         let descriptor_set = &self.descriptor_sets[self.current_frame];
 
+        let aspect_ratio = app.window.drawable_size();
+        let aspect_ratio = aspect_ratio.0 as f32 / aspect_ratio.1 as f32;
+
         let ubo = ModelViewProj {
-            view: nalgebra_glm::Mat4::identity(),
-            projection: nalgebra_glm::Mat4::identity(),
+            view: scene.camera.transform,
+            projection: nalgebra_glm::Mat4::new_perspective(aspect_ratio, scene.camera.fov, 0.001, 50.0),
             model: nalgebra_glm::Mat4::new_scaling(1.8),
         };
 
@@ -189,7 +193,13 @@ impl VulkanRenderer {
             ))?;
         }
 
-        record_cmd_buffer(self, command_buffer, framebuffer, descriptor_set)?;
+        self.record_command_buffer(
+            command_buffer,
+            framebuffer,
+            descriptor_set,
+            &scene.meshes[0],
+            &context.total_time,
+        )?;
 
         let wait_semaphores = [self.img_available[self.current_frame].inner];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -264,6 +274,80 @@ impl VulkanRenderer {
 
         Ok(())
     }
+
+    fn record_command_buffer(
+        &self,
+        command_buffer: &CommandBuffer,
+        framebuffer: &SwapChainFramebuffer,
+        descriptor_set: &DescriptorSet,
+        mesh: &crate::mesh::Mesh,
+        push_constants: &f32,
+    ) -> Result<(), VulkanError> {
+        command_buffer.begin()?;
+
+        let clear_color = vk::ClearValue {
+            color: vk::ClearColorValue {
+                float32: [0.0, 0.0, 0.0, 1.0],
+            },
+        };
+
+        let render_pass_info = vk::RenderPassBeginInfo {
+            render_pass: self.render_pass.inner,
+            framebuffer: framebuffer.inner,
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent: self.swap_chain.extent,
+            },
+            clear_value_count: 1,
+            p_clear_values: &clear_color,
+            ..Default::default()
+        };
+
+        command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
+
+        command_buffer.bind_pipeline(&self.pipeline, vk::PipelineBindPoint::GRAPHICS);
+        command_buffer.set_viewport(self.pipeline.viewport);
+        command_buffer.set_scissor(self.pipeline.scissor);
+        command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
+
+        unsafe {
+            self.device.inner.cmd_push_constants(
+                command_buffer.inner,
+                self.pipeline.layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                &(push_constants).to_le_bytes(),
+            );
+
+            self.device.inner.cmd_bind_index_buffer(
+                command_buffer.inner,
+                mesh.buf.inner.inner,
+                mesh.indices_offset,
+                vk::IndexType::UINT32,
+            );
+
+            self.device.inner.cmd_bind_descriptor_sets(
+                command_buffer.inner,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline.layout,
+                0,
+                &[descriptor_set.inner],
+                &[],
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh.index_count as u32, 1, 0, 0, 0);
+        }
+
+        command_buffer.end_render_pass();
+        command_buffer.end()
+    }
+}
+
+pub struct FrameContext {
+    pub delta_time: f32,
+    pub total_time: f32,
 }
 
 pub struct ModelViewProj {

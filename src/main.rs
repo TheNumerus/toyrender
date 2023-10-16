@@ -1,15 +1,20 @@
-use ash::vk;
 use log::info;
 use sdl2::event::{Event, WindowEvent};
+use std::time::Instant;
 
 mod app;
+mod camera;
 mod err;
+mod input;
 mod mesh;
 mod renderer;
+mod scene;
 mod vulkan;
 
+use crate::input::InputMapper;
 use err::AppError;
-use vulkan::VulkanError;
+use renderer::FrameContext;
+use scene::Scene;
 
 fn main() -> Result<(), AppError> {
     env_logger::init();
@@ -20,116 +25,86 @@ fn main() -> Result<(), AppError> {
     let (shape, indices) = mesh::square();
     let mesh = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
 
-    let start = std::time::Instant::now();
+    let mut input_mapper = setup_input_mapper();
+
+    let mut scene = Scene::new();
+    scene
+        .camera
+        .transform
+        .append_translation_mut(&nalgebra_glm::Vec3::new(0.0, 0.0, -1.0));
+    scene.meshes.push(mesh);
+
+    let start = Instant::now();
+    let mut frame_end = Instant::now();
 
     'running: loop {
         let mut resized = false;
+
+        let frame_start = Instant::now();
+        let delta = frame_start.duration_since(frame_end).as_secs_f32();
 
         for event in app.event_pump.poll_iter() {
             match event {
                 Event::Quit { .. } => {
                     break 'running;
                 }
-                Event::Window { win_event, .. } => match win_event {
-                    WindowEvent::Resized(_, _) => {
-                        resized = true;
-                    }
-                    _ => {}
-                },
-                Event::KeyDown { keycode, .. } => match keycode {
-                    Some(sdl2::keyboard::Keycode::W) => {
-                        dbg!("forward");
-                    }
-                    _ => {}
-                },
+                Event::Window {
+                    win_event: WindowEvent::Resized(_, _),
+                    ..
+                } => {
+                    resized = true;
+                }
                 _ => {}
             }
         }
 
-        let end = std::time::Instant::now();
+        input_mapper.update(app.event_pump.keyboard_state());
 
-        let push_constants = end.duration_since(start).as_secs_f32();
+        scene.camera.transform.append_translation_mut(
+            &(nalgebra_glm::Vec3::new(
+                input_mapper.get_value(InputAxes::Right),
+                input_mapper.get_value(InputAxes::Up),
+                input_mapper.get_value(InputAxes::Forward),
+            ) * delta),
+        );
 
-        renderer.render_frame(&app, |renderer, cb, fb, ds| {
-            record_command_buffer(renderer, cb, fb, ds, &mesh, &push_constants)
-        })?;
+        frame_end = Instant::now();
+
+        let context = FrameContext {
+            delta_time: delta,
+            total_time: frame_end.duration_since(start).as_secs_f32(),
+        };
+
+        renderer.render_frame(&app, &scene, &context)?;
+        eprint!("{} FPS\r", 1.0 / delta);
 
         if resized {
             renderer.resize(&app)?;
         }
     }
+    eprintln!();
 
     info!("Quitting app...");
 
     Ok(())
 }
 
-fn record_command_buffer(
-    renderer: &renderer::VulkanRenderer,
-    command_buffer: &vulkan::CommandBuffer,
-    framebuffer: &vulkan::SwapChainFramebuffer,
-    descriptor_set: &vulkan::DescriptorSet,
-    mesh: &mesh::Mesh,
-    push_constants: &f32,
-) -> Result<(), VulkanError> {
-    command_buffer.begin()?;
+pub fn setup_input_mapper() -> InputMapper<InputAxes> {
+    use sdl2::keyboard::Scancode;
 
-    let clear_color = vk::ClearValue {
-        color: vk::ClearColorValue {
-            float32: [0.0, 0.0, 0.0, 1.0],
-        },
-    };
+    InputMapper::with_configuration([
+        (Scancode::W, vec![(InputAxes::Forward, 1.0)]),
+        (Scancode::S, vec![(InputAxes::Forward, -1.0)]),
+        (Scancode::A, vec![(InputAxes::Right, 1.0)]),
+        (Scancode::D, vec![(InputAxes::Right, -1.0)]),
+        (Scancode::Q, vec![(InputAxes::Up, 1.0)]),
+        (Scancode::E, vec![(InputAxes::Up, -1.0)]),
+    ])
+}
 
-    let render_pass_info = vk::RenderPassBeginInfo {
-        render_pass: renderer.render_pass.inner,
-        framebuffer: framebuffer.inner,
-        render_area: vk::Rect2D {
-            offset: vk::Offset2D::default(),
-            extent: renderer.swap_chain.extent,
-        },
-        clear_value_count: 1,
-        p_clear_values: &clear_color,
-        ..Default::default()
-    };
-
-    command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
-
-    command_buffer.bind_pipeline(&renderer.pipeline, vk::PipelineBindPoint::GRAPHICS);
-    command_buffer.set_viewport(renderer.pipeline.viewport);
-    command_buffer.set_scissor(renderer.pipeline.scissor);
-    command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
-
-    unsafe {
-        renderer.device.inner.cmd_push_constants(
-            command_buffer.inner,
-            renderer.pipeline.layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            0,
-            &(push_constants).to_le_bytes(),
-        );
-
-        renderer.device.inner.cmd_bind_index_buffer(
-            command_buffer.inner,
-            mesh.buf.inner.inner,
-            mesh.indices_offset,
-            vk::IndexType::UINT32,
-        );
-
-        renderer.device.inner.cmd_bind_descriptor_sets(
-            command_buffer.inner,
-            vk::PipelineBindPoint::GRAPHICS,
-            renderer.pipeline.layout,
-            0,
-            &[descriptor_set.inner],
-            &[],
-        );
-
-        renderer
-            .device
-            .inner
-            .cmd_draw_indexed(command_buffer.inner, mesh.index_count as u32, 1, 0, 0, 0);
-    }
-
-    command_buffer.end_render_pass();
-    command_buffer.end()
+#[derive(Hash, Eq, PartialEq, Copy, Clone)]
+pub enum InputAxes {
+    Forward,
+    Right,
+    Up,
 }
