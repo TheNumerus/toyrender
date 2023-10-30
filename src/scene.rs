@@ -1,9 +1,9 @@
 use crate::camera::PerspectiveCamera;
-use crate::mesh::Mesh;
+use crate::mesh::MeshInstance;
 
 pub struct Scene {
     pub camera: PerspectiveCamera,
-    pub meshes: Vec<Mesh>,
+    pub meshes: Vec<MeshInstance>,
 }
 
 impl Scene {

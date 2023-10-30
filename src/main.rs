@@ -12,6 +12,7 @@ mod scene;
 mod vulkan;
 
 use crate::input::InputMapper;
+use crate::mesh::MeshInstance;
 use err::AppError;
 use renderer::FrameContext;
 use scene::Scene;
@@ -24,6 +25,10 @@ fn main() -> Result<(), AppError> {
 
     let (shape, indices) = mesh::square();
     let mesh = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
+    let mesh = std::rc::Rc::new(mesh);
+
+    let instance = MeshInstance::new(mesh.clone());
+    let mut instance_2 = MeshInstance::new(mesh);
 
     let mut input_mapper = setup_input_mapper();
 
@@ -32,7 +37,12 @@ fn main() -> Result<(), AppError> {
         .camera
         .transform
         .append_translation_mut(&nalgebra_glm::Vec3::new(0.0, 0.0, -1.0));
-    scene.meshes.push(mesh);
+    scene.meshes.push(instance);
+
+    instance_2
+        .transform
+        .append_translation_mut(&nalgebra_glm::Vec3::new(1.0, 1.0, 0.0));
+    scene.meshes.push(instance_2);
 
     let start = Instant::now();
     let mut frame_end = Instant::now();

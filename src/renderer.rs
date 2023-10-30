@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::err::AppError;
+use crate::scene::Scene;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, Device, DeviceQueryResult, Fence, Instance,
     Pipeline, RenderPass, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain, SwapChainFramebuffer,
@@ -186,18 +187,12 @@ impl VulkanRenderer {
             model: nalgebra_glm::Mat4::new_scaling(1.8),
         };
 
-        unsafe {
-            self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
-                std::ptr::addr_of!(ubo) as *const u8,
-                std::mem::size_of::<ModelViewProj>(),
-            ))?;
-        }
-
         self.record_command_buffer(
             command_buffer,
             framebuffer,
             descriptor_set,
-            &scene.meshes[0],
+            scene,
+            &ubo,
             &context.total_time,
         )?;
 
@@ -280,7 +275,8 @@ impl VulkanRenderer {
         command_buffer: &CommandBuffer,
         framebuffer: &SwapChainFramebuffer,
         descriptor_set: &DescriptorSet,
-        mesh: &crate::mesh::Mesh,
+        scene: &Scene,
+        ubo: &ModelViewProj,
         push_constants: &f32,
     ) -> Result<(), VulkanError> {
         command_buffer.begin()?;
@@ -308,36 +304,53 @@ impl VulkanRenderer {
         command_buffer.bind_pipeline(&self.pipeline, vk::PipelineBindPoint::GRAPHICS);
         command_buffer.set_viewport(self.pipeline.viewport);
         command_buffer.set_scissor(self.pipeline.scissor);
-        command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
 
-        unsafe {
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                self.pipeline.layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                0,
-                &(push_constants).to_le_bytes(),
-            );
+        for instance in &scene.meshes {
+            let mesh = &instance.instance;
 
-            self.device.inner.cmd_bind_index_buffer(
-                command_buffer.inner,
-                mesh.buf.inner.inner,
-                mesh.indices_offset,
-                vk::IndexType::UINT32,
-            );
+            let ubo = ModelViewProj {
+                model: instance.transform,
+                ..*ubo
+            };
 
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.layout,
-                0,
-                &[descriptor_set.inner],
-                &[],
-            );
+            unsafe {
+                self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
+                    std::ptr::addr_of!(ubo) as *const u8,
+                    std::mem::size_of::<ModelViewProj>(),
+                ))?;
+            }
 
-            self.device
-                .inner
-                .cmd_draw_indexed(command_buffer.inner, mesh.index_count as u32, 1, 0, 0, 0);
+            command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
+
+            unsafe {
+                self.device.inner.cmd_push_constants(
+                    command_buffer.inner,
+                    self.pipeline.layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    &(push_constants).to_le_bytes(),
+                );
+
+                self.device.inner.cmd_bind_index_buffer(
+                    command_buffer.inner,
+                    mesh.buf.inner.inner,
+                    mesh.indices_offset,
+                    vk::IndexType::UINT32,
+                );
+
+                self.device.inner.cmd_bind_descriptor_sets(
+                    command_buffer.inner,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    self.pipeline.layout,
+                    0,
+                    &[descriptor_set.inner],
+                    &[],
+                );
+
+                self.device
+                    .inner
+                    .cmd_draw_indexed(command_buffer.inner, mesh.index_count as u32, 1, 0, 0, 0);
+            }
         }
 
         command_buffer.end_render_pass();

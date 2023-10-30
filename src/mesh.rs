@@ -1,5 +1,5 @@
 use crate::vulkan::{CommandPool, Device, Vertex, VertexIndexBuffer, VulkanError};
-use nalgebra_glm::{vec3, vec4};
+use nalgebra_glm::{vec3, vec4, Mat4};
 use std::rc::Rc;
 
 pub struct Mesh {
@@ -35,6 +35,20 @@ impl Mesh {
             indices_offset,
             index_count: indices.len(),
         })
+    }
+}
+
+pub struct MeshInstance {
+    pub instance: Rc<Mesh>,
+    pub transform: Mat4,
+}
+
+impl MeshInstance {
+    pub fn new(instance: Rc<Mesh>) -> Self {
+        Self {
+            instance,
+            transform: Mat4::identity(),
+        }
     }
 }
 
