@@ -97,7 +97,7 @@ impl Pipeline {
 
         let ranges = [vk::PushConstantRange {
             offset: 0,
-            size: 4,
+            size: (std::mem::size_of::<f32>() + std::mem::size_of::<nalgebra_glm::Mat4>()) as u32,
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         }];
 

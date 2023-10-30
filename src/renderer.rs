@@ -111,14 +111,14 @@ impl VulkanRenderer {
                 device.clone(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                std::mem::size_of::<ModelViewProj>() as u64,
+                std::mem::size_of::<ViewProj>() as u64,
                 true,
             )?;
 
             let buffer_info = vk::DescriptorBufferInfo {
                 buffer: uniform_buffer.inner,
                 offset: 0,
-                range: std::mem::size_of::<ModelViewProj>() as u64,
+                range: std::mem::size_of::<ViewProj>() as u64,
             };
 
             uniform_buffers.push(uniform_buffer);
@@ -181,20 +181,19 @@ impl VulkanRenderer {
         let aspect_ratio = app.window.drawable_size();
         let aspect_ratio = aspect_ratio.0 as f32 / aspect_ratio.1 as f32;
 
-        let ubo = ModelViewProj {
+        let ubo = ViewProj {
             view: scene.camera.transform,
             projection: nalgebra_glm::Mat4::new_perspective(aspect_ratio, scene.camera.fov, 0.001, 50.0),
-            model: nalgebra_glm::Mat4::new_scaling(1.8),
         };
 
-        self.record_command_buffer(
-            command_buffer,
-            framebuffer,
-            descriptor_set,
-            scene,
-            &ubo,
-            &context.total_time,
-        )?;
+        unsafe {
+            self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
+                std::ptr::addr_of!(ubo) as *const u8,
+                std::mem::size_of::<ViewProj>(),
+            ))?;
+        }
+
+        self.record_command_buffer(command_buffer, framebuffer, descriptor_set, scene, &context.total_time)?;
 
         let wait_semaphores = [self.img_available[self.current_frame].inner];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -276,7 +275,6 @@ impl VulkanRenderer {
         framebuffer: &SwapChainFramebuffer,
         descriptor_set: &DescriptorSet,
         scene: &Scene,
-        ubo: &ModelViewProj,
         push_constants: &f32,
     ) -> Result<(), VulkanError> {
         command_buffer.begin()?;
@@ -308,27 +306,21 @@ impl VulkanRenderer {
         for instance in &scene.meshes {
             let mesh = &instance.instance;
 
-            let ubo = ModelViewProj {
-                model: instance.transform,
-                ..*ubo
-            };
-
-            unsafe {
-                self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
-                    std::ptr::addr_of!(ubo) as *const u8,
-                    std::mem::size_of::<ModelViewProj>(),
-                ))?;
-            }
-
             command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
 
             unsafe {
+                let mut constants = [0_u8; 68];
+
+                constants[0..64]
+                    .copy_from_slice(std::slice::from_raw_parts(instance.transform.as_ptr() as *const u8, 64));
+                constants[64..].copy_from_slice(&(push_constants).to_le_bytes());
+
                 self.device.inner.cmd_push_constants(
                     command_buffer.inner,
                     self.pipeline.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    &(push_constants).to_le_bytes(),
+                    &constants,
                 );
 
                 self.device.inner.cmd_bind_index_buffer(
@@ -363,8 +355,7 @@ pub struct FrameContext {
     pub total_time: f32,
 }
 
-pub struct ModelViewProj {
-    pub model: nalgebra_glm::Mat4,
+pub struct ViewProj {
     pub view: nalgebra_glm::Mat4,
     pub projection: nalgebra_glm::Mat4,
 }

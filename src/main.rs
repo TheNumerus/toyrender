@@ -5,6 +5,7 @@ use std::time::Instant;
 mod app;
 mod camera;
 mod err;
+mod import;
 mod input;
 mod mesh;
 mod renderer;
@@ -23,7 +24,9 @@ fn main() -> Result<(), AppError> {
     let mut app = app::App::create();
     let mut renderer = renderer::VulkanRenderer::init(&app)?;
 
-    let (shape, indices) = mesh::square();
+    let sphere = include_bytes!("../meshes/sphere.glb");
+
+    let (shape, indices) = import::extract_mesh(sphere)?;
     let mesh = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
     let mesh = std::rc::Rc::new(mesh);
 

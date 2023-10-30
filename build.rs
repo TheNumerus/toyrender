@@ -17,12 +17,14 @@ fn main() {
         let input = format!("shaders/{}", name.to_str().unwrap());
         let output = format!("build/{}", final_name);
 
-        std::process::Command::new("glslc")
+        let res = std::process::Command::new("glslc")
             .args([&input, "-o", &output])
-            .spawn()
-            .unwrap()
-            .wait()
+            .output()
             .unwrap();
+
+        if !res.status.success() {
+            panic!("{:?}", String::from_utf8_lossy(&res.stderr));
+        }
 
         println!("Compiling {} to {}", name.to_str().unwrap(), final_name);
     }
