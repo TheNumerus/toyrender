@@ -72,7 +72,7 @@ impl VulkanRenderer {
         let descriptor_layouts = vec![UniformDescriptorSetLayout::new(
             device.clone(),
             0,
-            vk::ShaderStageFlags::VERTEX,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         )?];
 
         let render_pass = RenderPass::new(device.clone(), swap_chain.format.format)?;
@@ -181,9 +181,18 @@ impl VulkanRenderer {
         let aspect_ratio = app.window.drawable_size();
         let aspect_ratio = aspect_ratio.0 as f32 / aspect_ratio.1 as f32;
 
+        let mut proj = nalgebra_glm::perspective_rh_zo(
+            aspect_ratio,
+            (scene.camera.fov / aspect_ratio) / 180.0 * std::f32::consts::PI,
+            0.001,
+            50.0,
+        );
+
+        proj.m22 *= -1.0;
+
         let ubo = ViewProj {
-            view: scene.camera.transform,
-            projection: nalgebra_glm::Mat4::new_perspective(aspect_ratio, scene.camera.fov, 0.001, 50.0),
+            view: scene.camera.view(),
+            projection: proj,
         };
 
         unsafe {

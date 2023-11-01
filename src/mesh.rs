@@ -58,16 +58,19 @@ pub fn triangle() -> ([Vertex; 3], [u32; 3]) {
         [
             Vertex {
                 pos: vec3(0.0, -0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(1.0, 0.0, 0.0, 0.0),
                 uv: Default::default(),
             },
             Vertex {
                 pos: vec3(0.5, 0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(0.0, 1.0, 0.0, 0.0),
                 uv: Default::default(),
             },
             Vertex {
                 pos: vec3(-0.5, 0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(0.0, 0.0, 1.0, 0.0),
                 uv: Default::default(),
             },
@@ -82,21 +85,25 @@ pub fn square() -> ([Vertex; 4], [u32; 6]) {
         [
             Vertex {
                 pos: vec3(-0.5, -0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(1.0, 0.0, 0.0, 0.0),
                 uv: Default::default(),
             },
             Vertex {
                 pos: vec3(0.5, 0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(0.0, 1.0, 0.0, 0.0),
                 uv: Default::default(),
             },
             Vertex {
                 pos: vec3(-0.5, 0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(0.0, 0.0, 1.0, 0.0),
                 uv: Default::default(),
             },
             Vertex {
                 pos: vec3(0.5, -0.5, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
                 color: vec4(1.0, 1.0, 0.0, 0.0),
                 uv: Default::default(),
             },

@@ -2,9 +2,10 @@ use crate::err::AppError;
 use crate::vulkan::Instance;
 use ash::vk::Handle;
 use sdl2::video::{VkSurfaceKHR, Window};
-use sdl2::EventPump;
+use sdl2::{EventPump, Sdl};
 
 pub struct App {
+    pub sdl_context: Sdl,
     pub window: Window,
     pub event_pump: EventPump,
 }
@@ -28,7 +29,11 @@ impl App {
 
         let event_pump = sdl_context.event_pump().expect("cannot get event pump");
 
-        Self { window, event_pump }
+        Self {
+            sdl_context,
+            window,
+            event_pump,
+        }
     }
 
     pub fn create_vulkan_surface(&self, instance: &Instance) -> Result<VkSurfaceKHR, AppError> {

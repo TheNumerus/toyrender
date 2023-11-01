@@ -6,6 +6,7 @@ use std::rc::Rc;
 #[repr(C)]
 pub struct Vertex {
     pub pos: Vec3,
+    pub normal: Vec3,
     pub color: Vec4,
     pub uv: Vec2,
 }
@@ -19,7 +20,7 @@ impl Vertex {
         }
     }
 
-    pub fn attribute_description() -> [vk::VertexInputAttributeDescription; 3] {
+    pub fn attribute_description() -> [vk::VertexInputAttributeDescription; 4] {
         [
             vk::VertexInputAttributeDescription {
                 binding: 0,
@@ -30,14 +31,20 @@ impl Vertex {
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 1,
-                format: vk::Format::R32G32B32A32_SFLOAT,
+                format: vk::Format::R32G32B32_SFLOAT,
                 offset: 3 * std::mem::size_of::<f32>() as u32,
             },
             vk::VertexInputAttributeDescription {
                 binding: 0,
                 location: 2,
+                format: vk::Format::R32G32B32A32_SFLOAT,
+                offset: 6 * std::mem::size_of::<f32>() as u32,
+            },
+            vk::VertexInputAttributeDescription {
+                binding: 0,
+                location: 3,
                 format: vk::Format::R32G32_SFLOAT,
-                offset: 7 * std::mem::size_of::<f32>() as u32,
+                offset: 10 * std::mem::size_of::<f32>() as u32,
             },
         ]
     }

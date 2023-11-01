@@ -1,9 +1,16 @@
 #version 450
 #pragma shader_stage(fragment)
 
-layout(location = 0) in vec3 fragColor;
-layout(location = 1) in vec2 uv;
+layout(location = 0) in vec3 vertPos;
+layout(location = 1) in vec3 fragColor;
+layout(location = 2) in vec2 uv;
+layout(location = 3) in vec3 fragNormal;
 layout(location = 0) out vec4 outColor;
+
+layout(binding = 0) uniform UniformBufferObject {
+    mat4 view;
+    mat4 proj;
+} ubo;
 
 layout( push_constant ) uniform constants {
     mat4 model;
@@ -11,12 +18,8 @@ layout( push_constant ) uniform constants {
 } push_consts;
 
 void main() {
-    float time = push_consts.time;
-
     outColor = vec4(
-        abs(uv.x + sin(time)),
-        abs(uv.y + sin(time)),
-        abs(fragColor.b + sin(time)),
+        vertPos,
         1.0
     );
 }
