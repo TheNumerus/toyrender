@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, IntoVulkanError, RenderPass, SwapChain, SwapChainImageView, VulkanError};
+use crate::vulkan::{Device, ImageView, IntoVulkanError, RenderPass, SwapChain, VulkanError};
 use ash::vk;
 use ash::vk::Framebuffer;
 use std::rc::Rc;
@@ -13,13 +13,13 @@ impl SwapChainFramebuffer {
         device: Rc<Device>,
         render_pass: &RenderPass,
         swapchain: &SwapChain,
-        image_view: &SwapChainImageView,
+        image_views: &[&ImageView],
     ) -> Result<Self, VulkanError> {
-        let attachments = [image_view.inner];
+        let attachments = image_views.iter().map(|&w| w.inner).collect::<Vec<_>>();
 
         let framebuffer_info = vk::FramebufferCreateInfo {
             render_pass: render_pass.inner,
-            attachment_count: 1,
+            attachment_count: attachments.len() as u32,
             p_attachments: attachments.as_ptr(),
             width: swapchain.extent.width,
             height: swapchain.extent.height,

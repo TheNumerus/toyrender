@@ -1,22 +1,27 @@
-use crate::vulkan::{Device, IntoVulkanError, SwapChain, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use ash::vk::{Image, ImageView};
+use ash::vk::{Image, ImageView as RawImageView};
 use std::rc::Rc;
 
-pub struct SwapChainImageView {
-    pub inner: ImageView,
+pub struct ImageView {
+    pub inner: RawImageView,
     device: Rc<Device>,
 }
 
-impl SwapChainImageView {
-    pub fn new(device: Rc<Device>, image: Image, swapchain: &SwapChain) -> Result<Self, VulkanError> {
+impl ImageView {
+    pub fn new(
+        device: Rc<Device>,
+        image: Image,
+        format: vk::Format,
+        aspect_flags: vk::ImageAspectFlags,
+    ) -> Result<Self, VulkanError> {
         let create_info = vk::ImageViewCreateInfo {
             image,
             view_type: vk::ImageViewType::TYPE_2D,
-            format: swapchain.format.format,
+            format,
             components: vk::ComponentMapping::default(),
             subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
+                aspect_mask: aspect_flags,
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
@@ -36,7 +41,7 @@ impl SwapChainImageView {
     }
 }
 
-impl Drop for SwapChainImageView {
+impl Drop for ImageView {
     fn drop(&mut self) {
         unsafe { self.device.inner.destroy_image_view(self.inner, None) }
     }

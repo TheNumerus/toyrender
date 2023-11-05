@@ -2,9 +2,9 @@ use crate::app::App;
 use crate::err::AppError;
 use crate::scene::Scene;
 use crate::vulkan::{
-    Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, Device, DeviceQueryResult, Fence, Instance,
-    Pipeline, RenderPass, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain, SwapChainFramebuffer,
-    SwapChainImageView, UniformDescriptorSetLayout, VulkanError,
+    Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, Device, DeviceQueryResult, Fence, Image,
+    ImageView, Instance, Pipeline, RenderPass, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain,
+    SwapChainFramebuffer, UniformDescriptorSetLayout, VulkanError,
 };
 use ash::{vk, Entry};
 use std::rc::Rc;
@@ -16,8 +16,10 @@ pub struct VulkanRenderer {
     pub device: Rc<Device>,
     pub swap_chain: SwapChain,
     pub surface: Surface,
-    pub swap_chain_image_views: Vec<SwapChainImageView>,
+    pub swap_chain_image_views: Vec<ImageView>,
     pub swap_chain_fbs: Vec<SwapChainFramebuffer>,
+    pub depth_image: Image,
+    pub depth_image_view: ImageView,
     pub pipeline: Pipeline,
     pub render_pass: RenderPass,
     pub command_pool: CommandPool,
@@ -85,9 +87,28 @@ impl VulkanRenderer {
             &descriptor_layouts,
         )?;
 
+        let extent_3d = vk::Extent3D {
+            width: swap_chain.extent.width,
+            height: swap_chain.extent.height,
+            depth: 1,
+        };
+        let depth_image = Image::new(
+            device.clone(),
+            vk::Format::D32_SFLOAT,
+            extent_3d,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        )?;
+
+        let depth_image_view = ImageView::new(
+            device.clone(),
+            depth_image.inner,
+            vk::Format::D32_SFLOAT,
+            vk::ImageAspectFlags::DEPTH,
+        )?;
+
         let swap_chain_fbs = swap_chain_image_views
             .iter()
-            .map(|iw| SwapChainFramebuffer::new(device.clone(), &render_pass, &swap_chain, iw))
+            .map(|iw| SwapChainFramebuffer::new(device.clone(), &render_pass, &swap_chain, &[iw, &depth_image_view]))
             .collect::<Result<Vec<_>, _>>()?;
 
         let descriptor_pool = DescriptorPool::new(device.clone(), MAX_FRAMES_IN_FLIGHT as u32)?;
@@ -145,6 +166,8 @@ impl VulkanRenderer {
             swap_chain,
             swap_chain_image_views,
             swap_chain_fbs,
+            depth_image,
+            depth_image_view,
             pipeline,
             render_pass,
             command_pool,
@@ -268,7 +291,7 @@ impl VulkanRenderer {
         self.swap_chain_fbs = self
             .swap_chain_image_views
             .iter()
-            .map(|iw| SwapChainFramebuffer::new(self.device.clone(), &self.render_pass, &self.swap_chain, iw))
+            .map(|iw| SwapChainFramebuffer::new(self.device.clone(), &self.render_pass, &self.swap_chain, &[iw]))
             .collect::<Result<Vec<_>, _>>()?;
 
         self.pipeline.viewport.width = self.swap_chain.extent.width as f32;
@@ -288,11 +311,16 @@ impl VulkanRenderer {
     ) -> Result<(), VulkanError> {
         command_buffer.begin()?;
 
-        let clear_color = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.0, 0.0, 0.0, 1.0],
+        let clears = [
+            vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.0, 1.0],
+                },
             },
-        };
+            vk::ClearValue {
+                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+            },
+        ];
 
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_pass.inner,
@@ -301,8 +329,8 @@ impl VulkanRenderer {
                 offset: vk::Offset2D::default(),
                 extent: self.swap_chain.extent,
             },
-            clear_value_count: 1,
-            p_clear_values: &clear_color,
+            clear_value_count: clears.len() as u32,
+            p_clear_values: clears.as_ptr(),
             ..Default::default()
         };
 

@@ -70,7 +70,7 @@ impl Pipeline {
             polygon_mode: vk::PolygonMode::FILL,
             line_width: 1.0,
             cull_mode: vk::CullModeFlags::BACK,
-            front_face: vk::FrontFace::CLOCKWISE,
+            front_face: vk::FrontFace::COUNTER_CLOCKWISE,
             depth_bias_enable: vk::FALSE,
             ..Default::default()
         };
@@ -118,6 +118,17 @@ impl Pipeline {
                 .map_to_err("Cannot create pipeline layout")?
         };
 
+        let depth_stencil = vk::PipelineDepthStencilStateCreateInfo {
+            depth_test_enable: vk::TRUE,
+            depth_write_enable: vk::TRUE,
+            depth_compare_op: vk::CompareOp::LESS,
+            depth_bounds_test_enable: vk::FALSE,
+            min_depth_bounds: 0.0,
+            max_depth_bounds: 1.0,
+            stencil_test_enable: vk::FALSE,
+            ..Default::default()
+        };
+
         let pipeline_info = vk::GraphicsPipelineCreateInfo {
             stage_count: stages.len() as u32,
             p_stages: stages.as_ptr(),
@@ -128,6 +139,7 @@ impl Pipeline {
             p_multisample_state: &multisampling,
             p_color_blend_state: &color_blending,
             p_dynamic_state: &dynamic_state,
+            p_depth_stencil_state: &depth_stencil,
             layout,
             render_pass: render_pass.inner,
             subpass: 0,

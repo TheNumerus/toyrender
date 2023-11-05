@@ -6,10 +6,9 @@ use vk::PresentModeKHR;
 
 use super::{Instance, VulkanError};
 use crate::app::App;
-use crate::vulkan::{Device, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
+use crate::vulkan::{Device, ImageView, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
 pub mod framebuffer;
-pub mod image_view;
 
 pub struct SwapChain {
     pub swapchain: SwapchainKHR,
@@ -137,10 +136,17 @@ impl SwapChain {
         Ok(())
     }
 
-    pub fn create_image_views(&self) -> Result<Vec<image_view::SwapChainImageView>, VulkanError> {
+    pub fn create_image_views(&self) -> Result<Vec<ImageView>, VulkanError> {
         self.images
             .iter()
-            .map(|&image| image_view::SwapChainImageView::new(self.device.clone(), image, self))
+            .map(|&image| {
+                ImageView::new(
+                    self.device.clone(),
+                    image,
+                    self.format.format,
+                    vk::ImageAspectFlags::COLOR,
+                )
+            })
             .collect::<Result<Vec<_>, _>>()
     }
 
