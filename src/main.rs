@@ -14,7 +14,6 @@ mod scene;
 mod vulkan;
 
 use crate::input::InputMapper;
-use crate::mesh::MeshInstance;
 use err::AppError;
 use renderer::FrameContext;
 use scene::Scene;
@@ -25,33 +24,30 @@ fn main() -> Result<(), AppError> {
     let mut app = app::App::create();
     let mut renderer = renderer::VulkanRenderer::init(&app)?;
 
-    let sphere = include_bytes!("../meshes/sphere.glb");
-    let axes = include_bytes!("../meshes/axes.glb");
-
-    let (shape, indices) = import::extract_mesh(axes)?;
-    let mesh = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
-    let mesh = std::rc::Rc::new(mesh);
-
-    let (shape, indices) = import::extract_mesh(sphere)?;
-    let mesh_2 = mesh::Mesh::new(renderer.device.clone(), &renderer.command_pool, &shape, &indices)?;
-    let mesh_2 = std::rc::Rc::new(mesh_2);
-
-    let instance = MeshInstance::new(mesh);
-    let mut instance_2 = MeshInstance::new(mesh_2);
+    let scene_file = include_bytes!("../meshes/room.glb");
+    let axes_scene_file = include_bytes!("../meshes/axes.glb");
+    let (_meshes, instances) = import::extract_scene(renderer.device.clone(), &renderer.command_pool, scene_file)?;
+    let (_meshes, instances_arrows) =
+        import::extract_scene(renderer.device.clone(), &renderer.command_pool, axes_scene_file)?;
 
     let mut input_mapper = setup_input_mapper();
 
     let mut scene = Scene::new();
-    scene.camera.position = nalgebra_glm::Vec3::new(2.2, -5.0, 3.1);
+    scene.camera.position = nalgebra_glm::Vec3::new(0.0, 0.0, 5.0);
 
-    scene.camera.rotation.x = 1.15;
-    scene.camera.rotation.z = 0.3;
-    scene.meshes.push(instance);
+    scene.camera.rotation.x = 1.35;
+    scene.camera.rotation.z = -0.2;
+    scene.camera.fov = 90.0;
 
-    instance_2
-        .transform
-        .append_translation_mut(&nalgebra_glm::Vec3::new(2.0, 2.0, 0.0));
-    scene.meshes.push(instance_2);
+    for ins in instances {
+        scene.meshes.push(ins);
+    }
+
+    for mut ins in instances_arrows {
+        ins.transform
+            .append_translation_mut(&nalgebra_glm::Vec3::new(0.0, 0.0, 2.0));
+        scene.meshes.push(ins);
+    }
 
     let start = Instant::now();
     let mut frame_end = Instant::now();

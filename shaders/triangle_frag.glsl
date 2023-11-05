@@ -18,8 +18,16 @@ layout( push_constant ) uniform constants {
 } push_consts;
 
 void main() {
+    vec3 lightPos = vec3(0.0, 0.0, 4.0);
+
+    vec3 delta = normalize(lightPos - vertPos);
+    float shade = max(dot(delta, normalize(fragNormal)), 0.0);
+
+    vec3 loc = inverse(ubo.view)[3].xyz;
+    float fresnel = pow(1.0 - max(dot(normalize(loc - vertPos), normalize(fragNormal)), 0.0), 4.0);
+
     outColor = vec4(
-        vertPos,
+        (fragColor) * (vec3(shade) + 0.1) + vec3(fresnel) * 0.1,
         1.0
     );
 }

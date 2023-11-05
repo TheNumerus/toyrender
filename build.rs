@@ -23,7 +23,7 @@ fn main() {
             .unwrap();
 
         if !res.status.success() {
-            panic!("{:?}", String::from_utf8_lossy(&res.stderr));
+            panic!("{}", String::from_utf8_lossy(&res.stderr));
         }
 
         println!("Compiling {} to {}", name.to_str().unwrap(), final_name);

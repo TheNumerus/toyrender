@@ -207,8 +207,8 @@ impl VulkanRenderer {
         let mut proj = nalgebra_glm::perspective_rh_zo(
             aspect_ratio,
             (scene.camera.fov / aspect_ratio) / 180.0 * std::f32::consts::PI,
-            0.001,
-            50.0,
+            0.01,
+            5000.0,
         );
 
         proj.m22 *= -1.0;
