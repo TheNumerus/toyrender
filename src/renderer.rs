@@ -1,4 +1,3 @@
-use crate::app::App;
 use crate::err::AppError;
 use crate::scene::Scene;
 use crate::vulkan::{
@@ -6,7 +5,9 @@ use crate::vulkan::{
     ImageView, Instance, Pipeline, RenderPass, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain,
     SwapChainFramebuffer, UniformDescriptorSetLayout, VulkanError,
 };
+use ash::vk::Handle;
 use ash::{vk, Entry};
+use sdl2::video::Window;
 use std::rc::Rc;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -36,14 +37,15 @@ pub struct VulkanRenderer {
 }
 
 impl VulkanRenderer {
-    pub fn init(app: &App) -> Result<Self, AppError> {
+    pub fn init(window: &Window) -> Result<Self, AppError> {
         let entry = unsafe { Entry::load().expect("cannot load vulkan entry") };
 
-        let instance = Rc::new(Instance::new(
-            &entry,
-            &app.window.vulkan_instance_extensions().unwrap(),
-        )?);
-        let surface = Surface::new(&instance, &entry, app.create_vulkan_surface(&instance)?)?;
+        let instance = Rc::new(Instance::new(&entry, &window.vulkan_instance_extensions().unwrap())?);
+
+        let surface = window
+            .vulkan_create_surface(instance.inner.handle().as_raw() as usize)
+            .map_err(AppError::Other)?;
+        let surface = Surface::new(&instance, &entry, surface)?;
 
         let devices = match Device::query_applicable(&instance, &surface)? {
             DeviceQueryResult::ApplicableDevices(d) => Ok(d),
@@ -53,7 +55,7 @@ impl VulkanRenderer {
 
         let device = Rc::new(Device::new(instance.clone(), devices[0], &surface)?);
 
-        let swap_chain = SwapChain::new(device.clone(), &instance, app, &surface)?;
+        let swap_chain = SwapChain::new(device.clone(), &instance, window.drawable_size(), &surface)?;
         let swap_chain_image_views = swap_chain.create_image_views()?;
 
         let vert_module = ShaderModule::new(
@@ -186,8 +188,8 @@ impl VulkanRenderer {
 
     pub fn render_frame(
         &mut self,
-        app: &App,
-        scene: &crate::scene::Scene,
+        scene: &Scene,
+        drawable_size: (u32, u32),
         context: &FrameContext,
     ) -> Result<(), VulkanError> {
         self.in_flight[self.current_frame].wait()?;
@@ -201,7 +203,7 @@ impl VulkanRenderer {
         let framebuffer = &self.swap_chain_fbs[image_index as usize];
         let descriptor_set = &self.descriptor_sets[self.current_frame];
 
-        let aspect_ratio = app.window.drawable_size();
+        let aspect_ratio = drawable_size;
         let aspect_ratio = aspect_ratio.0 as f32 / aspect_ratio.1 as f32;
 
         let mut proj = nalgebra_glm::perspective_rh_zo(
@@ -225,7 +227,7 @@ impl VulkanRenderer {
             ))?;
         }
 
-        self.record_command_buffer(command_buffer, framebuffer, descriptor_set, scene, &context.total_time)?;
+        self.record_command_buffer(command_buffer, framebuffer, descriptor_set, &scene, &context.total_time)?;
 
         let wait_semaphores = [self.img_available[self.current_frame].inner];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -272,7 +274,7 @@ impl VulkanRenderer {
         self.device.wait_idle()?;
 
         if is_suboptimal {
-            self.resize(app)?;
+            self.resize(drawable_size)?;
         }
 
         self.current_frame = (self.current_frame + 1) % self.max_frames_in_flight;
@@ -280,18 +282,46 @@ impl VulkanRenderer {
         Ok(())
     }
 
-    pub fn resize(&mut self, app: &App) -> Result<(), VulkanError> {
+    pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), VulkanError> {
         // need to drop before creating new ones
         self.swap_chain_fbs.clear();
         self.swap_chain_image_views.clear();
 
-        self.swap_chain.recreate(self.device.clone(), app, &self.surface)?;
+        self.swap_chain
+            .recreate(self.device.clone(), drawable_size, &self.surface)?;
 
         self.swap_chain_image_views = self.swap_chain.create_image_views()?;
+
+        let extent_3d = vk::Extent3D {
+            width: self.swap_chain.extent.width,
+            height: self.swap_chain.extent.height,
+            depth: 1,
+        };
+        self.depth_image = Image::new(
+            self.device.clone(),
+            vk::Format::D32_SFLOAT,
+            extent_3d,
+            vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+        )?;
+
+        self.depth_image_view = ImageView::new(
+            self.device.clone(),
+            self.depth_image.inner,
+            vk::Format::D32_SFLOAT,
+            vk::ImageAspectFlags::DEPTH,
+        )?;
+
         self.swap_chain_fbs = self
             .swap_chain_image_views
             .iter()
-            .map(|iw| SwapChainFramebuffer::new(self.device.clone(), &self.render_pass, &self.swap_chain, &[iw]))
+            .map(|iw| {
+                SwapChainFramebuffer::new(
+                    self.device.clone(),
+                    &self.render_pass,
+                    &self.swap_chain,
+                    &[iw, &self.depth_image_view],
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         self.pipeline.viewport.width = self.swap_chain.extent.width as f32;

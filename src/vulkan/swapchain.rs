@@ -5,7 +5,6 @@ use std::rc::Rc;
 use vk::PresentModeKHR;
 
 use super::{Instance, VulkanError};
-use crate::app::App;
 use crate::vulkan::{Device, ImageView, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
 pub mod framebuffer;
@@ -20,12 +19,17 @@ pub struct SwapChain {
 }
 
 impl SwapChain {
-    pub fn new(device: Rc<Device>, instance: &Instance, app: &App, surface: &Surface) -> Result<Self, VulkanError> {
+    pub fn new(
+        device: Rc<Device>,
+        instance: &Instance,
+        drawable_size: (u32, u32),
+        surface: &Surface,
+    ) -> Result<Self, VulkanError> {
         let swapchain_support = Device::query_swapchain_support(device.physical_device, surface)?;
 
         let swap_format = Self::choose_swap_surface_format(&swapchain_support);
         let swap_present_mode = Self::choose_swap_present_mode(&swapchain_support);
-        let swap_extent = Self::choose_swap_extent(&swapchain_support, app);
+        let swap_extent = Self::choose_swap_extent(&swapchain_support, drawable_size);
 
         let image_count = swapchain_support.capabilities.min_image_count + 1;
 
@@ -80,13 +84,18 @@ impl SwapChain {
         })
     }
 
-    pub fn recreate(&mut self, device: Rc<Device>, app: &App, surface: &Surface) -> Result<(), VulkanError> {
+    pub fn recreate(
+        &mut self,
+        device: Rc<Device>,
+        drawable_size: (u32, u32),
+        surface: &Surface,
+    ) -> Result<(), VulkanError> {
         self.images.clear();
 
         let swapchain_support = Device::query_swapchain_support(device.physical_device, surface)?;
 
         let swap_present_mode = Self::choose_swap_present_mode(&swapchain_support);
-        self.extent = Self::choose_swap_extent(&swapchain_support, app);
+        self.extent = Self::choose_swap_extent(&swapchain_support, drawable_size);
 
         let image_count = swapchain_support.capabilities.min_image_count + 1;
 
@@ -178,11 +187,11 @@ impl SwapChain {
         PresentModeKHR::FIFO
     }
 
-    fn choose_swap_extent(swapchain_support: &SwapChainSupport, app: &App) -> Extent2D {
+    fn choose_swap_extent(swapchain_support: &SwapChainSupport, drawable_size: (u32, u32)) -> Extent2D {
         if swapchain_support.capabilities.current_extent.width != u32::MAX {
             swapchain_support.capabilities.current_extent
         } else {
-            let (width, height) = app.window.vulkan_drawable_size();
+            let (width, height) = drawable_size;
 
             Extent2D {
                 width: width.clamp(
