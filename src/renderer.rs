@@ -3,11 +3,12 @@ use crate::scene::Scene;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, Device, DeviceQueryResult, Fence, Image,
     ImageView, Instance, Pipeline, RenderPass, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain,
-    SwapChainFramebuffer, UniformDescriptorSetLayout, VulkanError,
+    SwapChainFramebuffer, UniformDescriptorSetLayout, VulkanError, VulkanMesh,
 };
 use ash::vk::Handle;
 use ash::{vk, Entry};
 use sdl2::video::Window;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -30,6 +31,7 @@ pub struct VulkanRenderer {
     pub descriptor_sets: Vec<DescriptorSet>,
     pub uniform_buffers: Vec<Buffer>,
     pub current_frame: usize,
+    meshes: HashMap<u64, VulkanMesh>,
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     in_flight: Vec<Fence>,
@@ -181,6 +183,7 @@ impl VulkanRenderer {
             descriptor_layouts,
             uniform_buffers,
             in_flight,
+            meshes: HashMap::new(),
             current_frame: 0,
             max_frames_in_flight: MAX_FRAMES_IN_FLIGHT,
         })
@@ -192,6 +195,8 @@ impl VulkanRenderer {
         drawable_size: (u32, u32),
         context: &FrameContext,
     ) -> Result<(), VulkanError> {
+        self.prepare_meshes(scene)?;
+
         self.in_flight[self.current_frame].wait()?;
         let (image_index, _is_suboptimal) = self
             .swap_chain
@@ -208,7 +213,7 @@ impl VulkanRenderer {
 
         let mut proj = nalgebra_glm::perspective_rh_zo(
             aspect_ratio,
-            (scene.camera.fov / aspect_ratio) / 180.0 * std::f32::consts::PI,
+            (scene.camera.fov / aspect_ratio) / (180.0 / std::f32::consts::PI),
             0.01,
             5000.0,
         );
@@ -344,7 +349,7 @@ impl VulkanRenderer {
         let clears = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0.0, 0.0, 0.0, 1.0],
+                    float32: [0.01, 0.01, 0.01, 1.0],
                 },
             },
             vk::ClearValue {
@@ -371,9 +376,10 @@ impl VulkanRenderer {
         command_buffer.set_scissor(self.pipeline.scissor);
 
         for instance in &scene.meshes {
-            let mesh = &instance.instance;
+            let mesh = &instance.resource;
+            let mesh_data = &self.meshes[&mesh.id];
 
-            command_buffer.bind_vertex_buffers(&[&mesh.buf], &[0]);
+            command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
 
             unsafe {
                 let mut constants = [0_u8; 68];
@@ -392,8 +398,8 @@ impl VulkanRenderer {
 
                 self.device.inner.cmd_bind_index_buffer(
                     command_buffer.inner,
-                    mesh.buf.inner.inner,
-                    mesh.indices_offset,
+                    mesh_data.buf.inner.inner,
+                    mesh_data.indices_offset,
                     vk::IndexType::UINT32,
                 );
 
@@ -408,12 +414,22 @@ impl VulkanRenderer {
 
                 self.device
                     .inner
-                    .cmd_draw_indexed(command_buffer.inner, mesh.index_count as u32, 1, 0, 0, 0);
+                    .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
             }
         }
 
         command_buffer.end_render_pass();
         command_buffer.end()
+    }
+
+    fn prepare_meshes(&mut self, scene: &Scene) -> Result<(), VulkanError> {
+        for instance in &scene.meshes {
+            if let std::collections::hash_map::Entry::Vacant(e) = self.meshes.entry(instance.resource.id) {
+                let mesh = VulkanMesh::new(self.device.clone(), &self.command_pool, &instance.resource)?;
+                e.insert(mesh);
+            }
+        }
+        Ok(())
     }
 }
 

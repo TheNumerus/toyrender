@@ -1,52 +1,50 @@
-use crate::vulkan::{CommandPool, Device, Vertex, VertexIndexBuffer, VulkanError};
+use crate::vulkan::Vertex;
 use nalgebra_glm::{vec3, vec4, Mat4};
+use std::borrow::Cow;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
-pub struct Mesh {
-    pub buf: VertexIndexBuffer,
-    pub indices_offset: u64,
-    pub index_count: usize,
+pub static MESH_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+pub struct MeshResource {
+    pub id: u64,
+    pub vertices: Vec<Vertex>,
+    pub indices: Indices,
 }
 
-impl Mesh {
-    pub fn new(
-        device: Rc<Device>,
-        cmd_pool: &CommandPool,
-        vertices: &[Vertex],
-        indices: &[u32],
-    ) -> Result<Self, VulkanError> {
-        let total_size = std::mem::size_of_val(vertices) + std::mem::size_of_val(indices);
+impl MeshResource {
+    pub fn new(vertices: Vec<Vertex>, indices: Indices) -> Self {
+        Self {
+            id: MESH_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
+            vertices,
+            indices,
+        }
+    }
+}
 
-        let mut data = vec![0; total_size];
+pub enum Indices {
+    U16(Vec<u16>),
+    U32(Vec<u32>),
+}
 
-        let indices_offset = vertices.len() as u64 * std::mem::size_of::<Vertex>() as u64;
-
-        data[0..indices_offset as usize].copy_from_slice(unsafe {
-            std::slice::from_raw_parts(vertices.as_ptr() as *const u8, std::mem::size_of_val(vertices))
-        });
-        data[indices_offset as usize..].copy_from_slice(unsafe {
-            std::slice::from_raw_parts(indices.as_ptr() as *const u8, std::mem::size_of_val(indices))
-        });
-
-        let buf = VertexIndexBuffer::new(device, cmd_pool, &data)?;
-
-        Ok(Self {
-            buf,
-            indices_offset,
-            index_count: indices.len(),
-        })
+impl Indices {
+    pub fn to_vec_u32(&self) -> Cow<Vec<u32>> {
+        match &self {
+            Indices::U16(v) => Cow::Owned(v.iter().map(|&r| r as u32).collect()),
+            Indices::U32(v) => Cow::Borrowed(v),
+        }
     }
 }
 
 pub struct MeshInstance {
-    pub instance: Rc<Mesh>,
+    pub resource: Rc<MeshResource>,
     pub transform: Mat4,
 }
 
 impl MeshInstance {
-    pub fn new(instance: Rc<Mesh>) -> Self {
+    pub fn new(resource: Rc<MeshResource>) -> Self {
         Self {
-            instance,
+            resource,
             transform: Mat4::identity(),
         }
     }

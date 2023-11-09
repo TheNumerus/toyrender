@@ -11,7 +11,7 @@ pub struct PerspectiveCamera {
 impl PerspectiveCamera {
     pub fn new() -> Self {
         Self {
-            fov: 50.0,
+            fov: 70.0,
             transform: Mat4::new_translation(&Vec3::from_element(0.0)),
             position: Vec3::from_element(0.0),
             rotation: Vec3::from_element(0.0),

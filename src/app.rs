@@ -9,7 +9,7 @@ use sdl2::event::{Event, WindowEvent};
 use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub struct App {
     pub sdl_context: Sdl,
@@ -72,7 +72,7 @@ impl App {
                 AppError::Import(msg)
             })?;
 
-            let (_meshes, instances) = import::extract_scene(renderer.device.clone(), &renderer.command_pool, &file)?;
+            let (_meshes, instances) = import::extract_scene(&file)?;
             scene.meshes.extend(instances);
         }
 
@@ -81,6 +81,7 @@ impl App {
 
         let mouse_sens = 0.002;
         let movement_speed = 4.0;
+        let mut focused = true;
 
         'running: loop {
             let mut resized = false;
@@ -102,8 +103,20 @@ impl App {
                     } => {
                         resized = true;
                     }
+                    Event::Window {
+                        win_event: WindowEvent::FocusGained,
+                        ..
+                    } => {
+                        focused = true;
+                    }
+                    Event::Window {
+                        win_event: WindowEvent::FocusLost,
+                        ..
+                    } => {
+                        focused = false;
+                    }
                     Event::DropFile { filename, .. } => {
-                        Self::on_file_drop(filename, &renderer, &mut scene)?;
+                        Self::on_file_drop(filename, &mut scene)?;
                     }
                     Event::MouseMotion {
                         xrel, yrel, mousestate, ..
@@ -142,6 +155,15 @@ impl App {
             };
 
             renderer.render_frame(&scene, window.drawable_size(), &context)?;
+
+            if !focused {
+                let frametime_target = 1.0 / 30.0;
+
+                if delta < frametime_target {
+                    std::thread::sleep(Duration::from_secs_f32(frametime_target - delta));
+                }
+            };
+
             eprint!("{} FPS\r", 1.0 / delta);
 
             if resized {
@@ -153,7 +175,7 @@ impl App {
         Ok(())
     }
 
-    fn on_file_drop(filename: String, renderer: &VulkanRenderer, scene: &mut Scene) -> Result<(), AppError> {
+    fn on_file_drop(filename: String, scene: &mut Scene) -> Result<(), AppError> {
         info!("loading file `{filename}`");
         let start = Instant::now();
 
@@ -171,7 +193,7 @@ impl App {
             }
         };
 
-        let (_meshes, instances) = import::extract_scene(renderer.device.clone(), &renderer.command_pool, &file)?;
+        let (_meshes, instances) = import::extract_scene(&file)?;
         scene.meshes.extend(instances);
 
         let end = Instant::now();

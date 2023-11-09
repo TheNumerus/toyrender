@@ -1,19 +1,48 @@
 use crate::err::AppError;
-use crate::mesh::{Mesh, MeshInstance};
-use crate::vulkan::{CommandPool, Device, Vertex};
+use crate::mesh::{Indices, MeshInstance, MeshResource};
+use crate::vulkan::Vertex;
 use gltf::buffer::Data;
+use gltf::json::accessor::ComponentType;
 use gltf::mesh::Mode;
-use gltf::{Accessor, Primitive, Semantic};
+use gltf::{Accessor, Gltf, Primitive, Semantic};
 use nalgebra::Quaternion;
 use nalgebra_glm::{inverse, quat_cast, vec3, Mat4, Vec2, Vec3, Vec4};
 use std::rc::Rc;
 
-pub fn extract_mesh_internal(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Vec<u32>), AppError> {
+fn get_mesh_indices_type(mesh: &gltf::Mesh, buffers: &[Data]) -> Result<IndexType, AppError> {
+    let mut total = 0;
+
+    for primitive in mesh.primitives().filter(|p| p.mode() == Mode::Triangles) {
+        let accessors = Accessors::new(&primitive, buffers)?;
+
+        match accessors.indices {
+            IndicesAccessor::U16(i) => {
+                total += i.len();
+            }
+            IndicesAccessor::U32(_) => {
+                return Ok(IndexType::U32);
+            }
+        }
+    }
+
+    if total >= u16::MAX as usize {
+        return Ok(IndexType::U32);
+    }
+
+    Ok(IndexType::U16)
+}
+
+fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Indices), AppError> {
     let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
     let gltf_normal_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
 
     let mut vertices_total = Vec::new();
-    let mut indices_total = Vec::new();
+    let indices_type = get_mesh_indices_type(&mesh, buffers)?;
+    let mut indices_total = match indices_type {
+        IndexType::U16 => Indices::U16(Vec::new()),
+        IndexType::U32 => Indices::U32(Vec::new()),
+    };
+
     let mut offset = 0;
 
     for primitive in mesh.primitives().filter(|p| p.mode() == Mode::Triangles) {
@@ -57,12 +86,20 @@ pub fn extract_mesh_internal(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<
             vertices.push(vertex);
         }
 
-        let indices = accessors.indices.iter().map(|&a| a as u32 + offset).collect::<Vec<_>>();
+        match accessors.indices {
+            IndicesAccessor::U16(i) => match &mut indices_total {
+                Indices::U16(t) => t.extend(i.iter().map(|&a| a + offset as u16)),
+                Indices::U32(t) => t.extend(i.iter().map(|&a| a as u32 + offset)),
+            },
+            IndicesAccessor::U32(i) => match &mut indices_total {
+                Indices::U16(t) => t.extend(i.iter().map(|&a| a as u16 + offset as u16)),
+                Indices::U32(t) => t.extend(i.iter().map(|&a| a + offset)),
+            },
+        };
 
         let len = vertices.len();
 
         vertices_total.extend(vertices);
-        indices_total.extend(indices);
 
         offset += len as u32;
     }
@@ -70,27 +107,24 @@ pub fn extract_mesh_internal(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<
     Ok((vertices_total, indices_total))
 }
 
-pub fn extract_scene(
-    device: Rc<Device>,
-    cmd_pool: &CommandPool,
-    slice: &[u8],
-) -> Result<(Vec<Rc<Mesh>>, Vec<MeshInstance>), AppError> {
-    let (document, buffers, _images) = gltf::import_slice(slice)?;
+pub fn extract_scene(slice: &[u8]) -> Result<(Vec<Rc<MeshResource>>, Vec<MeshInstance>), AppError> {
+    let gltf = Gltf::from_slice(slice)?;
+    let buffers = gltf::import_buffers(&gltf.document, None, gltf.blob)?;
 
     let mut meshes = Vec::new();
     let mut instances = Vec::new();
 
     let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
 
-    for mesh in document.meshes() {
-        let (v, i) = extract_mesh_internal(mesh, &buffers)?;
+    for mesh in gltf.document.meshes() {
+        let (v, i) = extract_mesh(mesh, &buffers)?;
 
-        let m = Rc::new(Mesh::new(device.clone(), cmd_pool, &v, &i)?);
+        let m = Rc::new(MeshResource::new(v, i));
 
         meshes.push(m);
     }
 
-    for instance in document.scenes().next().unwrap().nodes() {
+    for instance in gltf.document.scenes().next().unwrap().nodes() {
         let mut ins = MeshInstance::new(meshes[instance.mesh().unwrap().index()].clone());
 
         let (pos, rot, scale) = instance.transform().decomposed();
@@ -109,10 +143,20 @@ pub fn extract_scene(
     Ok((meshes, instances))
 }
 
+enum IndexType {
+    U16,
+    U32,
+}
+
+enum IndicesAccessor<'a> {
+    U16(&'a [u16]),
+    U32(&'a [u32]),
+}
+
 struct Accessors<'a> {
     pos: &'a [f32],
     normal: &'a [f32],
-    indices: &'a [u16],
+    indices: IndicesAccessor<'a>,
     uv: Option<&'a [f32]>,
     color: Option<&'a [u16]>,
     len: usize,
@@ -132,7 +176,7 @@ impl<'a> Accessors<'a> {
 
         let pos = Self::accessor_to_slice(pos.unwrap(), data);
         let normal = Self::accessor_to_slice(normal.unwrap(), data);
-        let indices = Self::accessor_to_slice(indices.unwrap(), data);
+        let indices = Self::accessor_to_indices(indices.unwrap(), data);
 
         let uv = uv.map(|uv| Self::accessor_to_slice(uv, data));
         let color = color.map(|color| Self::accessor_to_slice(color, data));
@@ -182,5 +226,13 @@ impl<'a> Accessors<'a> {
         };
 
         slice
+    }
+
+    fn accessor_to_indices(accessor: Accessor<'a>, data: &[Data]) -> IndicesAccessor<'a> {
+        match accessor.data_type() {
+            ComponentType::U16 => IndicesAccessor::U16(Self::accessor_to_slice(accessor, data)),
+            ComponentType::U32 => IndicesAccessor::U32(Self::accessor_to_slice(accessor, data)),
+            _ => panic!("invalid indices format in glTF"),
+        }
     }
 }
