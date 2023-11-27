@@ -3,12 +3,12 @@ use ash::vk;
 use std::rc::Rc;
 
 #[derive(Clone)]
-pub struct UniformDescriptorSetLayout {
+pub struct RtDescriptorSetLayout {
     pub inner: vk::DescriptorSetLayout,
     device: Rc<Device>,
 }
 
-impl UniformDescriptorSetLayout {
+impl RtDescriptorSetLayout {
     pub fn new(device: Rc<Device>, binding: u32, stages: vk::ShaderStageFlags) -> Result<Self, VulkanError> {
         let binding = vk::DescriptorSetLayoutBinding {
             binding,
@@ -35,7 +35,7 @@ impl UniformDescriptorSetLayout {
     }
 }
 
-impl Drop for UniformDescriptorSetLayout {
+impl Drop for RtDescriptorSetLayout {
     fn drop(&mut self) {
         unsafe { self.device.inner.destroy_descriptor_set_layout(self.inner, None) }
     }

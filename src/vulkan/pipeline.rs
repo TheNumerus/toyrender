@@ -1,5 +1,5 @@
 use crate::vulkan::vertex::Vertex;
-use crate::vulkan::{Device, IntoVulkanError, RenderPass, UniformDescriptorSetLayout, VulkanError};
+use crate::vulkan::{DescriptorSetLayout, Device, IntoVulkanError, RenderPass, VulkanError};
 use ash::vk;
 use ash::vk::{Extent2D, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
 use std::rc::Rc;
@@ -17,7 +17,8 @@ impl Pipeline {
         default_extent: Extent2D,
         render_pass: &RenderPass,
         stages: &[PipelineShaderStageCreateInfo],
-        descriptor_layouts: &[UniformDescriptorSetLayout],
+        descriptor_layouts: &[DescriptorSetLayout],
+        color_attachments: u32,
     ) -> Result<Self, VulkanError> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
@@ -87,11 +88,13 @@ impl Pipeline {
             ..Default::default()
         };
 
+        let color_attachments = vec![color_blend_attachment; color_attachments as usize];
+
         let color_blending = vk::PipelineColorBlendStateCreateInfo {
             logic_op_enable: vk::FALSE,
             logic_op: vk::LogicOp::COPY,
-            attachment_count: 1,
-            p_attachments: &color_blend_attachment,
+            attachment_count: color_attachments.len() as u32,
+            p_attachments: color_attachments.as_ptr(),
             ..Default::default()
         };
 

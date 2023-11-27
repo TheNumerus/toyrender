@@ -5,7 +5,10 @@ layout(location = 0) in vec3 vertPos;
 layout(location = 1) in vec3 fragColor;
 layout(location = 2) in vec2 uv;
 layout(location = 3) in vec3 fragNormal;
+
 layout(location = 0) out vec4 outColor;
+layout(location = 1) out vec4 outNormal;
+layout(location = 2) out float outDepth;
 
 layout(binding = 0) uniform UniformBufferObject {
     mat4 view;
@@ -18,16 +21,11 @@ layout( push_constant ) uniform constants {
 } push_consts;
 
 void main() {
-    vec3 lightPos = vec3(0.0, 0.0, 4.0);
-
-    vec3 delta = normalize(lightPos - vertPos);
-    float shade = max(dot(delta, normalize(fragNormal)), 0.0);
-
-    vec3 loc = inverse(ubo.view)[3].xyz;
-    float fresnel = pow(1.0 - max(dot(normalize(loc - vertPos), normalize(fragNormal)), 0.0), 4.0);
-
     outColor = vec4(
-        (fragColor) * (vec3(shade) + 0.1) + vec3(fresnel) * 0.1,
+        fragColor,
         1.0
     );
+
+    outNormal = vec4(fragNormal + 1.0 - 0.5, 1.0);
+    outDepth = gl_FragCoord.z;
 }

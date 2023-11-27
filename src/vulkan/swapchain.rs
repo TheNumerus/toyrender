@@ -7,8 +7,6 @@ use vk::PresentModeKHR;
 use super::{Instance, VulkanError};
 use crate::vulkan::{Device, ImageView, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
-pub mod framebuffer;
-
 pub struct SwapChain {
     pub swapchain: SwapchainKHR,
     pub format: SurfaceFormatKHR,

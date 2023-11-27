@@ -1,5 +1,5 @@
 use crate::vulkan::Vertex;
-use nalgebra_glm::{vec3, vec4, Mat4};
+use nalgebra_glm::{vec2, vec3, vec4, Mat4};
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -74,6 +74,32 @@ pub fn triangle() -> ([Vertex; 3], [u32; 3]) {
             },
         ],
         [0, 1, 2],
+    )
+}
+#[allow(dead_code)]
+pub fn fs_triangle() -> ([Vertex; 3], [u32; 3]) {
+    (
+        [
+            Vertex {
+                pos: vec3(-1.0, -3.0, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
+                color: vec4(1.0, 1.0, 1.0, 1.0),
+                uv: vec2(0.0, -1.0),
+            },
+            Vertex {
+                pos: vec3(3.0, 1.0, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
+                color: vec4(1.0, 1.0, 1.0, 1.0),
+                uv: vec2(2.0, 1.0),
+            },
+            Vertex {
+                pos: vec3(-1.0, 1.0, 0.0),
+                normal: vec3(0.0, 0.0, 1.0),
+                color: vec4(1.0, 1.0, 1.0, 1.0),
+                uv: vec2(0.0, 1.0),
+            },
+        ],
+        [0, 2, 1],
     )
 }
 

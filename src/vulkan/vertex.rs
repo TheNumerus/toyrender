@@ -4,6 +4,7 @@ use nalgebra_glm::{Vec2, Vec3, Vec4};
 use std::rc::Rc;
 
 #[repr(C)]
+#[derive(Copy, Clone)]
 pub struct Vertex {
     pub pos: Vec3,
     pub normal: Vec3,
@@ -72,7 +73,9 @@ impl VertexIndexBuffer {
             device.clone(),
             vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER
-                | vk::BufferUsageFlags::INDEX_BUFFER,
+                | vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
             data.len() as u64,
             false,

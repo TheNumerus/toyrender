@@ -48,7 +48,7 @@ impl ShaderModule {
             ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
             ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
         };
-        
+
         vk::PipelineShaderStageCreateInfo {
             stage,
             module: self.inner,

@@ -1,6 +1,9 @@
-use crate::vulkan::{Instance, IntoVulkanError, Surface, VulkanError, SWAPCHAIN_EXTENSION};
+use crate::vulkan::{
+    Instance, IntoVulkanError, Surface, VulkanError, DEFERRED_HOST_OPS_EXTENSION, RT_ACCELERATION_EXTENSION,
+    RT_PIPELINE_EXTENSION, SWAPCHAIN_EXTENSION,
+};
 use ash::vk;
-use ash::vk::{PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
+use ash::vk::{ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
 use ash::Device as RawDevice;
 use log::info;
 use std::collections::HashSet;
@@ -40,15 +43,10 @@ impl Device {
                     .map_to_err("cannot get device extensions")?
             };
 
-            let has_swapchain = extensions
-                .iter()
-                .filter(|ext| {
-                    let name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
-
-                    name == SWAPCHAIN_EXTENSION
-                })
-                .count()
-                != 0;
+            let has_swapchain = Self::has_extension(&extensions, SWAPCHAIN_EXTENSION);
+            let has_rt_pipeline = Self::has_extension(&extensions, RT_PIPELINE_EXTENSION);
+            let has_def_host_ops = Self::has_extension(&extensions, DEFERRED_HOST_OPS_EXTENSION);
+            let has_rt_acc = Self::has_extension(&extensions, RT_ACCELERATION_EXTENSION);
 
             let queue_families = Self::find_device_queue_families(device, instance, surface)?;
             let swapchain_support = Self::query_swapchain_support(device, surface)?;
@@ -56,6 +54,9 @@ impl Device {
             if queue_families.graphics.is_some()
                 && queue_families.present.is_some()
                 && has_swapchain
+                //&& has_rt_acc
+                //&& has_rt_pipeline
+                //&& has_def_host_ops
                 && !swapchain_support.present_modes.is_empty()
                 && !swapchain_support.formats.is_empty()
             {
@@ -89,7 +90,12 @@ impl Device {
             })
             .collect::<Vec<_>>();
 
-        let device_extensions = [SWAPCHAIN_EXTENSION];
+        let device_extensions = [
+            SWAPCHAIN_EXTENSION,
+            //RT_ACCELERATION_EXTENSION,
+            //RT_PIPELINE_EXTENSION,
+            //DEFERRED_HOST_OPS_EXTENSION,
+        ];
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
 
         let create_info = vk::DeviceCreateInfo {
@@ -232,6 +238,13 @@ impl Device {
         Ok(QueueFamilyIndices {
             graphics: graphics_family,
             present: present_family,
+        })
+    }
+
+    fn has_extension(extensions: &[ExtensionProperties], name: &CStr) -> bool {
+        extensions.iter().any(|ext| {
+            let ext_name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
+            name == ext_name
         })
     }
 }

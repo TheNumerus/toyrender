@@ -1,18 +1,18 @@
-use crate::vulkan::{Device, ImageView, IntoVulkanError, RenderPass, SwapChain, VulkanError};
+use crate::vulkan::{Device, ImageView, IntoVulkanError, RenderPass, VulkanError};
 use ash::vk;
-use ash::vk::Framebuffer;
+use ash::vk::{Extent2D, Framebuffer as RawFramebuffer};
 use std::rc::Rc;
 
-pub struct SwapChainFramebuffer {
-    pub inner: Framebuffer,
+pub struct Framebuffer {
+    pub inner: RawFramebuffer,
     device: Rc<Device>,
 }
 
-impl SwapChainFramebuffer {
+impl Framebuffer {
     pub fn new(
         device: Rc<Device>,
         render_pass: &RenderPass,
-        swapchain: &SwapChain,
+        extent: Extent2D,
         image_views: &[&ImageView],
     ) -> Result<Self, VulkanError> {
         let attachments = image_views.iter().map(|&w| w.inner).collect::<Vec<_>>();
@@ -21,8 +21,8 @@ impl SwapChainFramebuffer {
             render_pass: render_pass.inner,
             attachment_count: attachments.len() as u32,
             p_attachments: attachments.as_ptr(),
-            width: swapchain.extent.width,
-            height: swapchain.extent.height,
+            width: extent.width,
+            height: extent.height,
             layers: 1,
             ..Default::default()
         };
@@ -38,7 +38,7 @@ impl SwapChainFramebuffer {
     }
 }
 
-impl Drop for SwapChainFramebuffer {
+impl Drop for Framebuffer {
     fn drop(&mut self) {
         unsafe {
             self.device.inner.destroy_framebuffer(self.inner, None);
