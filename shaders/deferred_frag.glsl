@@ -10,7 +10,7 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outNormal;
 layout(location = 2) out float outDepth;
 
-layout(binding = 0) uniform UniformBufferObject {
+layout(set = 1, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
 } ubo;

@@ -1,5 +1,5 @@
 use crate::vulkan::vertex::Vertex;
-use crate::vulkan::{DescriptorSetLayout, Device, IntoVulkanError, RenderPass, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, RenderPass, VulkanError};
 use ash::vk;
 use ash::vk::{Extent2D, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
 use std::rc::Rc;
@@ -17,7 +17,7 @@ impl Pipeline {
         default_extent: Extent2D,
         render_pass: &RenderPass,
         stages: &[PipelineShaderStageCreateInfo],
-        descriptor_layouts: &[DescriptorSetLayout],
+        descriptor_layouts: &[vk::DescriptorSetLayout],
         color_attachments: u32,
     ) -> Result<Self, VulkanError> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
@@ -104,13 +104,11 @@ impl Pipeline {
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         }];
 
-        let dl = descriptor_layouts.iter().map(|l| l.inner).collect::<Vec<_>>();
-
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
             p_push_constant_ranges: ranges.as_ptr(),
             push_constant_range_count: ranges.len() as u32,
-            p_set_layouts: dl.as_ptr(),
-            set_layout_count: dl.len() as u32,
+            p_set_layouts: descriptor_layouts.as_ptr(),
+            set_layout_count: descriptor_layouts.len() as u32,
             ..Default::default()
         };
 

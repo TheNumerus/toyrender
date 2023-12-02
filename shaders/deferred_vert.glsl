@@ -11,7 +11,7 @@ layout(location = 1) out vec3 vertColor;
 layout(location = 2) out vec2 uvOut;
 layout(location = 3) out vec3 vertNormal;
 
-layout(binding = 0) uniform UniformBufferObject {
+layout(set = 1, binding = 0) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
 } ubo;

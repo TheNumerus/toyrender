@@ -125,7 +125,12 @@ pub fn extract_scene(slice: &[u8]) -> Result<(Vec<Rc<MeshResource>>, Vec<MeshIns
     }
 
     for instance in gltf.document.scenes().next().unwrap().nodes() {
-        let mut ins = MeshInstance::new(meshes[instance.mesh().unwrap().index()].clone());
+        let mesh = instance.mesh();
+
+        let mut ins = match mesh {
+            Some(m) => MeshInstance::new(meshes[m.index()].clone()),
+            None => continue,
+        };
 
         let (pos, rot, scale) = instance.transform().decomposed();
 

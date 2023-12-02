@@ -80,6 +80,7 @@ impl App {
         let mut frame_end = Instant::now();
 
         let mouse_sens = 0.002;
+        let scroll_sens = 0.5;
         let movement_speed = 4.0;
         let mut focused = true;
 
@@ -90,6 +91,7 @@ impl App {
             let delta = frame_start.duration_since(frame_end).as_secs_f32();
 
             let mut mouse = (0, 0);
+            let mut mouse_scroll = 0.0;
             let mut dragging;
 
             for event in event_pump.poll_iter() {
@@ -118,6 +120,9 @@ impl App {
                     Event::DropFile { filename, .. } => {
                         Self::on_file_drop(filename, &mut scene)?;
                     }
+                    Event::MouseWheel { y, .. } => {
+                        mouse_scroll = y as f32 * scroll_sens;
+                    }
                     Event::MouseMotion {
                         xrel, yrel, mousestate, ..
                     } => {
@@ -138,6 +143,7 @@ impl App {
 
             let directions = scene.camera.directions();
 
+            scene.camera.fov += mouse_scroll;
             scene.camera.position += (input_mapper.get_value(InputAxes::Up) * directions.up
                 + input_mapper.get_value(InputAxes::Forward) * directions.forward
                 + input_mapper.get_value(InputAxes::Right) * directions.right)

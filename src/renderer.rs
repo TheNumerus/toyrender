@@ -1,16 +1,19 @@
 use crate::err::AppError;
 use crate::mesh::MeshResource;
+use crate::renderer::descriptors::{DescLayout, RendererDescriptors};
 use crate::scene::Scene;
 use crate::vulkan::{
-    Buffer, CommandBuffer, CommandPool, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, DeviceQueryResult,
-    Fence, Framebuffer, Image, ImageView, Instance, Pipeline, RenderPass, Sampler, Semaphore, ShaderModule,
-    ShaderStage, Surface, SwapChain, VulkanError, VulkanMesh,
+    Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence, Framebuffer, Image,
+    ImageView, Instance, Pipeline, RenderPass, Sampler, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain,
+    VulkanError, VulkanMesh,
 };
 use ash::vk::{Extent2D, Extent3D, Handle};
 use ash::{vk, Entry};
 use sdl2::video::Window;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+mod descriptors;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -22,16 +25,19 @@ pub struct VulkanRenderer {
     pub swap_chain_image_views: Vec<ImageView>,
     pub swap_chain_fbs: Vec<Framebuffer>,
     pub gbuffer: GBuffer,
+    pub tonemap: Tonemap,
     pub pipeline_gb: Pipeline,
     pub pipeline_light: Pipeline,
+    pub pipeline_tonemap: Pipeline,
     pub render_pass_gb: RenderPass,
     pub render_pass_light: RenderPass,
+    pub render_pass_tonemap: RenderPass,
     pub command_pool: CommandPool,
     pub descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
-    pub descriptor_layouts: Vec<DescriptorSetLayout>,
-    pub descriptor_sets: Vec<DescriptorSet>,
+    pub descriptors: RendererDescriptors,
     pub uniform_buffers: Vec<Buffer>,
+    pub uniform_buffers_globals: Vec<Buffer>,
     pub current_frame: usize,
     meshes: HashMap<u64, VulkanMesh>,
     fs_quad: VulkanMesh,
@@ -90,40 +96,32 @@ impl VulkanRenderer {
             ShaderStage::Fragment,
             None,
         )?;
+        let tonemap_frag_module = ShaderModule::new(
+            include_bytes!("../build/tonemap_frag.spv"),
+            device.clone(),
+            ShaderStage::Fragment,
+            None,
+        )?;
 
         let light_stages = [light_vert_module.stage_info(), light_frag_module.stage_info()];
 
-        let descriptor_layouts = vec![DescriptorSetLayout::new(
-            device.clone(),
-            &[
-                vk::DescriptorSetLayoutBinding {
-                    binding: 0,
-                    descriptor_count: 1,
-                    stage_flags: vk::ShaderStageFlags::VERTEX
-                        | vk::ShaderStageFlags::FRAGMENT
-                        | vk::ShaderStageFlags::RAYGEN_KHR,
-                    descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                    ..Default::default()
-                },
-                vk::DescriptorSetLayoutBinding {
-                    binding: 1,
-                    descriptor_count: 3,
-                    stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::RAYGEN_KHR,
-                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    ..Default::default()
-                },
-            ],
-        )?];
+        let tonemap_stages = [light_vert_module.stage_info(), tonemap_frag_module.stage_info()];
+
+        let mut descriptors = RendererDescriptors::build(device.clone())?;
 
         let render_pass_gb = RenderPass::new_gbuffer(device.clone())?;
         let render_pass_light = RenderPass::new_light(device.clone())?;
+        let render_pass_tonemap = RenderPass::new_post_process(device.clone())?;
 
         let pipeline_gb = Pipeline::new(
             device.clone(),
             swap_chain.extent,
             &render_pass_gb,
             &deferred_stages,
-            &descriptor_layouts,
+            &[
+                descriptors.get_layout(DescLayout::Global).inner,
+                descriptors.get_layout(DescLayout::View).inner,
+            ],
             2,
         )?;
 
@@ -132,11 +130,28 @@ impl VulkanRenderer {
             swap_chain.extent,
             &render_pass_light,
             &light_stages,
-            &descriptor_layouts,
+            &[
+                descriptors.get_layout(DescLayout::Global).inner,
+                descriptors.get_layout(DescLayout::View).inner,
+                descriptors.get_layout(DescLayout::GBuffer).inner,
+            ],
             1,
         )?;
 
-        let extent_3d = vk::Extent3D {
+        let pipeline_tonemap = Pipeline::new(
+            device.clone(),
+            swap_chain.extent,
+            &render_pass_tonemap,
+            &tonemap_stages,
+            &[
+                descriptors.get_layout(DescLayout::Global).inner,
+                descriptors.get_layout(DescLayout::View).inner,
+                descriptors.get_layout(DescLayout::PostProcess).inner,
+            ],
+            1,
+        )?;
+
+        let extent_3d = Extent3D {
             width: swap_chain.extent.width,
             height: swap_chain.extent.height,
             depth: 1,
@@ -144,39 +159,32 @@ impl VulkanRenderer {
 
         let swap_chain_fbs = swap_chain_image_views
             .iter()
-            .map(|iw| Framebuffer::new(device.clone(), &render_pass_light, swap_chain.extent, &[iw]))
+            .map(|iw| Framebuffer::new(device.clone(), &render_pass_tonemap, swap_chain.extent, &[iw]))
             .collect::<Result<Vec<_>, _>>()?;
 
         let gbuffer = GBuffer::new(device.clone(), extent_3d, &render_pass_gb)?;
+        let tonemap = Tonemap::new(device.clone(), extent_3d, &render_pass_light)?;
 
         let descriptor_pool = DescriptorPool::new(
             device.clone(),
             &[
                 vk::DescriptorPoolSize {
-                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 4 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
                 },
                 vk::DescriptorPoolSize {
-                    descriptor_count: 3 * MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 16 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 },
+                vk::DescriptorPoolSize {
+                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                    ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                },
             ],
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )?;
-        let descriptor_sets = descriptor_pool.allocate_sets(
-            MAX_FRAMES_IN_FLIGHT as u32,
-            &[descriptor_layouts[0].inner, descriptor_layouts[0].inner],
+            4 * MAX_FRAMES_IN_FLIGHT as u32,
         )?;
 
-        let rt_descriptor_pool = DescriptorPool::new(
-            device.clone(),
-            &[vk::DescriptorPoolSize {
-                descriptor_count: 1,
-                ty: vk::DescriptorType::UNIFORM_BUFFER,
-            }],
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )?;
-        //let rt_descriptor_sets = rt_descriptor_pool.allocate_sets(&[]);
+        descriptors.allocate_sets(&descriptor_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
 
         let command_pool = CommandPool::new(device.clone())?;
         let command_buffers = command_pool.allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
@@ -185,6 +193,7 @@ impl VulkanRenderer {
         let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut in_flight = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let (fs_quad_v, fs_quad_i) = crate::mesh::fs_triangle();
         let fs_quad = VulkanMesh::new(
@@ -215,7 +224,7 @@ impl VulkanRenderer {
             uniform_buffers.push(uniform_buffer);
 
             let desc_write = vk::WriteDescriptorSet {
-                dst_set: descriptor_sets[i].inner,
+                dst_set: descriptors.get_sets(DescLayout::View)[i].inner,
                 dst_binding: 0,
                 dst_array_element: 0,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
@@ -224,36 +233,80 @@ impl VulkanRenderer {
                 ..Default::default()
             };
 
-            let image_infos = [
+            let uniform_buffer_global = Buffer::new(
+                device.clone(),
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                std::mem::size_of::<Globals>() as u64,
+                true,
+            )?;
+
+            let buffer_info = vk::DescriptorBufferInfo {
+                buffer: uniform_buffer_global.inner,
+                offset: 0,
+                range: std::mem::size_of::<f32>() as u64,
+            };
+
+            uniform_buffers_globals.push(uniform_buffer_global);
+
+            let desc_write_global = vk::WriteDescriptorSet {
+                dst_set: descriptors.get_sets(DescLayout::Global)[i].inner,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+                descriptor_count: 1,
+                p_buffer_info: &buffer_info,
+                ..Default::default()
+            };
+
+            let gb_image_infos = [
                 vk::DescriptorImageInfo {
-                    sampler: gbuffer.samplers[0].inner,
+                    sampler: gbuffer.sampler.inner,
                     image_view: gbuffer.views[0].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
                 vk::DescriptorImageInfo {
-                    sampler: gbuffer.samplers[1].inner,
+                    sampler: gbuffer.sampler.inner,
                     image_view: gbuffer.views[1].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
                 vk::DescriptorImageInfo {
-                    sampler: gbuffer.samplers[2].inner,
+                    sampler: gbuffer.sampler.inner,
                     image_view: gbuffer.views[2].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
             ];
 
+            let tonemap_image_infos = [vk::DescriptorImageInfo {
+                sampler: tonemap.sampler.inner,
+                image_view: tonemap.view.inner,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            }];
+
             let desc_write_gb = vk::WriteDescriptorSet {
-                dst_set: descriptor_sets[i].inner,
-                dst_binding: 1,
+                dst_set: descriptors.get_sets(DescLayout::GBuffer)[i].inner,
+                dst_binding: 0,
                 dst_array_element: 0,
                 descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: image_infos.len() as u32,
-                p_image_info: image_infos.as_ptr(),
+                descriptor_count: gb_image_infos.len() as u32,
+                p_image_info: gb_image_infos.as_ptr(),
+                ..Default::default()
+            };
+
+            let desc_write_tonemap = vk::WriteDescriptorSet {
+                dst_set: descriptors.get_sets(DescLayout::PostProcess)[i].inner,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: tonemap_image_infos.len() as u32,
+                p_image_info: tonemap_image_infos.as_ptr(),
                 ..Default::default()
             };
 
             unsafe {
-                device.inner.update_descriptor_sets(&[desc_write, desc_write_gb], &[]);
+                device
+                    .inner
+                    .update_descriptor_sets(&[desc_write_global, desc_write, desc_write_gb, desc_write_tonemap], &[]);
             }
         }
 
@@ -265,19 +318,22 @@ impl VulkanRenderer {
             swap_chain_image_views,
             swap_chain_fbs,
             gbuffer,
+            tonemap,
             pipeline_gb,
             pipeline_light,
+            pipeline_tonemap,
             render_pass_gb,
             render_pass_light,
+            render_pass_tonemap,
             fs_quad,
             command_pool,
             descriptor_pool,
-            descriptor_sets,
             command_buffers,
             img_available,
             render_finished,
-            descriptor_layouts,
+            descriptors,
             uniform_buffers,
+            uniform_buffers_globals,
             in_flight,
             meshes: HashMap::new(),
             current_frame: 0,
@@ -302,18 +358,14 @@ impl VulkanRenderer {
 
         let command_buffer = &self.command_buffers[self.current_frame];
         let framebuffer = &self.swap_chain_fbs[image_index as usize];
-        let descriptor_set = &self.descriptor_sets[self.current_frame];
 
-        let aspect_ratio = drawable_size;
-        let aspect_ratio = aspect_ratio.0 as f32 / aspect_ratio.1 as f32;
+        let aspect_ratio = drawable_size.0 as f32 / drawable_size.1 as f32;
+        let fov_rad = scene.camera.fov / (180.0 / std::f32::consts::PI);
+        let fovy = 2.0 * ((fov_rad / 2.0).tan() * (1.0 / aspect_ratio)).atan();
 
-        let mut proj = nalgebra_glm::perspective_rh_zo(
-            aspect_ratio,
-            (scene.camera.fov / aspect_ratio) / (180.0 / std::f32::consts::PI),
-            0.01,
-            5000.0,
-        );
+        let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 0.01, 5000.0);
 
+        // flip because of vulkan
         proj.m22 *= -1.0;
 
         let ubo = ViewProj {
@@ -321,14 +373,22 @@ impl VulkanRenderer {
             projection: proj,
         };
 
+        let globals = Globals {
+            max_bright: 10.0,
+            res_x: drawable_size.0 as f32,
+            res_y: drawable_size.1 as f32,
+        };
+
         unsafe {
             self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
                 std::ptr::addr_of!(ubo) as *const u8,
                 std::mem::size_of::<ViewProj>(),
             ))?;
+
+            self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
         }
 
-        self.record_command_buffer(command_buffer, framebuffer, descriptor_set, scene, &context.total_time)?;
+        self.record_command_buffer(command_buffer, framebuffer, scene, &context.total_time)?;
 
         let wait_semaphores = [self.img_available[self.current_frame].inner];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -400,56 +460,57 @@ impl VulkanRenderer {
         };
 
         self.gbuffer.resize(extent_3d, &self.render_pass_gb)?;
+        self.tonemap.resize(extent_3d, &self.render_pass_light)?;
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let buffer_info = vk::DescriptorBufferInfo {
-                buffer: self.uniform_buffers[i].inner,
-                offset: 0,
-                range: std::mem::size_of::<ViewProj>() as u64,
-            };
-
-            let desc_write = vk::WriteDescriptorSet {
-                dst_set: self.descriptor_sets[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                p_buffer_info: &buffer_info,
-                ..Default::default()
-            };
-
-            let image_infos = [
+            let gb_image_infos = [
                 vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.samplers[0].inner,
+                    sampler: self.gbuffer.sampler.inner,
                     image_view: self.gbuffer.views[0].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
                 vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.samplers[1].inner,
+                    sampler: self.gbuffer.sampler.inner,
                     image_view: self.gbuffer.views[1].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
                 vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.samplers[2].inner,
+                    sampler: self.gbuffer.sampler.inner,
                     image_view: self.gbuffer.views[2].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
             ];
 
+            let tonemap_image_infos = [vk::DescriptorImageInfo {
+                sampler: self.tonemap.sampler.inner,
+                image_view: self.tonemap.view.inner,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            }];
+
             let desc_write_gb = vk::WriteDescriptorSet {
-                dst_set: self.descriptor_sets[i].inner,
-                dst_binding: 1,
+                dst_set: self.descriptors.get_sets(DescLayout::GBuffer)[i].inner,
+                dst_binding: 0,
                 dst_array_element: 0,
                 descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: image_infos.len() as u32,
-                p_image_info: image_infos.as_ptr(),
+                descriptor_count: gb_image_infos.len() as u32,
+                p_image_info: gb_image_infos.as_ptr(),
+                ..Default::default()
+            };
+
+            let desc_write_tonemap = vk::WriteDescriptorSet {
+                dst_set: self.descriptors.get_sets(DescLayout::PostProcess)[i].inner,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: tonemap_image_infos.len() as u32,
+                p_image_info: tonemap_image_infos.as_ptr(),
                 ..Default::default()
             };
 
             unsafe {
                 self.device
                     .inner
-                    .update_descriptor_sets(&[desc_write, desc_write_gb], &[]);
+                    .update_descriptor_sets(&[desc_write_gb, desc_write_tonemap], &[]);
             }
         }
 
@@ -459,7 +520,7 @@ impl VulkanRenderer {
             .map(|iw| {
                 Framebuffer::new(
                     self.device.clone(),
-                    &self.render_pass_light,
+                    &self.render_pass_tonemap,
                     self.swap_chain.extent,
                     &[iw],
                 )
@@ -474,6 +535,10 @@ impl VulkanRenderer {
         self.pipeline_light.viewport.height = self.swap_chain.extent.height as f32;
         self.pipeline_light.scissor.extent = self.swap_chain.extent;
 
+        self.pipeline_tonemap.viewport.width = self.swap_chain.extent.width as f32;
+        self.pipeline_tonemap.viewport.height = self.swap_chain.extent.height as f32;
+        self.pipeline_tonemap.scissor.extent = self.swap_chain.extent;
+
         Ok(())
     }
 
@@ -481,7 +546,6 @@ impl VulkanRenderer {
         &self,
         command_buffer: &CommandBuffer,
         framebuffer: &Framebuffer,
-        descriptor_set: &DescriptorSet,
         scene: &Scene,
         push_constants: &f32,
     ) -> Result<(), VulkanError> {
@@ -490,12 +554,12 @@ impl VulkanRenderer {
         let clears = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0.01, 0.01, 0.01, 1.0],
+                    float32: [0.0, 0.0, 0.0, 0.0],
                 },
             },
             vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0.00, 0.00, 0.00, 1.0],
+                    float32: [0.5, 0.5, 0.5, 1.0],
                 },
             },
             vk::ClearValue {
@@ -520,6 +584,20 @@ impl VulkanRenderer {
         command_buffer.bind_pipeline(&self.pipeline_gb, vk::PipelineBindPoint::GRAPHICS);
         command_buffer.set_viewport(self.pipeline_gb.viewport);
         command_buffer.set_scissor(self.pipeline_gb.scissor);
+
+        unsafe {
+            self.device.inner.cmd_bind_descriptor_sets(
+                command_buffer.inner,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_gb.layout,
+                0,
+                &[
+                    self.descriptors.get_sets(DescLayout::Global)[self.current_frame].inner,
+                    self.descriptors.get_sets(DescLayout::View)[self.current_frame].inner,
+                ],
+                &[],
+            );
+        }
 
         for instance in &scene.meshes {
             let mesh = &instance.resource;
@@ -549,15 +627,6 @@ impl VulkanRenderer {
                     vk::IndexType::UINT32,
                 );
 
-                self.device.inner.cmd_bind_descriptor_sets(
-                    command_buffer.inner,
-                    vk::PipelineBindPoint::GRAPHICS,
-                    self.pipeline_gb.layout,
-                    0,
-                    &[descriptor_set.inner],
-                    &[],
-                );
-
                 self.device
                     .inner
                     .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
@@ -566,29 +635,20 @@ impl VulkanRenderer {
 
         command_buffer.end_render_pass();
 
-        let clears = [vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [0.01, 0.01, 0.01, 1.0],
-            },
-        }];
-
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_pass_light.inner,
-            framebuffer: framebuffer.inner,
+            framebuffer: self.tonemap.framebuffer.inner,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
                 extent: self.swap_chain.extent,
             },
-            clear_value_count: clears.len() as u32,
-            p_clear_values: clears.as_ptr(),
+            clear_value_count: 0,
             ..Default::default()
         };
 
         command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
 
         command_buffer.bind_pipeline(&self.pipeline_light, vk::PipelineBindPoint::GRAPHICS);
-        command_buffer.set_viewport(self.pipeline_light.viewport);
-        command_buffer.set_scissor(self.pipeline_light.scissor);
 
         command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
 
@@ -598,7 +658,7 @@ impl VulkanRenderer {
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
-                self.pipeline_gb.layout,
+                self.pipeline_light.layout,
                 vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                 0,
                 &constants,
@@ -615,8 +675,8 @@ impl VulkanRenderer {
                 command_buffer.inner,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_light.layout,
-                0,
-                &[descriptor_set.inner],
+                2,
+                &[self.descriptors.get_sets(DescLayout::GBuffer)[self.current_frame].inner],
                 &[],
             );
 
@@ -626,6 +686,59 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
+
+        let render_pass_info = vk::RenderPassBeginInfo {
+            render_pass: self.render_pass_tonemap.inner,
+            framebuffer: framebuffer.inner,
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent: self.swap_chain.extent,
+            },
+            clear_value_count: 0,
+            ..Default::default()
+        };
+
+        command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
+
+        command_buffer.bind_pipeline(&self.pipeline_tonemap, vk::PipelineBindPoint::GRAPHICS);
+
+        command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
+
+        unsafe {
+            let mut constants = [0_u8; 68];
+            constants[64..].copy_from_slice(&(push_constants).to_le_bytes());
+
+            self.device.inner.cmd_push_constants(
+                command_buffer.inner,
+                self.pipeline_tonemap.layout,
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                0,
+                &constants,
+            );
+
+            self.device.inner.cmd_bind_index_buffer(
+                command_buffer.inner,
+                self.fs_quad.buf.inner.inner,
+                self.fs_quad.indices_offset,
+                vk::IndexType::UINT32,
+            );
+
+            self.device.inner.cmd_bind_descriptor_sets(
+                command_buffer.inner,
+                vk::PipelineBindPoint::GRAPHICS,
+                self.pipeline_tonemap.layout,
+                2,
+                &[self.descriptors.get_sets(DescLayout::PostProcess)[self.current_frame].inner],
+                &[],
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, self.fs_quad.index_count as u32, 1, 0, 0, 0);
+        }
+
+        command_buffer.end_render_pass();
+
         command_buffer.end()
     }
 
@@ -650,11 +763,29 @@ pub struct ViewProj {
     pub projection: nalgebra_glm::Mat4,
 }
 
+pub struct Globals {
+    pub max_bright: f32,
+    pub res_x: f32,
+    pub res_y: f32,
+}
+
+impl Globals {
+    pub fn to_boxed_slice(&self) -> Box<[u8]> {
+        let mut vec = Vec::with_capacity(std::mem::size_of::<f32>() * 3);
+
+        vec.extend(self.max_bright.to_ne_bytes());
+        vec.extend(self.res_x.to_ne_bytes());
+        vec.extend(self.res_y.to_ne_bytes());
+
+        vec.into_boxed_slice()
+    }
+}
+
 pub struct GBuffer {
     pub framebuffer: Framebuffer,
     pub images: Vec<Image>,
     pub views: Vec<ImageView>,
-    pub samplers: Vec<Sampler>,
+    pub sampler: Sampler,
     device: Rc<Device>,
 }
 
@@ -701,17 +832,13 @@ impl GBuffer {
             &[&views[0], &views[1], &views[2]],
         )?;
 
-        let samplers = vec![
-            Sampler::new(device.clone())?,
-            Sampler::new(device.clone())?,
-            Sampler::new(device.clone())?,
-        ];
+        let sampler = Sampler::new(device.clone())?;
 
         Ok(Self {
             images,
             views,
             framebuffer,
-            samplers,
+            sampler,
             device,
         })
     }
@@ -735,6 +862,72 @@ impl GBuffer {
                 height: extent.height,
             },
             &[&self.views[0], &self.views[1], &self.views[2]],
+        )?;
+
+        Ok(())
+    }
+}
+
+pub struct Tonemap {
+    pub framebuffer: Framebuffer,
+    pub image: Image,
+    pub view: ImageView,
+    pub sampler: Sampler,
+    device: Rc<Device>,
+}
+
+impl Tonemap {
+    pub fn attrs() -> (vk::Format, vk::ImageUsageFlags, vk::ImageAspectFlags) {
+        (
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+            vk::ImageAspectFlags::COLOR,
+        )
+    }
+
+    pub fn new(device: Rc<Device>, extent: Extent3D, render_pass: &RenderPass) -> Result<Self, VulkanError> {
+        let (format, usage, aspect) = Self::attrs();
+
+        let image = Image::new(device.clone(), format, extent, usage)?;
+
+        let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
+
+        let framebuffer = Framebuffer::new(
+            device.clone(),
+            render_pass,
+            Extent2D {
+                width: extent.width,
+                height: extent.height,
+            },
+            &[&view],
+        )?;
+
+        let sampler = Sampler::new(device.clone())?;
+
+        Ok(Self {
+            image,
+            view,
+            framebuffer,
+            sampler,
+            device,
+        })
+    }
+
+    pub fn resize(&mut self, extent: Extent3D, render_pass: &RenderPass) -> Result<(), VulkanError> {
+        let attrs = Self::attrs();
+
+        self.image = Image::new(self.device.clone(), attrs.0, extent, attrs.1)?;
+
+        self.view = ImageView::new(self.device.clone(), self.image.inner, attrs.0, attrs.2)?;
+
+        self.framebuffer = Framebuffer::new(
+            self.device.clone(),
+            render_pass,
+            Extent2D {
+                width: extent.width,
+                height: extent.height,
+            },
+            &[&self.view],
         )?;
 
         Ok(())

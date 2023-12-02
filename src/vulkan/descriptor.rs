@@ -33,8 +33,10 @@ impl DescriptorPool {
     pub fn allocate_sets(
         &self,
         count: u32,
-        layouts: &[vk::DescriptorSetLayout],
+        layout: vk::DescriptorSetLayout,
     ) -> Result<Vec<DescriptorSet>, VulkanError> {
+        let layouts = vec![layout; count as usize];
+
         let alloc_info = vk::DescriptorSetAllocateInfo {
             descriptor_pool: self.inner,
             descriptor_set_count: count,
@@ -66,7 +68,6 @@ pub struct DescriptorSet {
     pub inner: vk::DescriptorSet,
 }
 
-#[derive(Clone)]
 pub struct DescriptorSetLayout {
     pub inner: vk::DescriptorSetLayout,
     device: Rc<Device>,

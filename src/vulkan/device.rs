@@ -54,9 +54,9 @@ impl Device {
             if queue_families.graphics.is_some()
                 && queue_families.present.is_some()
                 && has_swapchain
-                //&& has_rt_acc
-                //&& has_rt_pipeline
-                //&& has_def_host_ops
+                && has_rt_acc
+                && has_rt_pipeline
+                && has_def_host_ops
                 && !swapchain_support.present_modes.is_empty()
                 && !swapchain_support.formats.is_empty()
             {
@@ -92,9 +92,9 @@ impl Device {
 
         let device_extensions = [
             SWAPCHAIN_EXTENSION,
-            //RT_ACCELERATION_EXTENSION,
-            //RT_PIPELINE_EXTENSION,
-            //DEFERRED_HOST_OPS_EXTENSION,
+            RT_ACCELERATION_EXTENSION,
+            RT_PIPELINE_EXTENSION,
+            DEFERRED_HOST_OPS_EXTENSION,
         ];
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
 
