@@ -18,7 +18,7 @@ impl Instance {
             application_version: vk::make_api_version(0, 0, 1, 0),
             p_engine_name: engine_name.as_ptr(),
             engine_version: vk::make_api_version(0, 0, 1, 0),
-            api_version: vk::API_VERSION_1_2,
+            api_version: vk::API_VERSION_1_3,
             ..Default::default()
         };
 

@@ -1,11 +1,10 @@
 use crate::err::AppError;
 use crate::mesh::MeshResource;
-use crate::renderer::descriptors::{DescLayout, RendererDescriptors};
 use crate::scene::Scene;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence, Framebuffer, Image,
-    ImageView, Instance, Pipeline, RenderPass, Sampler, Semaphore, ShaderModule, ShaderStage, Surface, SwapChain,
-    VulkanError, VulkanMesh,
+    ImageView, Instance, Pipeline, RayTracingPipeline, RenderPass, RtPipeline, Sampler, Semaphore, ShaderBindingTable,
+    ShaderModule, ShaderStage, Surface, SwapChain, VulkanError, VulkanMesh,
 };
 use ash::vk::{Extent2D, Extent3D, Handle};
 use ash::{vk, Entry};
@@ -14,6 +13,8 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod descriptors;
+use descriptors::{DescLayout, RendererDescriptors};
+mod render_target;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -22,16 +23,20 @@ pub struct VulkanRenderer {
     pub device: Rc<Device>,
     pub swap_chain: SwapChain,
     pub surface: Surface,
+    pub rt_pipeline_ext: RayTracingPipeline,
     pub swap_chain_image_views: Vec<ImageView>,
     pub swap_chain_fbs: Vec<Framebuffer>,
     pub gbuffer: GBuffer,
     pub tonemap: Tonemap,
+    pub rtao_render_target: Tonemap,
     pub pipeline_gb: Pipeline,
     pub pipeline_light: Pipeline,
     pub pipeline_tonemap: Pipeline,
+    pub pipeline_rtao: RtPipeline,
     pub render_pass_gb: RenderPass,
     pub render_pass_light: RenderPass,
     pub render_pass_tonemap: RenderPass,
+    pub shader_binding_table: ShaderBindingTable,
     pub command_pool: CommandPool,
     pub descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
@@ -65,6 +70,8 @@ impl VulkanRenderer {
         }?;
 
         let device = Rc::new(Device::new(instance.clone(), devices[0], &surface)?);
+
+        let rt_pipeline_ext = RayTracingPipeline::new(&instance, &device)?;
 
         let swap_chain = SwapChain::new(device.clone(), &instance, window.drawable_size(), &surface)?;
         let swap_chain_image_views = swap_chain.create_image_views()?;
@@ -107,6 +114,21 @@ impl VulkanRenderer {
 
         let tonemap_stages = [light_vert_module.stage_info(), tonemap_frag_module.stage_info()];
 
+        let rtao_raygen_module = ShaderModule::new(
+            include_bytes!("../build/ao_raygen.spv"),
+            device.clone(),
+            ShaderStage::RayGen,
+            None,
+        )?;
+        let rtao_miss_module = ShaderModule::new(
+            include_bytes!("../build/ao_raymiss.spv"),
+            device.clone(),
+            ShaderStage::RayMiss,
+            None,
+        )?;
+
+        let rt_stages = [rtao_raygen_module.stage_info(), rtao_miss_module.stage_info()];
+
         let mut descriptors = RendererDescriptors::build(device.clone())?;
 
         let render_pass_gb = RenderPass::new_gbuffer(device.clone())?;
@@ -133,7 +155,7 @@ impl VulkanRenderer {
             &[
                 descriptors.get_layout(DescLayout::Global).inner,
                 descriptors.get_layout(DescLayout::View).inner,
-                descriptors.get_layout(DescLayout::GBuffer).inner,
+                descriptors.get_layout(DescLayout::GBufferPlus).inner,
             ],
             1,
         )?;
@@ -151,6 +173,17 @@ impl VulkanRenderer {
             1,
         )?;
 
+        let pipeline_rtao = RtPipeline::new(
+            device.clone(),
+            &rt_pipeline_ext,
+            &rt_stages,
+            &[
+                descriptors.get_layout(DescLayout::Global).inner,
+                descriptors.get_layout(DescLayout::View).inner,
+                descriptors.get_layout(DescLayout::GBuffer).inner,
+            ],
+        )?;
+
         let extent_3d = Extent3D {
             width: swap_chain.extent.width,
             height: swap_chain.extent.height,
@@ -164,12 +197,13 @@ impl VulkanRenderer {
 
         let gbuffer = GBuffer::new(device.clone(), extent_3d, &render_pass_gb)?;
         let tonemap = Tonemap::new(device.clone(), extent_3d, &render_pass_light)?;
+        let rtao_render_target = Tonemap::new(device.clone(), extent_3d, &render_pass_light)?;
 
         let descriptor_pool = DescriptorPool::new(
             device.clone(),
             &[
                 vk::DescriptorPoolSize {
-                    descriptor_count: 4 * MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 8 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
                 },
                 vk::DescriptorPoolSize {
@@ -181,10 +215,12 @@ impl VulkanRenderer {
                     ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                 },
             ],
-            4 * MAX_FRAMES_IN_FLIGHT as u32,
+            5 * MAX_FRAMES_IN_FLIGHT as u32,
         )?;
 
         descriptors.allocate_sets(&descriptor_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
+
+        let shader_binding_table = ShaderBindingTable::new(device.clone(), &rt_pipeline_ext, &pipeline_rtao, 1, 0)?;
 
         let command_pool = CommandPool::new(device.clone())?;
         let command_buffers = command_pool.allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
@@ -213,6 +249,7 @@ impl VulkanRenderer {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
                 std::mem::size_of::<ViewProj>() as u64,
                 true,
+                false,
             )?;
 
             let buffer_info = vk::DescriptorBufferInfo {
@@ -239,12 +276,13 @@ impl VulkanRenderer {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
                 std::mem::size_of::<Globals>() as u64,
                 true,
+                false,
             )?;
 
             let buffer_info = vk::DescriptorBufferInfo {
                 buffer: uniform_buffer_global.inner,
                 offset: 0,
-                range: std::mem::size_of::<f32>() as u64,
+                range: std::mem::size_of::<Globals>() as u64,
             };
 
             uniform_buffers_globals.push(uniform_buffer_global);
@@ -256,6 +294,22 @@ impl VulkanRenderer {
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 1,
                 p_buffer_info: &buffer_info,
+                ..Default::default()
+            };
+
+            let rtao_image_infos = [vk::DescriptorImageInfo {
+                sampler: rtao_render_target.sampler.inner,
+                image_view: rtao_render_target.view.inner,
+                image_layout: vk::ImageLayout::GENERAL,
+            }];
+
+            let desc_write_rtao_storage = vk::WriteDescriptorSet {
+                dst_set: descriptors.get_sets(DescLayout::Global)[i].inner,
+                dst_binding: 2,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                descriptor_count: 1,
+                p_image_info: rtao_image_infos.as_ptr(),
                 ..Default::default()
             };
 
@@ -276,6 +330,39 @@ impl VulkanRenderer {
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
             ];
+
+            let gbplus_image_infos = [
+                vk::DescriptorImageInfo {
+                    sampler: gbuffer.sampler.inner,
+                    image_view: gbuffer.views[0].inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                },
+                vk::DescriptorImageInfo {
+                    sampler: gbuffer.sampler.inner,
+                    image_view: gbuffer.views[1].inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                },
+                vk::DescriptorImageInfo {
+                    sampler: gbuffer.sampler.inner,
+                    image_view: gbuffer.views[2].inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                },
+                vk::DescriptorImageInfo {
+                    sampler: rtao_render_target.sampler.inner,
+                    image_view: rtao_render_target.view.inner,
+                    image_layout: vk::ImageLayout::GENERAL,
+                },
+            ];
+
+            let desc_write_gbp = vk::WriteDescriptorSet {
+                dst_set: descriptors.get_sets(DescLayout::GBufferPlus)[i].inner,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: gbplus_image_infos.len() as u32,
+                p_image_info: gbplus_image_infos.as_ptr(),
+                ..Default::default()
+            };
 
             let tonemap_image_infos = [vk::DescriptorImageInfo {
                 sampler: tonemap.sampler.inner,
@@ -304,9 +391,17 @@ impl VulkanRenderer {
             };
 
             unsafe {
-                device
-                    .inner
-                    .update_descriptor_sets(&[desc_write_global, desc_write, desc_write_gb, desc_write_tonemap], &[]);
+                device.inner.update_descriptor_sets(
+                    &[
+                        desc_write_global,
+                        desc_write,
+                        desc_write_gb,
+                        desc_write_gbp,
+                        desc_write_tonemap,
+                        desc_write_rtao_storage,
+                    ],
+                    &[],
+                );
             }
         }
 
@@ -314,17 +409,21 @@ impl VulkanRenderer {
             instance,
             device,
             surface,
+            rt_pipeline_ext,
             swap_chain,
             swap_chain_image_views,
             swap_chain_fbs,
             gbuffer,
             tonemap,
+            rtao_render_target,
             pipeline_gb,
             pipeline_light,
             pipeline_tonemap,
+            pipeline_rtao,
             render_pass_gb,
             render_pass_light,
             render_pass_tonemap,
+            shader_binding_table,
             fs_quad,
             command_pool,
             descriptor_pool,
@@ -374,7 +473,7 @@ impl VulkanRenderer {
         };
 
         let globals = Globals {
-            max_bright: 10.0,
+            max_bright: 5.0,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
         };
@@ -461,6 +560,7 @@ impl VulkanRenderer {
 
         self.gbuffer.resize(extent_3d, &self.render_pass_gb)?;
         self.tonemap.resize(extent_3d, &self.render_pass_light)?;
+        self.rtao_render_target.resize(extent_3d, &self.render_pass_light)?;
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             let gb_image_infos = [
@@ -481,11 +581,44 @@ impl VulkanRenderer {
                 },
             ];
 
+            let gbp_image_infos = [
+                vk::DescriptorImageInfo {
+                    sampler: self.gbuffer.sampler.inner,
+                    image_view: self.gbuffer.views[0].inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                },
+                vk::DescriptorImageInfo {
+                    sampler: self.gbuffer.sampler.inner,
+                    image_view: self.gbuffer.views[1].inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                },
+                vk::DescriptorImageInfo {
+                    sampler: self.gbuffer.sampler.inner,
+                    image_view: self.gbuffer.views[2].inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                },
+                vk::DescriptorImageInfo {
+                    sampler: self.rtao_render_target.sampler.inner,
+                    image_view: self.rtao_render_target.view.inner,
+                    image_layout: vk::ImageLayout::GENERAL,
+                },
+            ];
+
             let tonemap_image_infos = [vk::DescriptorImageInfo {
                 sampler: self.tonemap.sampler.inner,
                 image_view: self.tonemap.view.inner,
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             }];
+
+            let desc_write_gbp = vk::WriteDescriptorSet {
+                dst_set: self.descriptors.get_sets(DescLayout::GBufferPlus)[i].inner,
+                dst_binding: 0,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                descriptor_count: gbp_image_infos.len() as u32,
+                p_image_info: gbp_image_infos.as_ptr(),
+                ..Default::default()
+            };
 
             let desc_write_gb = vk::WriteDescriptorSet {
                 dst_set: self.descriptors.get_sets(DescLayout::GBuffer)[i].inner,
@@ -507,10 +640,32 @@ impl VulkanRenderer {
                 ..Default::default()
             };
 
+            let rtao_image_infos = [vk::DescriptorImageInfo {
+                sampler: self.rtao_render_target.sampler.inner,
+                image_view: self.rtao_render_target.view.inner,
+                image_layout: vk::ImageLayout::GENERAL,
+            }];
+
+            let desc_write_rtao_storage = vk::WriteDescriptorSet {
+                dst_set: self.descriptors.get_sets(DescLayout::Global)[i].inner,
+                dst_binding: 2,
+                dst_array_element: 0,
+                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                descriptor_count: 1,
+                p_image_info: rtao_image_infos.as_ptr(),
+                ..Default::default()
+            };
+
             unsafe {
-                self.device
-                    .inner
-                    .update_descriptor_sets(&[desc_write_gb, desc_write_tonemap], &[]);
+                self.device.inner.update_descriptor_sets(
+                    &[
+                        desc_write_gb,
+                        desc_write_tonemap,
+                        desc_write_rtao_storage,
+                        desc_write_gbp,
+                    ],
+                    &[],
+                );
             }
         }
 
@@ -551,6 +706,15 @@ impl VulkanRenderer {
     ) -> Result<(), VulkanError> {
         command_buffer.begin()?;
 
+        self.record_gbuffer_pass(command_buffer, scene, push_constants);
+        self.record_rtao(command_buffer);
+        self.record_light_pass(command_buffer, push_constants);
+        self.record_postprocess_pass(command_buffer, framebuffer, push_constants);
+
+        command_buffer.end()
+    }
+
+    fn record_gbuffer_pass(&self, command_buffer: &CommandBuffer, scene: &Scene, push_constants: &f32) {
         let clears = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
@@ -634,7 +798,39 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
+    }
 
+    fn record_rtao(&self, command_buffer: &CommandBuffer) {
+        command_buffer.bind_rt_pipeline(&self.pipeline_rtao);
+
+        unsafe {
+            self.device.inner.cmd_bind_descriptor_sets(
+                command_buffer.inner,
+                vk::PipelineBindPoint::RAY_TRACING_KHR,
+                self.pipeline_rtao.layout,
+                0,
+                &[
+                    self.descriptors.get_sets(DescLayout::Global)[self.current_frame].inner,
+                    self.descriptors.get_sets(DescLayout::View)[self.current_frame].inner,
+                    self.descriptors.get_sets(DescLayout::GBuffer)[self.current_frame].inner,
+                ],
+                &[],
+            );
+
+            self.rt_pipeline_ext.loader.cmd_trace_rays(
+                command_buffer.inner,
+                &self.shader_binding_table.raygen_region,
+                &self.shader_binding_table.miss_region,
+                &self.shader_binding_table.hit_region,
+                &self.shader_binding_table.call_region,
+                self.swap_chain.extent.width,
+                self.swap_chain.extent.height,
+                1,
+            );
+        }
+    }
+
+    fn record_light_pass(&self, command_buffer: &CommandBuffer, push_constants: &f32) {
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_pass_light.inner,
             framebuffer: self.tonemap.framebuffer.inner,
@@ -676,7 +872,7 @@ impl VulkanRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_light.layout,
                 2,
-                &[self.descriptors.get_sets(DescLayout::GBuffer)[self.current_frame].inner],
+                &[self.descriptors.get_sets(DescLayout::GBufferPlus)[self.current_frame].inner],
                 &[],
             );
 
@@ -686,7 +882,9 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
+    }
 
+    fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer, push_constants: &f32) {
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_pass_tonemap.inner,
             framebuffer: framebuffer.inner,
@@ -738,8 +936,6 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
-
-        command_buffer.end()
     }
 
     fn prepare_meshes(&mut self, scene: &Scene) -> Result<(), VulkanError> {
@@ -813,7 +1009,7 @@ impl GBuffer {
     pub fn new(device: Rc<Device>, extent: Extent3D, render_pass: &RenderPass) -> Result<Self, VulkanError> {
         let images = Self::attrs()
             .into_iter()
-            .map(|(format, usage, _)| Image::new(device.clone(), format, extent, usage))
+            .map(|(format, usage, _)| Image::new(device.clone(), format, extent, usage, vk::ImageLayout::UNDEFINED))
             .collect::<Result<Vec<_>, _>>()?;
 
         let views = images
@@ -847,7 +1043,13 @@ impl GBuffer {
         let attrs = Self::attrs();
 
         for (idx, image) in &mut self.images.iter_mut().enumerate() {
-            *image = Image::new(self.device.clone(), attrs[idx].0, extent, attrs[idx].1)?;
+            *image = Image::new(
+                self.device.clone(),
+                attrs[idx].0,
+                extent,
+                attrs[idx].1,
+                vk::ImageLayout::UNDEFINED,
+            )?;
         }
 
         for (idx, image) in &mut self.views.iter_mut().enumerate() {
@@ -888,7 +1090,7 @@ impl Tonemap {
     pub fn new(device: Rc<Device>, extent: Extent3D, render_pass: &RenderPass) -> Result<Self, VulkanError> {
         let (format, usage, aspect) = Self::attrs();
 
-        let image = Image::new(device.clone(), format, extent, usage)?;
+        let image = Image::new(device.clone(), format, extent, usage, vk::ImageLayout::GENERAL)?;
 
         let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
 
@@ -916,7 +1118,7 @@ impl Tonemap {
     pub fn resize(&mut self, extent: Extent3D, render_pass: &RenderPass) -> Result<(), VulkanError> {
         let attrs = Self::attrs();
 
-        self.image = Image::new(self.device.clone(), attrs.0, extent, attrs.1)?;
+        self.image = Image::new(self.device.clone(), attrs.0, extent, attrs.1, vk::ImageLayout::GENERAL)?;
 
         self.view = ImageView::new(self.device.clone(), self.image.inner, attrs.0, attrs.2)?;
 
@@ -933,3 +1135,13 @@ impl Tonemap {
         Ok(())
     }
 }
+
+/*fn create_shader_module(path: impl AsRef<Path>, device: Rc<Device>) -> Result<ShaderModule, VulkanError> {
+    let shader_type = path.as_ref().file_stem().unwrap();
+
+    let bytecode = include_bytes!(path);
+
+    let module = ShaderModule::new(bytecode, device, ShaderStage::Fragment, None)?;
+
+    Ok(module)
+}*/

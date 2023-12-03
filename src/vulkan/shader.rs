@@ -44,13 +44,8 @@ impl ShaderModule {
     }
 
     pub fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
-        let stage = match self.stage {
-            ShaderStage::Fragment => vk::ShaderStageFlags::FRAGMENT,
-            ShaderStage::Vertex => vk::ShaderStageFlags::VERTEX,
-        };
-
         vk::PipelineShaderStageCreateInfo {
-            stage,
+            stage: self.stage.into(),
             module: self.inner,
             p_name: self.entry.as_ptr(),
             ..Default::default()
@@ -68,4 +63,17 @@ impl Drop for ShaderModule {
 pub enum ShaderStage {
     Fragment,
     Vertex,
+    RayMiss,
+    RayGen,
+}
+
+impl From<ShaderStage> for vk::ShaderStageFlags {
+    fn from(value: ShaderStage) -> Self {
+        match value {
+            ShaderStage::Fragment => Self::FRAGMENT,
+            ShaderStage::Vertex => Self::VERTEX,
+            ShaderStage::RayGen => Self::RAYGEN_KHR,
+            ShaderStage::RayMiss => Self::MISS_KHR,
+        }
+    }
 }

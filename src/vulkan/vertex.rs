@@ -63,6 +63,7 @@ impl VertexIndexBuffer {
             vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             data.len() as u64,
             false,
+            false,
         )?;
 
         unsafe {
@@ -78,6 +79,7 @@ impl VertexIndexBuffer {
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR,
             vk::MemoryPropertyFlags::DEVICE_LOCAL,
             data.len() as u64,
+            false,
             false,
         )?;
 

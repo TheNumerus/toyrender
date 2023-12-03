@@ -8,6 +8,7 @@ use ash::Device as RawDevice;
 use log::info;
 use std::collections::HashSet;
 use std::ffi::CStr;
+use std::os::raw::c_void;
 use std::rc::Rc;
 
 pub struct Device {
@@ -17,6 +18,7 @@ pub struct Device {
     pub present_queue: Queue,
     pub present_queue_family: usize,
     pub physical_device: PhysicalDevice,
+    pub rt_properties: RtProperties,
     instance: Rc<Instance>,
 }
 
@@ -98,12 +100,28 @@ impl Device {
         ];
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
 
+        let mut addr_create_info = vk::PhysicalDeviceBufferDeviceAddressFeatures {
+            buffer_device_address: 1,
+            ..Default::default()
+        };
+
+        let rt_create_info = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR {
+            ray_tracing_pipeline: 1,
+            ray_tracing_pipeline_shader_group_handle_capture_replay: 0,
+            ray_tracing_pipeline_shader_group_handle_capture_replay_mixed: 0,
+            ray_tracing_pipeline_trace_rays_indirect: 0,
+            ray_traversal_primitive_culling: 0,
+            p_next: std::ptr::addr_of_mut!(addr_create_info) as *mut c_void,
+            ..Default::default()
+        };
+
         let create_info = vk::DeviceCreateInfo {
             p_queue_create_infos: queue_create_infos.as_ptr(),
             queue_create_info_count: queue_create_infos.len() as u32,
             pp_enabled_extension_names: device_extensions_ptr.as_ptr(),
             enabled_extension_count: device_extensions.len() as u32,
             p_enabled_features: &vk::PhysicalDeviceFeatures::default(),
+            p_next: std::ptr::addr_of!(rt_create_info) as *const c_void,
             ..Default::default()
         };
 
@@ -117,16 +135,23 @@ impl Device {
         let graphics_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
         let present_queue = unsafe { inner.get_device_queue(queue_families.present.unwrap() as u32, 0) };
 
-        let properties = Self::get_device_properties(&instance, physical_device);
+        let (properties, rt_properties) = Self::get_device_properties(&instance, physical_device);
+
+        let rt_properties = RtProperties {
+            shader_group_base_alignment: rt_properties.shader_group_base_alignment,
+            shader_group_handle_alignment: rt_properties.shader_group_handle_alignment,
+            shader_group_handle_size: rt_properties.shader_group_handle_size,
+            max_recursion: rt_properties.max_ray_recursion_depth,
+        };
 
         info!(
             "{} - Vulkan {}.{}.{}",
-            unsafe { CStr::from_ptr(properties.device_name.as_ptr()) }
+            unsafe { CStr::from_ptr(properties.properties.device_name.as_ptr()) }
                 .to_str()
                 .unwrap(),
-            vk::api_version_major(properties.api_version),
-            vk::api_version_minor(properties.api_version),
-            vk::api_version_patch(properties.api_version)
+            vk::api_version_major(properties.properties.api_version),
+            vk::api_version_minor(properties.properties.api_version),
+            vk::api_version_patch(properties.properties.api_version)
         );
 
         Ok(Self {
@@ -136,6 +161,7 @@ impl Device {
             present_queue,
             present_queue_family: queue_families.present.unwrap(),
             physical_device,
+            rt_properties,
             instance,
         })
     }
@@ -200,8 +226,24 @@ impl Device {
         unsafe { instance.inner.get_physical_device_memory_properties(physical_device) }
     }
 
-    fn get_device_properties(instance: &Instance, physical_device: PhysicalDevice) -> vk::PhysicalDeviceProperties {
-        unsafe { instance.inner.get_physical_device_properties(physical_device) }
+    fn get_device_properties(
+        instance: &Instance,
+        physical_device: PhysicalDevice,
+    ) -> (
+        vk::PhysicalDeviceProperties2,
+        vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
+    ) {
+        unsafe {
+            let mut next = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+            let mut props = vk::PhysicalDeviceProperties2 {
+                p_next: std::ptr::addr_of_mut!(next) as *mut c_void,
+                ..Default::default()
+            };
+            instance
+                .inner
+                .get_physical_device_properties2(physical_device, &mut props);
+            (props, next)
+        }
     }
 
     fn find_device_queue_families(
@@ -270,4 +312,11 @@ pub struct SwapChainSupport {
     pub capabilities: SurfaceCapabilitiesKHR,
     pub formats: Vec<SurfaceFormatKHR>,
     pub present_modes: Vec<PresentModeKHR>,
+}
+
+pub struct RtProperties {
+    pub shader_group_handle_size: u32,
+    pub shader_group_handle_alignment: u32,
+    pub shader_group_base_alignment: u32,
+    pub max_recursion: u32,
 }

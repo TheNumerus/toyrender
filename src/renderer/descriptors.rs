@@ -47,12 +47,19 @@ pub enum DescLayout {
     Global,
     View,
     GBuffer,
+    GBufferPlus,
     PostProcess,
 }
 
 impl DescLayout {
-    pub const fn all() -> [Self; 4] {
-        [Self::Global, Self::View, Self::GBuffer, Self::PostProcess]
+    pub const fn all() -> [Self; 5] {
+        [
+            Self::Global,
+            Self::View,
+            Self::GBuffer,
+            Self::GBufferPlus,
+            Self::PostProcess,
+        ]
     }
 
     pub fn get_bindings(&self) -> Vec<vk::DescriptorSetLayoutBinding> {
@@ -77,6 +84,13 @@ impl DescLayout {
                         descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                         ..Default::default()
                     },
+                    vk::DescriptorSetLayoutBinding {
+                        binding: 2,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                        ..Default::default()
+                    },
                 ]
             }
             DescLayout::View => {
@@ -95,6 +109,15 @@ impl DescLayout {
                     binding: 0,
                     descriptor_count: 3,
                     stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::RAYGEN_KHR,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ..Default::default()
+                }]
+            }
+            DescLayout::GBufferPlus => {
+                vec![vk::DescriptorSetLayoutBinding {
+                    binding: 0,
+                    descriptor_count: 4,
+                    stage_flags: vk::ShaderStageFlags::FRAGMENT,
                     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     ..Default::default()
                 }]

@@ -38,13 +38,14 @@ vec3 light(vec3 color, vec3 normal, vec3 lightDir)  {
 void main() {
     vec3 sun_dir = normalize(vec3(0.1, 0.1, 1.0));
 
-    float noise = ((float(pcg_hash(uint(gl_FragCoord.x + 1000) * uint(gl_FragCoord.y * 4)) % 255) / 255.0) - 0.5) * 0.001 * globals.exposure;
+    float noise = ((float(pcg_hash(uint(gl_FragCoord.x + 1000) * uint(gl_FragCoord.y * 4)) % 255) / 128.0) - 1.0) * 0.001 * globals.exposure;
 
     float ratio = globals.res_x / globals.res_y;
 
     vec4 color = texture(gb[0], uv);
     vec3 normal = texture(gb[1], uv).xyz * 2.0 - 1.0;
     float depth = texture(gb[2], uv).x;
+    vec4 ao = texture(gb[3], uv);
 
     vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
@@ -53,7 +54,7 @@ void main() {
     vec3 loc = inverse(ubo.view)[3].xyz;
     float fresnel = pow(1.0 - max(dot(normalize(loc - vertPos), normalize(normal)), 0.0), 6.0) * 5.0;
 
-    vec3 lighted = light(color.rgb, normalize(normal), sun_dir) + noise + fresnel;
+    vec3 lighted = (light(color.rgb, normalize(normal), sun_dir) + noise + fresnel) * ao.rgb;
     vec3 sky = vec3(0.5, 0.5, 0.5);
 
     outColor = vec4(

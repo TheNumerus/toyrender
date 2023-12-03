@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, IntoVulkanError, Pipeline, VertexIndexBuffer, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, Pipeline, RtPipeline, VertexIndexBuffer, VulkanError};
 use ash::vk;
 use ash::vk::{CommandBuffer as RawCommandBuffer, Rect2D, Viewport};
 use std::rc::Rc;
@@ -45,6 +45,14 @@ impl CommandBuffer {
             self.device
                 .inner
                 .cmd_bind_pipeline(self.inner, bind_point, pipeline.inner)
+        }
+    }
+
+    pub fn bind_rt_pipeline(&self, pipeline: &RtPipeline) {
+        unsafe {
+            self.device
+                .inner
+                .cmd_bind_pipeline(self.inner, vk::PipelineBindPoint::RAY_TRACING_KHR, pipeline.inner)
         }
     }
 

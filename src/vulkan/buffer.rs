@@ -17,6 +17,7 @@ impl Buffer {
         properties: vk::MemoryPropertyFlags,
         size: u64,
         is_persistent: bool,
+        get_address: bool,
     ) -> Result<Self, VulkanError> {
         let info = vk::BufferCreateInfo {
             size,
@@ -34,6 +35,17 @@ impl Buffer {
 
         let mem_req = unsafe { device.inner.get_buffer_memory_requirements(inner) };
 
+        let flags = vk::MemoryAllocateFlagsInfo {
+            flags: vk::MemoryAllocateFlags::DEVICE_ADDRESS,
+            ..Default::default()
+        };
+
+        let next = if get_address {
+            std::ptr::addr_of!(flags)
+        } else {
+            std::ptr::null()
+        };
+
         let alloc_info = vk::MemoryAllocateInfo {
             allocation_size: mem_req.size,
             memory_type_index: device
@@ -42,6 +54,7 @@ impl Buffer {
                     msg: "Cannot find memory type".into(),
                     code: vk::Result::ERROR_UNKNOWN,
                 })?,
+            p_next: next as *const c_void,
             ..Default::default()
         };
 
