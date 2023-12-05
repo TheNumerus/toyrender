@@ -592,6 +592,7 @@ impl VulkanRenderer {
             max_bright: 2.0,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
+            time: context.total_time,
         };
 
         let transforms = scene.meshes.iter().map(|a| a.transform).collect();
@@ -1220,15 +1221,17 @@ pub struct Globals {
     pub max_bright: f32,
     pub res_x: f32,
     pub res_y: f32,
+    pub time: f32,
 }
 
 impl Globals {
     pub fn to_boxed_slice(&self) -> Box<[u8]> {
-        let mut vec = Vec::with_capacity(std::mem::size_of::<f32>() * 3);
+        let mut vec = Vec::with_capacity(std::mem::size_of::<f32>() * 4);
 
         vec.extend(self.max_bright.to_ne_bytes());
         vec.extend(self.res_x.to_ne_bytes());
         vec.extend(self.res_y.to_ne_bytes());
+        vec.extend(self.time.to_ne_bytes());
 
         vec.into_boxed_slice()
     }

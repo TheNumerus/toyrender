@@ -9,6 +9,7 @@ layout(set = 0, binding = 0) uniform Global {
     float exposure;
     float res_x;
     float res_y;
+    float time;
 } globals;
 
 layout(set = 1, binding = 0) uniform UniformBufferObject {
@@ -30,9 +31,56 @@ uint pcg_hash(uint i) {
 }
 
 vec3 light(vec3 color, vec3 normal, vec3 lightDir)  {
-    float d = max(dot(normal, lightDir) * 0.5 + 0.5, 0.01);
+    //float d = max(dot(normal, lightDir) * 0.5 + 0.5, 0.01);
 
-    return vec3(d * color);
+    return vec3(color);
+}
+
+float blurred_ao() {
+    float base = texture(gb[3], uv).x;
+    float base_depth = texture(gb[2], uv).x;
+    vec3 base_normal = texture(gb[1], uv).xyz * 2.0 - 1.0;
+
+    float sum = 1.0;
+
+    float x_offset = 1.0 / globals.res_x;
+    float y_offset = 1.0 / globals.res_y;
+
+    float delta = 0.0001;
+
+    if (
+        abs(base_depth - texture(gb[2], uv + vec2(0.0, y_offset)).x) < delta &&
+        dot(base_normal, (texture(gb[1], uv + vec2(0.0, y_offset)).xyz * 2.0 - 1.0)) > 0.95
+    ) {
+        sum += 1.0;
+        base += texture(gb[3], uv + vec2(0.0, y_offset)).x;
+    }
+
+    if (
+        abs(base_depth - texture(gb[2], uv + vec2(0.0, -y_offset)).x) < delta &&
+        dot(base_normal, (texture(gb[1], uv + vec2(0.0, -y_offset)).xyz * 2.0 - 1.0)) > 0.95
+    ) {
+        sum += 1.0;
+        base += texture(gb[3], uv + vec2(0.0, -y_offset)).x;
+    }
+
+    if (
+        abs(base_depth - texture(gb[2], uv + vec2(x_offset, 0.0)).x) < delta &&
+        dot(base_normal, (texture(gb[1], uv + vec2(x_offset, 0.0)).xyz * 2.0 - 1.0)) > 0.95
+    ) {
+        sum += 1.0;
+        base += texture(gb[3], uv + vec2(x_offset, 0.0)).x;
+    }
+
+    if (
+        abs(base_depth - texture(gb[2], uv + vec2(-x_offset, 0.0)).x) < delta &&
+        dot(base_normal, (texture(gb[1], uv + vec2(-x_offset, 0.0)).xyz * 2.0 - 1.0)) > 0.95
+    ) {
+        sum += 1.0;
+        base += texture(gb[3], uv + vec2(-x_offset, 0.0)).x;
+    }
+
+    return base / sum;
 }
 
 void main() {
@@ -45,7 +93,6 @@ void main() {
     vec4 color = texture(gb[0], uv);
     vec3 normal = texture(gb[1], uv).xyz * 2.0 - 1.0;
     float depth = texture(gb[2], uv).x;
-    vec4 ao = texture(gb[3], uv);
 
     vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
@@ -57,7 +104,7 @@ void main() {
     vec3 color_override = vec3(0.9);
 
     vec3 sky = vec3(0.5, 0.6, 0.9);
-    vec3 lighted = ((light(color_override, normalize(normal), sun_dir) + fresnel * sky) * ao.r) + noise;
+    vec3 lighted = ((light(color_override, normalize(normal), sun_dir) + fresnel * sky) * blurred_ao()) + noise;
 
     outColor = vec4(
         mix(sky, lighted, color.a) * (1.0 / globals.exposure),

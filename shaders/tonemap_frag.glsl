@@ -9,6 +9,7 @@ layout(set = 0, binding = 0) uniform Global {
     float exposure;
     float res_x;
     float res_y;
+    float time;
 } globals;
 
 layout(set = 1, binding = 0) uniform UniformBufferObject {
@@ -40,12 +41,12 @@ vec3 reinhard_extended_luminance(vec3 v, float max_white_l) {
 }
 
 vec3 abberation(int i) {
-    float scale = (float(i) - 4.0);
+    float scale = (float(i) - 3.0) * 0.5;
 
     return vec3(
-        1.0 - min(abs(scale + 3.0), 1.0),
+        1.0 - min(abs(scale + 1.0), 1.0),
         1.0 - min(abs(scale + 0.0), 1.0),
-        1.0 - min(abs(scale - 3.0), 1.0)
+        1.0 - min(abs(scale - 1.0), 1.0)
     );
 }
 
@@ -54,22 +55,22 @@ void main() {
 
     vec3 sum = vec3(0.0);
 
-    for (int i = 0; i < 9; i++) {
-        float scale = (float(i) - 4.0) * 0.0005 + 1.0;
+    for (int i = 0; i < 7; i++) {
+        float scale = (float(i) - 3.0) * 0.001 + 1.0;
 
         vec2 uv_scaled = ((uv - 0.5) * scale) + 0.5;
 
         vec3 color = texture(colorBuf, uv_scaled).rgb * globals.exposure * abberation(i);
 
-        sum += color * (0.125 * 1.5);
+        sum += color * 0.5;
     }
 
     vec3 color_correction = vec3(
-        pow(sum.r, 1.06),
-        pow(sum.g, 0.99) - 0.01,
-        pow(sum.b, 1.03)
+        pow(sum.r, 1.02),
+        pow(sum.g, 0.99),
+        pow(sum.b, 1.01) + 0.001
     );
-    vec3 tonemapped = reinhard_extended_luminance(color_correction, 0.5);
+    vec3 tonemapped = reinhard_extended_luminance(color_correction, 1.5);
 
     outColor = vec4(
         tonemapped,

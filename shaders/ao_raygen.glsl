@@ -2,6 +2,8 @@
 #extension GL_EXT_ray_tracing : enable
 #pragma shader_stage(raygen)
 
+#define PI 3.141569
+
 layout(location = 0) rayPayloadEXT struct {
     bool isMiss;
 } payload;
@@ -10,6 +12,7 @@ layout(set = 0, binding = 0) uniform Global {
     float exposure;
     float res_x;
     float res_y;
+    float time;
 } globals;
 
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
@@ -29,43 +32,76 @@ uint pcg_hash(uint i) {
     return (word >> 22u) ^ word;
 }
 
+void compute_default_basis(const vec3 normal, out vec3 x, out vec3 y)
+{
+    vec3        z  = normal;
+    const float yz = -z.y * z.z;
+    y = normalize(((abs(z.z) > 0.99999f) ? vec3(-z.x * z.y, 1.0f - z.y * z.y, yz) : vec3(-z.x * z.z, yz, 1.0f - z.z * z.z)));
+
+    x = cross(y, z);
+}
+
+vec3 rand_hemi(vec2 rand) {
+    float sq_x = sqrt(rand.x);
+
+    float x = sq_x * cos(2.0 * PI * rand.y);
+    float y = sq_x * sin(2.0 * PI * rand.y);
+    float z = sqrt(1.0 - rand.x);
+
+    return vec3(x, y, z);
+}
+
 void main () {
     payload.isMiss = false;
 
     vec2 uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x, globals.res_y);
 
-    vec3 rand_sphere = normalize(vec3(
-        (float(pcg_hash(gl_LaunchIDEXT.x * 1813 + gl_LaunchIDEXT.y * 524) % 255) / 128) - 0.5,
-        (float(pcg_hash(gl_LaunchIDEXT.x * 907 + gl_LaunchIDEXT.y * 1541) % 255) / 128) - 0.5,
-        (float(pcg_hash(gl_LaunchIDEXT.x * 15801 + gl_LaunchIDEXT.y * 7137) % 255) / 128) - 0.5
-    ));
-
     float depth = texture(gb[2], uv).x;
-    vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0) + rand_sphere;
+    vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0);
 
     vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
     vec3 vertPos = (inverse(ubo.view) *  per_pos).xyz;
 
-    traceRayEXT(
-        tlas,
-        gl_RayFlagsOpaqueEXT,
-        0xFF,
-        0,
-        0,
-        0,
-        vertPos,
-        0.01,
-        normal,
-        1000.0,
-        0
-    );
+    float sum = 0.0;
+
+    int samples = 16;
+
+    vec3 tangent, bitangent;
+    compute_default_basis(normal, tangent, bitangent);
+
+    for (int i = 0; i < samples; i++) {
+        vec3 hemi = rand_hemi(
+            vec2(
+                float((pcg_hash((2 * i + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
+                float((pcg_hash((2 * i + 1 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+            )
+        );
+
+        vec3 dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
+
+        traceRayEXT(
+            tlas,
+            gl_RayFlagsOpaqueEXT,
+            0xFF,
+            0,
+            0,
+            0,
+            vertPos,
+            0.005,
+            dir,
+            1000.0,
+            0
+        );
+
+        sum += float(payload.isMiss);
+    }
 
     imageStore(
         rtao_out,
         ivec2(gl_LaunchIDEXT.xy),
         vec4(
-            vec3(float(payload.isMiss)),
+            vec3(sum / float(samples)),
             1.0
         )
     );

@@ -166,7 +166,7 @@ impl App {
                 let frametime_target = 1.0 / 30.0;
 
                 if delta < frametime_target {
-                    std::thread::sleep(Duration::from_secs_f32(frametime_target - delta));
+                    //std::thread::sleep(Duration::from_secs_f32(frametime_target - delta));
                 }
             };
 
