@@ -10,10 +10,27 @@ pub struct CommandPool {
 }
 
 impl CommandPool {
-    pub fn new(device: Rc<Device>) -> Result<Self, VulkanError> {
+    pub fn new_graphics(device: Rc<Device>) -> Result<Self, VulkanError> {
         let command_pool = vk::CommandPoolCreateInfo {
             flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
             queue_family_index: device.graphics_queue_family as u32,
+            ..Default::default()
+        };
+
+        let inner = unsafe {
+            device
+                .inner
+                .create_command_pool(&command_pool, None)
+                .map_to_err("Cannot create command pool")?
+        };
+
+        Ok(Self { device, inner })
+    }
+
+    pub fn new_compute(device: Rc<Device>) -> Result<Self, VulkanError> {
+        let command_pool = vk::CommandPoolCreateInfo {
+            flags: vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+            queue_family_index: device.compute_queue_family as u32,
             ..Default::default()
         };
 

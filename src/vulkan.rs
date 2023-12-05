@@ -35,7 +35,7 @@ pub use instance::Instance;
 pub use mesh::VulkanMesh;
 pub use pipeline::{Pipeline, RtPipeline};
 pub use render_pass::RenderPass;
-pub use rt::{RayTracingPipeline, ShaderBindingTable};
+pub use rt::{AccelerationStructure, RayTracingAs, RayTracingPipeline, ShaderBindingTable};
 pub use sampler::Sampler;
 pub use shader::{ShaderModule, ShaderStage};
 pub use surface::Surface;

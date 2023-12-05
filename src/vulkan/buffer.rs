@@ -7,6 +7,7 @@ pub struct Buffer {
     pub inner: vk::Buffer,
     pub memory: vk::DeviceMemory,
     persistent_ptr: Option<*mut c_void>,
+    get_address: bool,
     device: Rc<Device>,
 }
 
@@ -90,6 +91,7 @@ impl Buffer {
             device,
             memory,
             persistent_ptr,
+            get_address,
         })
     }
 
@@ -110,6 +112,20 @@ impl Buffer {
         }
 
         Ok(())
+    }
+
+    pub fn get_device_addr(&self) -> Option<vk::DeviceAddress> {
+        if self.get_address {
+            let addr_info = vk::BufferDeviceAddressInfo {
+                buffer: self.inner,
+                ..Default::default()
+            };
+
+            let addr = unsafe { self.device.inner.get_buffer_device_address(&addr_info) };
+            Some(addr)
+        } else {
+            None
+        }
     }
 }
 

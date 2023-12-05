@@ -206,6 +206,15 @@ impl RtPipeline {
             ..Default::default()
         };
 
+        let hit_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR {
+            ty: vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
+            general_shader: vk::SHADER_UNUSED_KHR,
+            closest_hit_shader: 2,
+            any_hit_shader: vk::SHADER_UNUSED_KHR,
+            intersection_shader: vk::SHADER_UNUSED_KHR,
+            ..Default::default()
+        };
+
         let dynamic_state = vk::PipelineDynamicStateCreateInfo {
             dynamic_state_count: 0,
             p_dynamic_states: [].as_ptr(),
@@ -233,7 +242,7 @@ impl RtPipeline {
                 .map_to_err("Cannot create pipeline layout")?
         };
 
-        let groups = [gen_group_create_info, miss_group_create_info];
+        let groups = [gen_group_create_info, miss_group_create_info, hit_group_create_info];
 
         let pipeline_info = vk::RayTracingPipelineCreateInfoKHR {
             stage_count: stages.len() as u32,

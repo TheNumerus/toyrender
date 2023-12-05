@@ -15,7 +15,6 @@ impl Image {
         format: vk::Format,
         extent: vk::Extent3D,
         usage: vk::ImageUsageFlags,
-        layout: vk::ImageLayout,
     ) -> Result<Self, VulkanError> {
         let create_info = vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,
@@ -26,7 +25,7 @@ impl Image {
             samples: vk::SampleCountFlags::TYPE_1,
             tiling: vk::ImageTiling::OPTIMAL,
             usage,
-            initial_layout: layout,
+            initial_layout: vk::ImageLayout::UNDEFINED,
             ..Default::default()
         };
 

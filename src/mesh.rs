@@ -1,4 +1,5 @@
 use crate::vulkan::Vertex;
+use ash::vk;
 use nalgebra_glm::{vec2, vec3, vec4, Mat4};
 use std::borrow::Cow;
 use std::rc::Rc;
@@ -32,6 +33,22 @@ impl Indices {
         match &self {
             Indices::U16(v) => Cow::Owned(v.iter().map(|&r| r as u32).collect()),
             Indices::U32(v) => Cow::Borrowed(v),
+        }
+    }
+
+    pub fn get_index_size(&self) -> usize {
+        match self {
+            Indices::U16(_) => std::mem::size_of::<u16>(),
+            Indices::U32(_) => std::mem::size_of::<u32>(),
+        }
+    }
+}
+
+impl From<&Indices> for vk::IndexType {
+    fn from(value: &Indices) -> Self {
+        match value {
+            Indices::U16(_) => vk::IndexType::UINT16,
+            Indices::U32(_) => vk::IndexType::UINT32,
         }
     }
 }

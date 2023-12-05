@@ -55,7 +55,7 @@ void main() {
     vec3 sum = vec3(0.0);
 
     for (int i = 0; i < 9; i++) {
-        float scale = (float(i) - 4.0) * 0.001 + 1.0;
+        float scale = (float(i) - 4.0) * 0.0005 + 1.0;
 
         vec2 uv_scaled = ((uv - 0.5) * scale) + 0.5;
 
@@ -69,7 +69,7 @@ void main() {
         pow(sum.g, 0.99) - 0.01,
         pow(sum.b, 1.03)
     );
-    vec3 tonemapped = reinhard_extended_luminance(color_correction, 1.5);
+    vec3 tonemapped = reinhard_extended_luminance(color_correction, 0.5);
 
     outColor = vec4(
         tonemapped,

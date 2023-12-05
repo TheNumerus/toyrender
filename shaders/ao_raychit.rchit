@@ -1,6 +1,5 @@
 #version 460 core
 #extension GL_EXT_ray_tracing : enable
-#pragma shader_stage(miss)
 
 layout(location = 0) rayPayloadInEXT struct {
     bool isMiss;
@@ -8,5 +7,5 @@ layout(location = 0) rayPayloadInEXT struct {
 
 
 void main () {
-    payload.isMiss = true;
+    payload.isMiss = false;
 }

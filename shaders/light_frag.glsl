@@ -32,7 +32,7 @@ uint pcg_hash(uint i) {
 vec3 light(vec3 color, vec3 normal, vec3 lightDir)  {
     float d = max(dot(normal, lightDir) * 0.5 + 0.5, 0.01);
 
-    return vec3(d);
+    return vec3(d * color);
 }
 
 void main() {
@@ -52,10 +52,12 @@ void main() {
     vec3 vertPos = (inverse(ubo.view) *  per_pos).xyz;
 
     vec3 loc = inverse(ubo.view)[3].xyz;
-    float fresnel = pow(1.0 - max(dot(normalize(loc - vertPos), normalize(normal)), 0.0), 6.0) * 5.0;
+    float fresnel = pow(1.0 - max(dot(normalize(loc - vertPos), normalize(normal)), 0.0), 5.0);
 
-    vec3 lighted = (light(color.rgb, normalize(normal), sun_dir) + noise + fresnel) * ao.rgb;
-    vec3 sky = vec3(0.5, 0.5, 0.5);
+    vec3 color_override = vec3(0.9);
+
+    vec3 sky = vec3(0.5, 0.6, 0.9);
+    vec3 lighted = ((light(color_override, normalize(normal), sun_dir) + fresnel * sky) * ao.r) + noise;
 
     outColor = vec4(
         mix(sky, lighted, color.a) * (1.0 / globals.exposure),

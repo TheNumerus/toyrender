@@ -17,6 +17,8 @@ pub struct Device {
     pub graphics_queue_family: usize,
     pub present_queue: Queue,
     pub present_queue_family: usize,
+    pub compute_queue: Queue,
+    pub compute_queue_family: usize,
     pub physical_device: PhysicalDevice,
     pub rt_properties: RtProperties,
     instance: Rc<Instance>,
@@ -80,7 +82,11 @@ impl Device {
     ) -> Result<Self, VulkanError> {
         let queue_families = Self::find_device_queue_families(physical_device, &instance, surface)?;
 
-        let unique_queue_families = HashSet::from([queue_families.graphics.unwrap(), queue_families.present.unwrap()]);
+        let unique_queue_families = HashSet::from([
+            queue_families.graphics.unwrap(),
+            queue_families.present.unwrap(),
+            queue_families.compute.unwrap(),
+        ]);
 
         let queue_create_infos = unique_queue_families
             .iter()
@@ -100,18 +106,20 @@ impl Device {
         ];
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
 
-        let mut addr_create_info = vk::PhysicalDeviceBufferDeviceAddressFeatures {
+        let rt_acc_create_info = vk::PhysicalDeviceAccelerationStructureFeaturesKHR {
+            acceleration_structure: 1,
+            ..Default::default()
+        };
+
+        let addr_create_info = vk::PhysicalDeviceBufferDeviceAddressFeatures {
             buffer_device_address: 1,
+            p_next: std::ptr::addr_of!(rt_acc_create_info) as *mut c_void,
             ..Default::default()
         };
 
         let rt_create_info = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR {
             ray_tracing_pipeline: 1,
-            ray_tracing_pipeline_shader_group_handle_capture_replay: 0,
-            ray_tracing_pipeline_shader_group_handle_capture_replay_mixed: 0,
-            ray_tracing_pipeline_trace_rays_indirect: 0,
-            ray_traversal_primitive_culling: 0,
-            p_next: std::ptr::addr_of_mut!(addr_create_info) as *mut c_void,
+            p_next: std::ptr::addr_of!(addr_create_info) as *mut c_void,
             ..Default::default()
         };
 
@@ -133,7 +141,8 @@ impl Device {
         };
 
         let graphics_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
-        let present_queue = unsafe { inner.get_device_queue(queue_families.present.unwrap() as u32, 0) };
+        let present_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
+        let compute_queue = unsafe { inner.get_device_queue(queue_families.compute.unwrap() as u32, 0) };
 
         let (properties, rt_properties) = Self::get_device_properties(&instance, physical_device);
 
@@ -159,7 +168,9 @@ impl Device {
             graphics_queue,
             graphics_queue_family: queue_families.graphics.unwrap(),
             present_queue,
-            present_queue_family: queue_families.present.unwrap(),
+            present_queue_family: queue_families.graphics.unwrap(),
+            compute_queue,
+            compute_queue_family: queue_families.compute.unwrap(),
             physical_device,
             rt_properties,
             instance,
@@ -259,10 +270,15 @@ impl Device {
 
         let mut graphics_family = None;
         let mut present_family = None;
+        let mut compute_family = None;
 
         for (i, queue) in queue_families.iter().enumerate() {
             if queue.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
                 graphics_family = Some(i);
+            }
+
+            if queue.queue_flags.contains(vk::QueueFlags::COMPUTE) {
+                compute_family = Some(i);
             }
 
             let has_present_support = unsafe {
@@ -280,6 +296,7 @@ impl Device {
         Ok(QueueFamilyIndices {
             graphics: graphics_family,
             present: present_family,
+            compute: compute_family,
         })
     }
 
@@ -306,6 +323,7 @@ pub enum DeviceQueryResult {
 struct QueueFamilyIndices {
     graphics: Option<usize>,
     present: Option<usize>,
+    compute: Option<usize>,
 }
 
 pub struct SwapChainSupport {
