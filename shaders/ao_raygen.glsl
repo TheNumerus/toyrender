@@ -57,15 +57,23 @@ void main () {
     vec2 uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x, globals.res_y);
 
     float depth = texture(gb[2], uv).x;
+
+    if (depth == 1.0) {
+        return;
+    }
+
     vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0);
 
     vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
-    vec3 vertPos = (inverse(ubo.view) *  per_pos).xyz;
+    vec3 vertPos = (inverse(ubo.view) * per_pos).xyz;
+
+    vec3 loc = inverse(ubo.view)[3].xyz;
+    vec3 view_dir = normalize(vertPos - loc);
 
     float sum = 0.0;
 
-    int samples = 16;
+    int samples = 4;
 
     vec3 tangent, bitangent;
     compute_default_basis(normal, tangent, bitangent);
@@ -88,7 +96,7 @@ void main () {
             0,
             0,
             vertPos,
-            0.005,
+            0.01,
             dir,
             1000.0,
             0
@@ -97,11 +105,33 @@ void main () {
         sum += float(payload.isMiss);
     }
 
+    payload.isMiss = false;
+
+    vec3 ref_dir = view_dir - 2.0 * normal * dot(normal, view_dir);
+
+    traceRayEXT(
+        tlas,
+        gl_RayFlagsOpaqueEXT,
+        0xFF,
+        0,
+        0,
+        0,
+        vertPos,
+        0.01,
+        ref_dir,
+        1000.0,
+        0
+    );
+
+    float refl = float(payload.isMiss);
+
     imageStore(
         rtao_out,
         ivec2(gl_LaunchIDEXT.xy),
         vec4(
-            vec3(sum / float(samples)),
+            sum / float(samples),
+            refl,
+            0.0,
             1.0
         )
     );
