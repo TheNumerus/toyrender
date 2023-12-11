@@ -143,6 +143,8 @@ impl App {
 
             let directions = scene.camera.directions();
 
+            let sample_adjust = input_mapper.get_value(InputAxes::Rtao) as i32;
+
             scene.camera.fov += mouse_scroll;
             scene.camera.position += (input_mapper.get_value(InputAxes::Up) * directions.up
                 + input_mapper.get_value(InputAxes::Forward) * directions.forward
@@ -159,6 +161,8 @@ impl App {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
             };
+
+            renderer.rtao_samples = (renderer.rtao_samples + sample_adjust).max(1);
 
             renderer.render_frame(&scene, window.drawable_size(), &context)?;
 
@@ -219,6 +223,8 @@ impl App {
             (Scancode::D, vec![(InputAxes::Right, 1.0)]),
             (Scancode::Q, vec![(InputAxes::Up, -1.0)]),
             (Scancode::E, vec![(InputAxes::Up, 1.0)]),
+            (Scancode::RightBracket, vec![(InputAxes::Rtao, 1.0)]),
+            (Scancode::LeftBracket, vec![(InputAxes::Rtao, -1.0)]),
         ])
     }
 }
@@ -228,4 +234,5 @@ pub enum InputAxes {
     Forward,
     Right,
     Up,
+    Rtao,
 }

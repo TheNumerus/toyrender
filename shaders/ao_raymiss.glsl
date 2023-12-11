@@ -4,6 +4,7 @@
 
 layout(location = 0) rayPayloadInEXT struct {
     bool isMiss;
+    float dist;
 } payload;
 
 

@@ -52,6 +52,7 @@ pub struct VulkanRenderer {
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub current_frame: usize,
+    pub rtao_samples: i32,
     meshes: HashMap<u64, VulkanMesh>,
     fs_quad: VulkanMesh,
     img_available: Vec<Semaphore>,
@@ -550,6 +551,7 @@ impl VulkanRenderer {
             uniform_buffers,
             uniform_buffers_globals,
             in_flight,
+            rtao_samples: 4,
             meshes: HashMap::new(),
             current_frame: 0,
             max_frames_in_flight: MAX_FRAMES_IN_FLIGHT,
@@ -1017,6 +1019,16 @@ impl VulkanRenderer {
                     self.descriptors.get_sets(DescLayout::GBuffer)[self.current_frame].inner,
                 ],
                 &[],
+            );
+
+            let samples = self.rtao_samples.to_le_bytes();
+
+            self.device.inner.cmd_push_constants(
+                command_buffer.inner,
+                self.pipeline_rtao.layout,
+                vk::ShaderStageFlags::RAYGEN_KHR,
+                0,
+                &samples,
             );
 
             self.rt_pipeline_ext.loader.cmd_trace_rays(

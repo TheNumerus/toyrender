@@ -6,6 +6,7 @@
 
 layout(location = 0) rayPayloadEXT struct {
     bool isMiss;
+    float dist;
 } payload;
 
 layout(set = 0, binding = 0) uniform Global {
@@ -25,6 +26,10 @@ layout(set = 1, binding = 0) uniform UniformBufferObject {
 } ubo;
 
 layout(set = 2, binding = 0) uniform sampler2D[] gb;
+
+layout( push_constant ) uniform constants {
+    int samples;
+} push_consts;
 
 uint pcg_hash(uint i) {
     uint state = i * 747796405u + 2891336453u;
@@ -72,8 +77,9 @@ void main () {
     vec3 view_dir = normalize(vertPos - loc);
 
     float sum = 0.0;
+    float dist = 10.0;
 
-    int samples = 4;
+    int samples = push_consts.samples;
 
     vec3 tangent, bitangent;
     compute_default_basis(normal, tangent, bitangent);
@@ -103,6 +109,7 @@ void main () {
         );
 
         sum += float(payload.isMiss);
+        dist = min(payload.dist, dist);
     }
 
     payload.isMiss = false;
@@ -131,7 +138,7 @@ void main () {
         vec4(
             sum / float(samples),
             refl,
-            0.0,
+            dist,
             1.0
         )
     );

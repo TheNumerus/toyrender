@@ -55,6 +55,8 @@ float blurred_ao() {
     vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, base_depth, 1.0);
     per_pos /= per_pos.w;
     vec3 base_pos = (inverse(ubo.view) *  per_pos).xyz;
+    vec3 loc = inverse(ubo.view)[3].xyz;
+    float vert_dist = distance(base_pos, loc);
 
     float ao_sample = texture(gb[3], uv).x;
 
@@ -68,6 +70,8 @@ float blurred_ao() {
 
     vec2 offset_scale = (vec2(globals.res_y, globals.res_x) / max_dim) * 0.001;
 
+    //float offset_scale = texture(gb[3], uv + offset).z;
+
     int samples = 64;
     float sq_samples = sqrt(float(samples));
 
@@ -77,7 +81,11 @@ float blurred_ao() {
         float y = sq_i * cos((2 * PI * samples * float(i)) / PHI);
 
         vec2 offset = vec2(x, y) * offset_scale;
-        float polar_dist = length(offset);
+        vec2 uv_new = uv + offset;
+
+        if (uv_new.x > 1.0 || uv_new.y > 1.0 || uv_new.x < 0.0 || uv_new.y < 0.0) {
+            continue;
+        }
 
         vec3 normal = texture(gb[1], uv + offset).xyz * 2.0 - 1.0;
 
@@ -87,11 +95,15 @@ float blurred_ao() {
         per_pos_s /= per_pos_s.w;
         vec3 vertPos = (inverse(ubo.view) *  per_pos_s).xyz;
 
-        float norm_factor = 1.0 / max(dot(base_normal, normal), 0.01);
         float dist = distance(vertPos, base_pos);
 
-        float weight = gauss(dist * 3.0 + norm_factor * 0.2 + polar_dist, 0.1);
-        if (isnan(weight)) {
+        float z_min = texture(gb[3], uv + offset).z;
+
+        float max_x = 0.3 * (1.0 / vert_dist);
+        float dev = min(max_x, 2.8 / z_min);
+
+        float weight = gauss(dist, dev);
+        if (isnan(weight) || dot(base_normal, normal) < 0.9) {
             weight = 0.0;
         }
 
