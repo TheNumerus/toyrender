@@ -6,6 +6,7 @@ use crate::renderer::{FrameContext, VulkanRenderer};
 use crate::scene::Scene;
 use log::{error, info};
 use sdl2::event::{Event, WindowEvent};
+use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
@@ -82,6 +83,7 @@ impl App {
         let mouse_sens = 0.002;
         let scroll_sens = 0.5;
         let movement_speed = 4.0;
+        let mut debug_mode = 0;
         let mut focused = true;
 
         'running: loop {
@@ -93,6 +95,7 @@ impl App {
             let mut mouse = (0, 0);
             let mut mouse_scroll = 0.0;
             let mut dragging;
+            let mut sample_adjust = 0;
 
             for event in event_pump.poll_iter() {
                 match event {
@@ -135,6 +138,12 @@ impl App {
                             sdl_context.mouse().show_cursor(true);
                         }
                     }
+                    Event::KeyDown { keycode, .. } => match keycode {
+                        Some(Keycode::LeftBracket) => sample_adjust = -1,
+                        Some(Keycode::RightBracket) => sample_adjust = 1,
+                        Some(Keycode::R) => debug_mode = (debug_mode + 1) % 8,
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -142,8 +151,6 @@ impl App {
             input_mapper.update(event_pump.keyboard_state());
 
             let directions = scene.camera.directions();
-
-            let sample_adjust = input_mapper.get_value(InputAxes::Rtao) as i32;
 
             scene.camera.fov += mouse_scroll;
             scene.camera.position += (input_mapper.get_value(InputAxes::Up) * directions.up
@@ -162,7 +169,13 @@ impl App {
                 total_time: frame_end.duration_since(start).as_secs_f32(),
             };
 
-            renderer.rtao_samples = (renderer.rtao_samples + sample_adjust).max(1);
+            if sample_adjust != 0 {
+                let new_samples = (renderer.rtao_samples + sample_adjust).max(1);
+                renderer.rtao_samples = new_samples;
+                info!("new sample count: {new_samples}");
+            }
+
+            renderer.debug_mode = debug_mode;
 
             renderer.render_frame(&scene, window.drawable_size(), &context)?;
 
@@ -223,8 +236,6 @@ impl App {
             (Scancode::D, vec![(InputAxes::Right, 1.0)]),
             (Scancode::Q, vec![(InputAxes::Up, -1.0)]),
             (Scancode::E, vec![(InputAxes::Up, 1.0)]),
-            (Scancode::RightBracket, vec![(InputAxes::Rtao, 1.0)]),
-            (Scancode::LeftBracket, vec![(InputAxes::Rtao, -1.0)]),
         ])
     }
 }
@@ -234,5 +245,4 @@ pub enum InputAxes {
     Forward,
     Right,
     Up,
-    Rtao,
 }

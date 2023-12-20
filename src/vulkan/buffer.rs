@@ -131,6 +131,9 @@ impl Buffer {
 
 impl Drop for Buffer {
     fn drop(&mut self) {
+        if self.persistent_ptr.is_some() {
+            unsafe { self.device.inner.unmap_memory(self.memory) }
+        }
         unsafe { self.device.inner.destroy_buffer(self.inner, None) }
         unsafe { self.device.inner.free_memory(self.memory, None) }
     }

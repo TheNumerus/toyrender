@@ -9,6 +9,7 @@ use crate::vulkan::{
 };
 use ash::vk::{Extent2D, Extent3D, Handle};
 use ash::{vk, Entry};
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use sdl2::video::Window;
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -25,6 +26,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 pub struct VulkanRenderer {
     pub instance: Rc<Instance>,
     pub device: Rc<Device>,
+    pub allocator: Allocator,
     pub swap_chain: SwapChain,
     pub surface: Surface,
     pub rt_pipeline_ext: RayTracingPipeline,
@@ -53,6 +55,7 @@ pub struct VulkanRenderer {
     pub uniform_buffers_globals: Vec<Buffer>,
     pub current_frame: usize,
     pub rtao_samples: i32,
+    pub debug_mode: i32,
     meshes: HashMap<u64, VulkanMesh>,
     fs_quad: VulkanMesh,
     img_available: Vec<Semaphore>,
@@ -79,6 +82,15 @@ impl VulkanRenderer {
         }?;
 
         let device = Rc::new(Device::new(instance.clone(), devices[0], &surface)?);
+
+        let allocator = Allocator::new(&AllocatorCreateDesc {
+            instance: instance.inner.clone(),
+            device: device.inner.clone(),
+            physical_device: device.physical_device,
+            debug_settings: Default::default(),
+            buffer_device_address: true,
+            allocation_sizes: Default::default(),
+        })?;
 
         let rt_pipeline_ext = RayTracingPipeline::new(&instance, &device)?;
         let rt_acc_struct_ext = Rc::new(RayTracingAs::new(&instance, &device)?);
@@ -395,7 +407,7 @@ impl VulkanRenderer {
 
             let desc_write_tlas = vk::WriteDescriptorSetAccelerationStructureKHR {
                 acceleration_structure_count: 1,
-                p_acceleration_structures: [tlas.inner].as_ptr(), //[vk::AccelerationStructureKHR::null()].as_ptr(),
+                p_acceleration_structures: [tlas.inner].as_ptr(),
                 ..Default::default()
             };
 
@@ -521,6 +533,7 @@ impl VulkanRenderer {
         Ok(Self {
             instance,
             device,
+            allocator,
             surface,
             rt_pipeline_ext,
             rt_acc_struct_ext,
@@ -551,6 +564,7 @@ impl VulkanRenderer {
             uniform_buffers,
             uniform_buffers_globals,
             in_flight,
+            debug_mode: 0,
             rtao_samples: 4,
             meshes: HashMap::new(),
             current_frame: 0,
@@ -591,7 +605,8 @@ impl VulkanRenderer {
         };
 
         let globals = Globals {
-            max_bright: 2.0,
+            max_bright: 4.0,
+            debug_mode: self.debug_mode,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
             time: context.total_time,
@@ -1231,6 +1246,7 @@ pub struct ViewProj {
 
 pub struct Globals {
     pub max_bright: f32,
+    pub debug_mode: i32,
     pub res_x: f32,
     pub res_y: f32,
     pub time: f32,
@@ -1238,9 +1254,10 @@ pub struct Globals {
 
 impl Globals {
     pub fn to_boxed_slice(&self) -> Box<[u8]> {
-        let mut vec = Vec::with_capacity(std::mem::size_of::<f32>() * 4);
+        let mut vec = Vec::with_capacity(std::mem::size_of::<f32>() * 5);
 
         vec.extend(self.max_bright.to_ne_bytes());
+        vec.extend(self.debug_mode.to_ne_bytes());
         vec.extend(self.res_x.to_ne_bytes());
         vec.extend(self.res_y.to_ne_bytes());
         vec.extend(self.time.to_ne_bytes());

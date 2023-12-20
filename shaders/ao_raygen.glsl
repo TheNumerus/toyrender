@@ -11,6 +11,7 @@ layout(location = 0) rayPayloadEXT struct {
 
 layout(set = 0, binding = 0) uniform Global {
     float exposure;
+    int debug;
     float res_x;
     float res_y;
     float time;
@@ -54,6 +55,16 @@ vec3 rand_hemi(vec2 rand) {
     float z = sqrt(1.0 - rand.x);
 
     return vec3(x, y, z);
+}
+
+vec3 rand_sphere(vec2 rand) {
+    float a = 1 - 2 * rand.x;
+    float b = sqrt(1 - a * a);
+    float phi = 2 * PI * rand.y;
+    float x = b * cos(phi);
+    float y = b * sin(phi);
+    float z = a;
+    return normalize(vec3(x, y, z));
 }
 
 void main () {
@@ -116,6 +127,15 @@ void main () {
 
     vec3 ref_dir = view_dir - 2.0 * normal * dot(normal, view_dir);
 
+    vec3 sphere = rand_sphere(
+        vec2(
+        float((pcg_hash((2 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
+        float((pcg_hash((2 + 1 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+        )
+    ) * 0.1;
+
+    ref_dir = normalize(ref_dir + sphere * dot(view_dir, normal));
+
     traceRayEXT(
         tlas,
         gl_RayFlagsOpaqueEXT,
@@ -132,6 +152,24 @@ void main () {
 
     float refl = float(payload.isMiss);
 
+    payload.isMiss = true;
+
+    traceRayEXT(
+        tlas,
+        gl_RayFlagsOpaqueEXT,
+        0xFF,
+        0,
+        0,
+        0,
+        vertPos + normal * 0.01,
+        0.01,
+        normalize((vec3(0, 0, 10) + sphere) - vertPos),
+        distance(vertPos, (vec3(0, 0, 10) + sphere)),
+        0
+    );
+
+    float shadow = float(payload.isMiss);
+
     imageStore(
         rtao_out,
         ivec2(gl_LaunchIDEXT.xy),
@@ -139,7 +177,7 @@ void main () {
             sum / float(samples),
             refl,
             dist,
-            1.0
+            shadow
         )
     );
 }

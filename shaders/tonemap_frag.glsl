@@ -7,6 +7,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) uniform Global {
     float exposure;
+    int debug;
     float res_x;
     float res_y;
     float time;
@@ -51,6 +52,14 @@ vec3 abberation(int i) {
 }
 
 void main() {
+    if (globals.debug != 0) {
+        outColor = vec4(
+            texture(colorBuf, uv).rgb,
+            1.0
+        );
+        return;
+    }
+
     float ratio = globals.res_x / globals.res_y;
 
     vec3 sum = vec3(0.0);
@@ -65,15 +74,15 @@ void main() {
         sum += color * 0.5;
     }
 
+    vec3 tonemapped = reinhard_extended_luminance(sum, 2.5);
     vec3 color_correction = vec3(
-        pow(sum.r, 1.02),
-        pow(sum.g, 0.99),
-        pow(sum.b, 1.01) + 0.001
+        smoothstep(0.0, 1.0, tonemapped.r),
+        smoothstep(0.0, 1.0, tonemapped.g),
+        pow(tonemapped.b, 0.9)
     );
-    vec3 tonemapped = reinhard_extended_luminance(color_correction, 1.5);
 
     outColor = vec4(
-        tonemapped,
+        mix(color_correction, tonemapped, vec3(0.5, 0.6, 0.4)),
         1.0
     );
 }
