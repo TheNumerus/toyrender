@@ -15,6 +15,7 @@ layout(set = 0, binding = 0) uniform Global {
     float res_x;
     float res_y;
     float time;
+    int half_res;
 } globals;
 
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
@@ -71,6 +72,9 @@ void main () {
     payload.isMiss = false;
 
     vec2 uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x, globals.res_y);
+    if (globals.half_res == 1) {
+        uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x/2, globals.res_y/2);
+    }
 
     float depth = texture(gb[2], uv).x;
 
@@ -102,7 +106,6 @@ void main () {
                 float((pcg_hash((2 * i + 1 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
             )
         );
-
         vec3 dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
 
         traceRayEXT(
@@ -115,7 +118,7 @@ void main () {
             vertPos,
             0.01,
             dir,
-            1000.0,
+            1.0,
             0
         );
 

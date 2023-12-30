@@ -66,6 +66,7 @@ pub enum ShaderStage {
     RayMiss,
     RayGen,
     RayClosestHit,
+    Compute,
 }
 
 impl From<ShaderStage> for vk::ShaderStageFlags {
@@ -73,6 +74,7 @@ impl From<ShaderStage> for vk::ShaderStageFlags {
         match value {
             ShaderStage::Fragment => Self::FRAGMENT,
             ShaderStage::Vertex => Self::VERTEX,
+            ShaderStage::Compute => Self::COMPUTE,
             ShaderStage::RayGen => Self::RAYGEN_KHR,
             ShaderStage::RayMiss => Self::MISS_KHR,
             ShaderStage::RayClosestHit => Self::CLOSEST_HIT_KHR,

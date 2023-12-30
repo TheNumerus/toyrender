@@ -49,16 +49,18 @@ pub enum DescLayout {
     GBuffer,
     GBufferPlus,
     PostProcess,
+    Taa,
 }
 
 impl DescLayout {
-    pub const fn all() -> [Self; 5] {
+    pub const fn all() -> [Self; 6] {
         [
             Self::Global,
             Self::View,
             Self::GBuffer,
             Self::GBufferPlus,
             Self::PostProcess,
+            Self::Taa,
         ]
     }
 
@@ -126,6 +128,15 @@ impl DescLayout {
                 vec![vk::DescriptorSetLayoutBinding {
                     binding: 0,
                     descriptor_count: 1,
+                    stage_flags: vk::ShaderStageFlags::FRAGMENT,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ..Default::default()
+                }]
+            }
+            DescLayout::Taa => {
+                vec![vk::DescriptorSetLayoutBinding {
+                    binding: 0,
+                    descriptor_count: 2,
                     stage_flags: vk::ShaderStageFlags::FRAGMENT,
                     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     ..Default::default()

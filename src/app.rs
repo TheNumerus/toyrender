@@ -10,7 +10,7 @@ use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub struct App {
     pub sdl_context: Sdl,
@@ -96,6 +96,7 @@ impl App {
             let mut mouse_scroll = 0.0;
             let mut dragging;
             let mut sample_adjust = 0;
+            let mut flip_half_res = false;
 
             for event in event_pump.poll_iter() {
                 match event {
@@ -142,6 +143,7 @@ impl App {
                         Some(Keycode::LeftBracket) => sample_adjust = -1,
                         Some(Keycode::RightBracket) => sample_adjust = 1,
                         Some(Keycode::R) => debug_mode = (debug_mode + 1) % 8,
+                        Some(Keycode::H) => flip_half_res = true,
                         _ => {}
                     },
                     _ => {}
@@ -170,12 +172,20 @@ impl App {
             };
 
             if sample_adjust != 0 {
-                let new_samples = (renderer.rtao_samples + sample_adjust).max(1);
-                renderer.rtao_samples = new_samples;
+                let new_samples = (renderer.quality.rtao_samples + sample_adjust).max(1);
+                renderer.quality.rtao_samples = new_samples;
                 info!("new sample count: {new_samples}");
             }
 
+            if flip_half_res {
+                renderer.quality.half_res = !renderer.quality.half_res;
+            }
+
             renderer.debug_mode = debug_mode;
+
+            if resized || flip_half_res {
+                renderer.resize(window.drawable_size())?;
+            }
 
             renderer.render_frame(&scene, window.drawable_size(), &context)?;
 
@@ -188,10 +198,6 @@ impl App {
             };
 
             eprint!("{} FPS\r", 1.0 / delta);
-
-            if resized {
-                renderer.resize(window.drawable_size())?;
-            }
         }
         eprintln!();
 
