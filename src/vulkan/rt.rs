@@ -1,4 +1,6 @@
-use crate::vulkan::{Buffer, CommandPool, Device, Fence, Instance, IntoVulkanError, RtPipeline, VulkanError};
+use crate::vulkan::{
+    Buffer, CommandBuffer, CommandPool, Device, Fence, Instance, IntoVulkanError, RtPipeline, VulkanError,
+};
 use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::extensions::khr::RayTracingPipeline as RayTracingPipelineLoader;
 use ash::vk;
@@ -223,7 +225,7 @@ impl AccelerationStructure {
     pub fn top_build(
         device: Rc<Device>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
-        cmd_pool: &CommandPool,
+        cmd_buf: &CommandBuffer,
         blases: &Vec<Self>,
         transforms: &Vec<Mat4>,
         flags: vk::BuildAccelerationStructureFlagsKHR,
@@ -263,8 +265,6 @@ impl AccelerationStructure {
 
             instances.push(instance);
         }
-
-        let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
         let mem_size = instances.len() as u64 * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
 
@@ -427,13 +427,15 @@ impl AccelerationStructure {
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
         for (range, geo) in ranges.into_iter().zip(geos.into_iter()) {
+            let geos = [geo];
+
             let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR {
                 ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
                 flags,
                 mode: vk::BuildAccelerationStructureModeKHR::BUILD,
                 src_acceleration_structure: vk::AccelerationStructureKHR::null(),
                 geometry_count: 1,
-                p_geometries: [geo].as_ptr(),
+                p_geometries: geos.as_ptr(),
                 ..Default::default()
             };
 

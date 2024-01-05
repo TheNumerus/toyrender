@@ -11,6 +11,7 @@ layout(set = 0, binding = 0) uniform Global {
     float res_x;
     float res_y;
     float time;
+    int frame_index;
     int half_res;
 } globals;
 

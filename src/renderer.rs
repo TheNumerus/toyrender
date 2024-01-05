@@ -14,6 +14,7 @@ use sdl2::video::Window;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
+use std::time::Instant;
 
 mod descriptors;
 use descriptors::{DescLayout, RendererDescriptors};
@@ -50,6 +51,7 @@ pub struct VulkanRenderer {
     pub shader_binding_table: ShaderBindingTable,
     pub tlas: AccelerationStructure,
     pub blases: Vec<AccelerationStructure>,
+    pub as_builder_cmd_buf: CommandBuffer,
     pub graphics_command_pool: CommandPool,
     pub compute_command_pool: CommandPool,
     pub descriptor_pool: DescriptorPool,
@@ -58,6 +60,7 @@ pub struct VulkanRenderer {
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub current_frame: usize,
+    pub frame_index: u32,
     pub quality: QualitySettings,
     pub debug_mode: i32,
     meshes: HashMap<u64, VulkanMesh>,
@@ -65,7 +68,7 @@ pub struct VulkanRenderer {
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     in_flight: Vec<Fence>,
-    max_frames_in_flight: usize,
+    frames_in_flight: usize,
 }
 
 impl VulkanRenderer {
@@ -106,13 +109,11 @@ impl VulkanRenderer {
             include_bytes!("../build/deferred_vert.spv"),
             device.clone(),
             ShaderStage::Vertex,
-            None,
         )?;
         let deferred_frag_module = ShaderModule::new(
             include_bytes!("../build/deferred_frag.spv"),
             device.clone(),
             ShaderStage::Fragment,
-            None,
         )?;
 
         let deferred_stages = [deferred_vert_module.stage_info(), deferred_frag_module.stage_info()];
@@ -121,25 +122,21 @@ impl VulkanRenderer {
             include_bytes!("../build/light_vert.spv"),
             device.clone(),
             ShaderStage::Vertex,
-            None,
         )?;
         let light_frag_module = ShaderModule::new(
             include_bytes!("../build/light_frag.spv"),
             device.clone(),
             ShaderStage::Fragment,
-            None,
         )?;
         let tonemap_frag_module = ShaderModule::new(
             include_bytes!("../build/tonemap_frag.spv"),
             device.clone(),
             ShaderStage::Fragment,
-            None,
         )?;
         let taa_frag_module = ShaderModule::new(
             include_bytes!("../build/taa_compute.spv"),
             device.clone(),
             ShaderStage::Compute,
-            None,
         )?;
 
         let light_stages = [light_vert_module.stage_info(), light_frag_module.stage_info()];
@@ -150,19 +147,16 @@ impl VulkanRenderer {
             include_bytes!("../build/ao_raygen.spv"),
             device.clone(),
             ShaderStage::RayGen,
-            None,
         )?;
         let rtao_miss_module = ShaderModule::new(
             include_bytes!("../build/ao_raymiss.spv"),
             device.clone(),
             ShaderStage::RayMiss,
-            None,
         )?;
         let rtao_hit_module = ShaderModule::new(
             include_bytes!("../build/ao_raychit.spv"),
             device.clone(),
             ShaderStage::RayClosestHit,
-            None,
         )?;
 
         let rt_stages = [
@@ -280,7 +274,7 @@ impl VulkanRenderer {
                     ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                 },
             ],
-            6 * MAX_FRAMES_IN_FLIGHT as u32,
+            200 * MAX_FRAMES_IN_FLIGHT as u32,
         )?;
 
         descriptors.allocate_sets(&descriptor_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
@@ -290,11 +284,12 @@ impl VulkanRenderer {
         let graphics_command_pool = CommandPool::new_graphics(device.clone())?;
         let compute_command_pool = CommandPool::new_compute(device.clone())?;
         let command_buffers = graphics_command_pool.allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
+        let as_builder_cmd_buf = compute_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
         let tlas = AccelerationStructure::top_build(
             device.clone(),
             rt_acc_struct_ext.clone(),
-            &compute_command_pool,
+            &as_builder_cmd_buf,
             &Vec::new(),
             &Vec::new(),
             vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
@@ -405,7 +400,7 @@ impl VulkanRenderer {
                 false,
             )?;
 
-            let buffer_info = vk::DescriptorBufferInfo {
+            let buffer_info_global = vk::DescriptorBufferInfo {
                 buffer: uniform_buffer_global.inner,
                 offset: 0,
                 range: std::mem::size_of::<Globals>() as u64,
@@ -419,13 +414,15 @@ impl VulkanRenderer {
                 dst_array_element: 0,
                 descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
                 descriptor_count: 1,
-                p_buffer_info: &buffer_info,
+                p_buffer_info: &buffer_info_global,
                 ..Default::default()
             };
 
-            let desc_write_tlas = vk::WriteDescriptorSetAccelerationStructureKHR {
+            let structs = [tlas.inner];
+
+            let desc_write_tlas_next = vk::WriteDescriptorSetAccelerationStructureKHR {
                 acceleration_structure_count: 1,
-                p_acceleration_structures: [tlas.inner].as_ptr(),
+                p_acceleration_structures: structs.as_ptr(),
                 ..Default::default()
             };
 
@@ -435,15 +432,11 @@ impl VulkanRenderer {
                 dst_array_element: 0,
                 descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                 descriptor_count: 1,
-                p_next: std::ptr::addr_of!(desc_write_tlas) as *const c_void,
+                p_next: std::ptr::addr_of!(desc_write_tlas_next) as *const c_void,
                 ..Default::default()
             };
 
-            let rtao_image_infos = [vk::DescriptorImageInfo {
-                sampler: rtao_render_target.sampler.inner,
-                image_view: rtao_render_target.view.inner,
-                image_layout: vk::ImageLayout::GENERAL,
-            }];
+            let rtao_image_infos = [rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL)];
 
             let desc_write_rtao_storage = vk::WriteDescriptorSet {
                 dst_set: descriptors.get_sets(DescLayout::Global)[i].inner,
@@ -499,11 +492,7 @@ impl VulkanRenderer {
                     image_view: gbuffer.views[2].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
-                vk::DescriptorImageInfo {
-                    sampler: rtao_render_target.sampler.inner,
-                    image_view: rtao_render_target.view.inner,
-                    image_layout: vk::ImageLayout::GENERAL,
-                },
+                rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL),
             ];
 
             let desc_write_gbp = vk::WriteDescriptorSet {
@@ -516,11 +505,8 @@ impl VulkanRenderer {
                 ..Default::default()
             };
 
-            let tonemap_image_infos = [vk::DescriptorImageInfo {
-                sampler: postprocess_render_target.sampler.inner,
-                image_view: postprocess_render_target.view.inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            }];
+            let tonemap_image_infos =
+                [postprocess_render_target.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
 
             let desc_write_tonemap = vk::WriteDescriptorSet {
                 dst_set: descriptors.get_sets(DescLayout::PostProcess)[i].inner,
@@ -533,16 +519,8 @@ impl VulkanRenderer {
             };
 
             let taa_image_infos = [
-                vk::DescriptorImageInfo {
-                    sampler: postprocess_render_target.sampler.inner,
-                    image_view: postprocess_render_target.view.inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: taa_render_target.sampler.inner,
-                    image_view: taa_render_target.view.inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
+                postprocess_render_target.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                taa_render_target.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             ];
 
             let desc_write_taa = vk::WriteDescriptorSet {
@@ -596,6 +574,7 @@ impl VulkanRenderer {
             shader_binding_table,
             tlas,
             blases: Vec::new(),
+            as_builder_cmd_buf,
             fs_quad,
             graphics_command_pool,
             compute_command_pool,
@@ -611,7 +590,8 @@ impl VulkanRenderer {
             quality: QualitySettings::new(),
             meshes: HashMap::new(),
             current_frame: 0,
-            max_frames_in_flight: MAX_FRAMES_IN_FLIGHT,
+            frame_index: 0,
+            frames_in_flight: MAX_FRAMES_IN_FLIGHT,
         })
     }
 
@@ -620,7 +600,7 @@ impl VulkanRenderer {
         scene: &Scene,
         drawable_size: (u32, u32),
         context: &FrameContext,
-    ) -> Result<(), VulkanError> {
+    ) -> Result<f32, VulkanError> {
         self.prepare_meshes(scene)?;
 
         self.in_flight[self.current_frame].wait()?;
@@ -653,6 +633,7 @@ impl VulkanRenderer {
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
             time: context.total_time,
+            frame_index: self.frame_index,
             half_res: if self.quality.half_res { 1 } else { 0 },
         };
 
@@ -661,16 +642,18 @@ impl VulkanRenderer {
         self.tlas = AccelerationStructure::top_build(
             self.device.clone(),
             self.rt_acc_struct_ext.clone(),
-            &self.compute_command_pool,
+            &self.as_builder_cmd_buf,
             &self.blases,
             &transforms,
             vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         )?;
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
+            let structs = [self.tlas.inner];
+
             let desc_write_tlas = vk::WriteDescriptorSetAccelerationStructureKHR {
                 acceleration_structure_count: 1,
-                p_acceleration_structures: [self.tlas.inner].as_ptr(),
+                p_acceleration_structures: structs.as_ptr(),
                 ..Default::default()
             };
 
@@ -698,7 +681,11 @@ impl VulkanRenderer {
             self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
         }
 
+        let start = Instant::now();
+
         self.record_command_buffer(command_buffer, framebuffer, scene, &context.total_time)?;
+
+        let end = Instant::now();
 
         let wait_semaphores = [self.img_available[self.current_frame].inner];
         let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
@@ -742,18 +729,19 @@ impl VulkanRenderer {
                 .expect("cannot present")
         };
 
-        self.device.wait_idle()?;
-
         if is_suboptimal {
             self.resize(drawable_size)?;
         }
 
-        self.current_frame = (self.current_frame + 1) % self.max_frames_in_flight;
+        self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
+        self.frame_index += 1;
 
-        Ok(())
+        Ok((end - start).as_secs_f32())
     }
 
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), VulkanError> {
+        self.device.wait_idle()?;
+
         // need to drop before creating new ones
         self.swap_chain_fbs.clear();
         self.swap_chain_image_views.clear();
@@ -837,7 +825,7 @@ impl VulkanRenderer {
                 .map_to_err("Cannot wait idle")?;
         }
 
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
+        for i in 0..self.frames_in_flight {
             let gb_image_infos = [
                 vk::DescriptorImageInfo {
                     sampler: self.gbuffer.sampler.inner,
@@ -882,11 +870,7 @@ impl VulkanRenderer {
                     image_view: self.gbuffer.views[2].inner,
                     image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
                 },
-                vk::DescriptorImageInfo {
-                    sampler: self.rtao_render_target.sampler.inner,
-                    image_view: self.rtao_render_target.view.inner,
-                    image_layout: vk::ImageLayout::GENERAL,
-                },
+                self.rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL),
             ];
 
             let desc_write_gbp = vk::WriteDescriptorSet {
@@ -899,11 +883,9 @@ impl VulkanRenderer {
                 ..Default::default()
             };
 
-            let tonemap_image_infos = [vk::DescriptorImageInfo {
-                sampler: self.postprocess_render_target.sampler.inner,
-                image_view: self.postprocess_render_target.view.inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            }];
+            let tonemap_image_infos = [self
+                .postprocess_render_target
+                .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
 
             let desc_write_tonemap = vk::WriteDescriptorSet {
                 dst_set: self.descriptors.get_sets(DescLayout::PostProcess)[i].inner,
@@ -915,11 +897,7 @@ impl VulkanRenderer {
                 ..Default::default()
             };
 
-            let rtao_image_infos = [vk::DescriptorImageInfo {
-                sampler: self.rtao_render_target.sampler.inner,
-                image_view: self.rtao_render_target.view.inner,
-                image_layout: vk::ImageLayout::GENERAL,
-            }];
+            let rtao_image_infos = [self.rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL)];
 
             let desc_write_rtao_storage = vk::WriteDescriptorSet {
                 dst_set: self.descriptors.get_sets(DescLayout::Global)[i].inner,
@@ -932,16 +910,10 @@ impl VulkanRenderer {
             };
 
             let taa_image_infos = [
-                vk::DescriptorImageInfo {
-                    sampler: self.postprocess_render_target.sampler.inner,
-                    image_view: self.postprocess_render_target.view.inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: self.taa_render_target.sampler.inner,
-                    image_view: self.taa_render_target.view.inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
+                self.postprocess_render_target
+                    .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                self.taa_render_target
+                    .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             ];
 
             let desc_write_taa = vk::WriteDescriptorSet {
@@ -1391,18 +1363,20 @@ pub struct Globals {
     pub res_x: f32,
     pub res_y: f32,
     pub time: f32,
+    pub frame_index: u32,
     pub half_res: i32,
 }
 
 impl Globals {
     pub fn to_boxed_slice(&self) -> Box<[u8]> {
-        let mut vec = Vec::with_capacity(std::mem::size_of::<f32>() * 6);
+        let mut vec = Vec::with_capacity(std::mem::size_of::<Self>());
 
         vec.extend(self.max_bright.to_ne_bytes());
         vec.extend(self.debug_mode.to_ne_bytes());
         vec.extend(self.res_x.to_ne_bytes());
         vec.extend(self.res_y.to_ne_bytes());
         vec.extend(self.time.to_ne_bytes());
+        vec.extend(self.frame_index.to_ne_bytes());
         vec.extend(self.half_res.to_ne_bytes());
 
         vec.into_boxed_slice()

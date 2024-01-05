@@ -73,4 +73,12 @@ impl RenderTarget {
 
         Ok(())
     }
+
+    pub fn descriptor_image_info(&self, image_layout: vk::ImageLayout) -> vk::DescriptorImageInfo {
+        vk::DescriptorImageInfo {
+            sampler: self.sampler.inner,
+            image_view: self.view.inner,
+            image_layout,
+        }
+    }
 }

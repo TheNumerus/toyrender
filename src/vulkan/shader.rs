@@ -11,12 +11,7 @@ pub struct ShaderModule {
 }
 
 impl ShaderModule {
-    pub fn new(
-        bytecode: &[u8],
-        device: Rc<Device>,
-        shader_stage: ShaderStage,
-        entry: Option<String>,
-    ) -> Result<Self, VulkanError> {
+    pub fn new(bytecode: &[u8], device: Rc<Device>, shader_stage: ShaderStage) -> Result<Self, VulkanError> {
         let create_info = vk::ShaderModuleCreateInfo {
             code_size: bytecode.len(),
             p_code: bytecode.as_ptr() as *const u32,
@@ -30,10 +25,7 @@ impl ShaderModule {
                 .map_to_err("cannot create shader module")?
         };
 
-        let entry = match entry {
-            Some(e) => CString::new(e).expect("Unexpected zero byte in entry name"),
-            None => CString::new("main").unwrap(),
-        };
+        let entry = CString::new("main").unwrap();
 
         Ok(Self {
             inner,

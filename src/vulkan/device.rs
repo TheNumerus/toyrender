@@ -168,7 +168,7 @@ impl Device {
             graphics_queue,
             graphics_queue_family: queue_families.graphics.unwrap(),
             present_queue,
-            present_queue_family: queue_families.graphics.unwrap(),
+            present_queue_family: queue_families.present.unwrap(),
             compute_queue,
             compute_queue_family: queue_families.compute.unwrap(),
             physical_device,

@@ -15,6 +15,7 @@ layout(set = 0, binding = 0) uniform Global {
     float res_x;
     float res_y;
     float time;
+    uint frame_index;
     int half_res;
 } globals;
 
@@ -90,6 +91,8 @@ void main () {
 
     vec3 loc = inverse(ubo.view)[3].xyz;
     vec3 view_dir = normalize(vertPos - loc);
+    float dis = distance(loc, vertPos);
+    vec3 bias = dis * normal * 0.001;
 
     float sum = 0.0;
     float dist = 10.0;
@@ -102,8 +105,8 @@ void main () {
     for (int i = 0; i < samples; i++) {
         vec3 hemi = rand_hemi(
             vec2(
-                float((pcg_hash((2 * i + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
-                float((pcg_hash((2 * i + 1 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+                float((pcg_hash((2 * i + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
+                float((pcg_hash((2 * i + 1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
             )
         );
         vec3 dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
@@ -115,15 +118,18 @@ void main () {
             0,
             0,
             0,
-            vertPos,
-            0.01,
+            vertPos + bias,
+            0.0001,
             dir,
-            1000.0,
+            5.0,
             0
         );
 
         sum += float(payload.isMiss);
-        dist = min(payload.dist, dist);
+
+        if (!payload.isMiss) {
+            dist = min(payload.dist, dist);
+        }
     }
 
     payload.isMiss = false;
@@ -132,8 +138,8 @@ void main () {
 
     vec3 sphere = rand_sphere(
         vec2(
-        float((pcg_hash((2 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
-        float((pcg_hash((2 + 1 + (int(globals.time * 137.0))) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+        float((pcg_hash((2 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
+        float((pcg_hash((2 + 1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
         )
     ) * 0.1;
 
@@ -146,8 +152,8 @@ void main () {
         0,
         0,
         0,
-        vertPos,
-        0.01,
+        vertPos + bias,
+        0.001,
         ref_dir,
         1000.0,
         0
@@ -155,21 +161,26 @@ void main () {
 
     float refl = float(payload.isMiss);
 
-    payload.isMiss = true;
+    payload.isMiss = false;
 
-    traceRayEXT(
-        tlas,
-        gl_RayFlagsOpaqueEXT,
-        0xFF,
-        0,
-        0,
-        0,
-        vertPos + normal * 0.01,
-        0.01,
-        normalize((vec3(0, 0, 10) + sphere) - vertPos),
-        distance(vertPos, (vec3(0, 0, 10) + sphere)),
-        0
-    );
+    vec3 ray_shadow_dir = normalize(vec3(0.2, -0.5, 1.0) + sphere * 0.1);
+
+    if (dot(ray_shadow_dir, normal) > 0.0) {
+        payload.isMiss = true;
+        traceRayEXT(
+            tlas,
+            gl_RayFlagsOpaqueEXT,
+            0xFF,
+            0,
+            0,
+            0,
+            vertPos + bias,
+            0.001,
+            ray_shadow_dir,
+            1000.0,
+            0
+        );
+    }
 
     float shadow = float(payload.isMiss);
 

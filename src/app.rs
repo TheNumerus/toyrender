@@ -187,7 +187,7 @@ impl App {
                 renderer.resize(window.drawable_size())?;
             }
 
-            renderer.render_frame(&scene, window.drawable_size(), &context)?;
+            let cpu_time = renderer.render_frame(&scene, window.drawable_size(), &context)?;
 
             if !focused {
                 let frametime_target = 1.0 / 30.0;
@@ -197,7 +197,7 @@ impl App {
                 }
             };
 
-            eprint!("{} FPS\r", 1.0 / delta);
+            eprint!("{} FPS, CPU: {} ms\r", 1.0 / delta, cpu_time * 1000.0);
         }
         eprintln!();
 

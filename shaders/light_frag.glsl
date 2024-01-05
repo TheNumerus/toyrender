@@ -14,6 +14,7 @@ layout(set = 0, binding = 0) uniform Global {
     float res_x;
     float res_y;
     float time;
+    int frame_index;
     int half_res;
 } globals;
 
@@ -173,9 +174,9 @@ void main() {
         );
         return;
     } else if (globals.debug == 7) {
-        vec4 color = texture(gb[0], uv);
+        float color = texture(gb[3], uv).z;
 
-        outColor = color;
+        outColor = vec4(vec3(color), 1.0);
         return;
     }
 
