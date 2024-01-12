@@ -13,15 +13,26 @@ mod scene;
 mod vulkan;
 
 use crate::args::Args;
-use err::AppError;
-fn main() -> Result<(), AppError> {
+
+fn main() {
     env_logger::init();
 
     let args = Args::parse();
-    let app = app::App::create()?;
-    app.run(args)?;
+    let app = match app::App::create() {
+        Ok(app) => app,
+        Err(e) => {
+            eprintln!("{e}");
+            info!("Quitting app...");
+            std::process::exit(1);
+        }
+    };
+
+    match app.run(args) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("{e}");
+        }
+    };
 
     info!("Quitting app...");
-
-    Ok(())
 }

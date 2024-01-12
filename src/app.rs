@@ -170,6 +170,7 @@ impl App {
             let context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
+                clear_taa: resized || flip_half_res,
             };
 
             if sample_adjust != 0 {

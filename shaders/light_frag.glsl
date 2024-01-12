@@ -27,7 +27,6 @@ layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
 layout( push_constant ) uniform constants {
     mat4 model;
-    float time;
 } push_consts;
 
 uint pcg_hash(uint i) {
@@ -206,9 +205,9 @@ void main() {
 
     vec3 sky = vec3(0.5, 0.6, 0.9);
 
-    vec3 diffuse_dir = light(color_override, normalize(normal), vertPos, lightPos, shadow) * 0.3 * (1.0 - (1.0 - ao) * 0.1);
-    vec3 specular = fresnel * sky + spec(loc, normalize(normal), vertPos, lightPos, shadow, 200.0);
-    vec3 ambient = sky * ao * 0.5 * color_override;
+    vec3 diffuse_dir = light(color_override, normalize(normal), vertPos, lightPos, shadow) + ao * sky;
+    vec3 specular = vec3(0.0);//fresnel * sky + spec(loc, normalize(normal), vertPos, lightPos, shadow, 200.0);
+    vec3 ambient = sky * 0.0 * color_override;
     vec3 lighted = ((diffuse_dir + specular + ambient)) + noise;
 
     outColor = vec4(

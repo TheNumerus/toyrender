@@ -17,7 +17,6 @@ layout(set = 0, binding = 2) uniform UniformBufferObject {
 
 layout( push_constant ) uniform constants {
     mat4 model;
-    float time;
 } push_consts;
 
 void main() {

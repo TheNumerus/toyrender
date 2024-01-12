@@ -1,0 +1,30 @@
+[rtao]
+kind = "rt"
+raygen = "ao_raygen"
+closest = "ao_raychit"
+miss = "ao_raymiss"
+
+[pt]
+kind = "rt"
+raygen = "pt_raygen"
+closest = "ao_raychit"
+miss = "ao_raymiss"
+
+[deferred]
+kind = "graphics"
+vertex = "deferred_vert"
+fragment = "deferred_frag"
+
+[light]
+kind = "graphics"
+vertex = "light_vert"
+fragment = "light_frag"
+
+[tonemap]
+kind = "graphics"
+vertex = "light_vert"
+fragment = "tonemap_frag"
+
+[taa]
+kind = "compute"
+compute = "taa_compute"

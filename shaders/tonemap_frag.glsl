@@ -24,7 +24,6 @@ layout(set = 1, binding = 0) uniform sampler2D colorBuf;
 
 layout( push_constant ) uniform constants {
     mat4 model;
-    float time;
 } push_consts;
 
 float luminance(vec3 v) {

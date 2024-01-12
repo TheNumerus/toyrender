@@ -16,6 +16,10 @@ layout(set = 0, binding = 0) uniform Global {
 layout(set = 1, binding = 0) uniform sampler2D resolve[];
 layout(set = 1, binding = 1, rgb10_a2) uniform image2D taa_out;
 
+layout( push_constant ) uniform constants {
+    int clear;
+} push_consts;
+
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
@@ -28,6 +32,10 @@ void main() {
         vec4 current = texture(resolve[0], uv);
         vec4 prev = imageLoad(taa_out, ivec2(x,y));
 
-        imageStore(taa_out, ivec2(x,y), mix(prev, current, 0.2));
+        if (push_consts.clear == 1) {
+            imageStore(taa_out, ivec2(x,y), current);
+        } else {
+            imageStore(taa_out, ivec2(x,y), mix(prev, current, 0.2));
+        }
     }
 }

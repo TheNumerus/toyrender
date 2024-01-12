@@ -272,7 +272,11 @@ impl ComputePipeline {
         stage: PipelineShaderStageCreateInfo,
         descriptor_layouts: &[vk::DescriptorSetLayout],
     ) -> Result<Self, VulkanError> {
-        let ranges = [];
+        let ranges = [vk::PushConstantRange {
+            offset: 0,
+            size: std::mem::size_of::<f32>() as u32,
+            stage_flags: vk::ShaderStageFlags::COMPUTE,
+        }];
 
         let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 

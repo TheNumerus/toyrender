@@ -10,19 +10,29 @@ use crate::vulkan::{
 use ash::vk::{Extent3D, Handle};
 use ash::{vk, Entry};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
+use log::info;
 use sdl2::video::Window;
 use std::collections::HashMap;
+use std::fs::File;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
+use zip::ZipArchive;
 
 mod descriptors;
 use descriptors::{DescLayout, DescriptorWriter, RendererDescriptors};
+
+mod pipeline_builder;
 
 mod quality;
 use quality::QualitySettings;
 
 mod render_target;
 use render_target::{GBuffer, RenderTarget};
+
+mod shader_loader;
+use shader_loader::ShaderLoader;
+pub use shader_loader::ShaderLoaderError;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -105,8 +115,10 @@ impl VulkanRenderer {
         let swap_chain = SwapChain::new(device.clone(), &instance, window.drawable_size(), &surface)?;
         let swap_chain_image_views = swap_chain.create_image_views()?;
 
+        let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
+
         let deferred_vert_module = ShaderModule::new(
-            include_bytes!("../build/deferred_vert.spv"),
+            shader_loader.shaders.get("deferred_vert").unwrap().as_ref(),
             device.clone(),
             ShaderStage::Vertex,
         )?;
@@ -144,7 +156,7 @@ impl VulkanRenderer {
         let tonemap_stages = [light_vert_module.stage_info(), tonemap_frag_module.stage_info()];
 
         let rtao_raygen_module = ShaderModule::new(
-            include_bytes!("../build/ao_raygen.spv"),
+            shader_loader.shaders.get("pt_raygen").unwrap().as_ref(),
             device.clone(),
             ShaderStage::RayGen,
         )?;
@@ -533,7 +545,7 @@ impl VulkanRenderer {
 
         let start = Instant::now();
 
-        self.record_command_buffer(command_buffer, framebuffer, scene, &context.total_time)?;
+        self.record_command_buffer(command_buffer, framebuffer, scene, context)?;
 
         let end = Instant::now();
 
@@ -719,20 +731,20 @@ impl VulkanRenderer {
         command_buffer: &CommandBuffer,
         framebuffer: &Framebuffer,
         scene: &Scene,
-        push_constants: &f32,
+        context: &FrameContext,
     ) -> Result<(), VulkanError> {
         command_buffer.begin()?;
 
-        self.record_gbuffer_pass(command_buffer, scene, push_constants);
+        self.record_gbuffer_pass(command_buffer, scene);
         self.record_rtao(command_buffer);
-        self.record_light_pass(command_buffer, push_constants);
-        self.record_taa_pass(command_buffer);
-        self.record_postprocess_pass(command_buffer, framebuffer, push_constants);
+        self.record_light_pass(command_buffer);
+        self.record_taa_pass(command_buffer, context.clear_taa);
+        self.record_postprocess_pass(command_buffer, framebuffer);
 
         command_buffer.end()
     }
 
-    fn record_gbuffer_pass(&self, command_buffer: &CommandBuffer, scene: &Scene, push_constants: &f32) {
+    fn record_gbuffer_pass(&self, command_buffer: &CommandBuffer, scene: &Scene) {
         let clears = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
@@ -785,18 +797,14 @@ impl VulkanRenderer {
             command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
 
             unsafe {
-                let mut constants = [0_u8; 68];
-
-                constants[0..64]
-                    .copy_from_slice(std::slice::from_raw_parts(instance.transform.as_ptr() as *const u8, 64));
-                constants[64..].copy_from_slice(&(push_constants).to_le_bytes());
+                let constants = std::slice::from_raw_parts(instance.transform.as_ptr() as *const u8, 64);
 
                 self.device.inner.cmd_push_constants(
                     command_buffer.inner,
                     self.pipeline_gb.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    &constants,
+                    constants,
                 );
 
                 self.device.inner.cmd_bind_index_buffer(
@@ -860,7 +868,7 @@ impl VulkanRenderer {
         }
     }
 
-    fn record_light_pass(&self, command_buffer: &CommandBuffer, push_constants: &f32) {
+    fn record_light_pass(&self, command_buffer: &CommandBuffer) {
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_pass_light.inner,
             framebuffer: self.postprocess_render_target.framebuffer.as_ref().unwrap().inner,
@@ -879,17 +887,6 @@ impl VulkanRenderer {
         command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
 
         unsafe {
-            let mut constants = [0_u8; 68];
-            constants[64..].copy_from_slice(&(push_constants).to_le_bytes());
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                self.pipeline_light.layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                0,
-                &constants,
-            );
-
             self.device.inner.cmd_bind_index_buffer(
                 command_buffer.inner,
                 self.fs_quad.buf.inner.inner,
@@ -914,7 +911,7 @@ impl VulkanRenderer {
         command_buffer.end_render_pass();
     }
 
-    fn record_taa_pass(&self, command_buffer: &CommandBuffer) {
+    fn record_taa_pass(&self, command_buffer: &CommandBuffer, clear: bool) {
         command_buffer.bind_compute_pipeline(&self.pipeline_taa);
 
         unsafe {
@@ -930,6 +927,20 @@ impl VulkanRenderer {
                 &[],
             );
 
+            let clear = if clear {
+                1_i32.to_le_bytes()
+            } else {
+                0_i32.to_le_bytes()
+            };
+
+            self.device.inner.cmd_push_constants(
+                command_buffer.inner,
+                self.pipeline_taa.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                &clear,
+            );
+
             let x = (self.swap_chain.extent.width / 16) + 1;
             let y = (self.swap_chain.extent.height / 16) + 1;
 
@@ -937,7 +948,7 @@ impl VulkanRenderer {
         }
     }
 
-    fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer, push_constants: &f32) {
+    fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer) {
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_pass_tonemap.inner,
             framebuffer: framebuffer.inner,
@@ -956,17 +967,6 @@ impl VulkanRenderer {
         command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
 
         unsafe {
-            let mut constants = [0_u8; 68];
-            constants[64..].copy_from_slice(&(push_constants).to_le_bytes());
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                self.pipeline_tonemap.layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                0,
-                &constants,
-            );
-
             self.device.inner.cmd_bind_index_buffer(
                 command_buffer.inner,
                 self.fs_quad.buf.inner.inner,
@@ -1061,6 +1061,7 @@ impl VulkanRenderer {
 pub struct FrameContext {
     pub delta_time: f32,
     pub total_time: f32,
+    pub clear_taa: bool,
 }
 
 pub struct ViewProj {
@@ -1106,4 +1107,19 @@ const fn halton(index: u32) -> (f32, f32) {
         7 => (0.0625, 0.888),
         _ => (0.5, 0.5),
     }
+}
+
+fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError> {
+    let mut base =
+        std::env::current_exe().map_err(|_| AppError::Other("Cannot get current path to executable".into()))?;
+
+    base.pop();
+    base.push(path);
+
+    info!("Loading shaders from {:?}", base);
+
+    let file = File::open(&base).map_err(|e| AppError::Other(format!("Cannot open shaders library: {e}")))?;
+    let arch = ZipArchive::new(file).map_err(|e| AppError::Other(format!("Cannot read shaders library: {e}")))?;
+
+    Ok(arch)
 }
