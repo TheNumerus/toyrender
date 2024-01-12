@@ -106,8 +106,14 @@ impl Device {
         ];
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
 
+        let partial_desc = vk::PhysicalDeviceDescriptorIndexingFeatures {
+            descriptor_binding_partially_bound: 1,
+            ..Default::default()
+        };
+
         let rt_acc_create_info = vk::PhysicalDeviceAccelerationStructureFeaturesKHR {
             acceleration_structure: 1,
+            p_next: std::ptr::addr_of!(partial_desc) as *mut c_void,
             ..Default::default()
         };
 

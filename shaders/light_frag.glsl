@@ -18,12 +18,12 @@ layout(set = 0, binding = 0) uniform Global {
     int half_res;
 } globals;
 
-layout(set = 1, binding = 0) uniform UniformBufferObject {
+layout(set = 0, binding = 2) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
 } ubo;
 
-layout(set = 2, binding = 0) uniform sampler2D[] gb;
+layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
 layout( push_constant ) uniform constants {
     mat4 model;

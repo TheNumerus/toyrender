@@ -2,28 +2,27 @@ use crate::err::AppError;
 use crate::mesh::MeshResource;
 use crate::scene::Scene;
 use crate::vulkan::{
-    AccelerationStructure, Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence,
-    Framebuffer, Image, ImageView, Instance, IntoVulkanError, Pipeline, RayTracingAs, RayTracingPipeline, RenderPass,
-    RtPipeline, Sampler, Semaphore, ShaderBindingTable, ShaderModule, ShaderStage, Surface, SwapChain, Vertex,
-    VulkanError, VulkanMesh,
+    AccelerationStructure, Buffer, CommandBuffer, CommandPool, ComputePipeline, DescriptorPool, Device,
+    DeviceQueryResult, Fence, Framebuffer, ImageView, Instance, IntoVulkanError, Pipeline, RayTracingAs,
+    RayTracingPipeline, RenderPass, RtPipeline, Semaphore, ShaderBindingTable, ShaderModule, ShaderStage, Surface,
+    SwapChain, Vertex, VulkanError, VulkanMesh,
 };
-use ash::vk::{Extent2D, Extent3D, Handle};
+use ash::vk::{Extent3D, Handle};
 use ash::{vk, Entry};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use sdl2::video::Window;
 use std::collections::HashMap;
-use std::ffi::c_void;
 use std::rc::Rc;
 use std::time::Instant;
 
 mod descriptors;
-use descriptors::{DescLayout, RendererDescriptors};
+use descriptors::{DescLayout, DescriptorWriter, RendererDescriptors};
 
 mod quality;
 use quality::QualitySettings;
 
 mod render_target;
-use render_target::RenderTarget;
+use render_target::{GBuffer, RenderTarget};
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -45,6 +44,7 @@ pub struct VulkanRenderer {
     pub pipeline_light: Pipeline,
     pub pipeline_tonemap: Pipeline,
     pub pipeline_rtao: RtPipeline,
+    pub pipeline_taa: ComputePipeline,
     pub render_pass_gb: RenderPass,
     pub render_pass_light: RenderPass,
     pub render_pass_tonemap: RenderPass,
@@ -165,7 +165,26 @@ impl VulkanRenderer {
             rtao_hit_module.stage_info(),
         ];
 
-        let mut descriptors = RendererDescriptors::build(device.clone())?;
+        let descriptor_pool = DescriptorPool::new(
+            device.clone(),
+            &[
+                vk::DescriptorPoolSize {
+                    descriptor_count: 8 * MAX_FRAMES_IN_FLIGHT as u32,
+                    ty: vk::DescriptorType::UNIFORM_BUFFER,
+                },
+                vk::DescriptorPoolSize {
+                    descriptor_count: 16 * MAX_FRAMES_IN_FLIGHT as u32,
+                    ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                },
+                vk::DescriptorPoolSize {
+                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                    ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                },
+            ],
+            200 * MAX_FRAMES_IN_FLIGHT as u32,
+        )?;
+
+        let descriptors = RendererDescriptors::build(device.clone(), &descriptor_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
 
         let render_pass_gb = RenderPass::new_gbuffer(device.clone())?;
         let render_pass_light = RenderPass::new_light(device.clone())?;
@@ -176,10 +195,7 @@ impl VulkanRenderer {
             swap_chain.extent,
             &render_pass_gb,
             &deferred_stages,
-            &[
-                descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::View).inner,
-            ],
+            &[descriptors.get_layout(DescLayout::Global).inner],
             2,
         )?;
 
@@ -190,8 +206,7 @@ impl VulkanRenderer {
             &light_stages,
             &[
                 descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::View).inner,
-                descriptors.get_layout(DescLayout::GBufferPlus).inner,
+                descriptors.get_layout(DescLayout::Image).inner,
             ],
             1,
         )?;
@@ -203,8 +218,7 @@ impl VulkanRenderer {
             &tonemap_stages,
             &[
                 descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::View).inner,
-                descriptors.get_layout(DescLayout::PostProcess).inner,
+                descriptors.get_layout(DescLayout::Image).inner,
             ],
             1,
         )?;
@@ -215,8 +229,16 @@ impl VulkanRenderer {
             &rt_stages,
             &[
                 descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::View).inner,
-                descriptors.get_layout(DescLayout::GBuffer).inner,
+                descriptors.get_layout(DescLayout::Compute).inner,
+            ],
+        )?;
+
+        let pipeline_taa = ComputePipeline::new(
+            device.clone(),
+            taa_frag_module.stage_info(),
+            &[
+                descriptors.get_layout(DescLayout::Global).inner,
+                descriptors.get_layout(DescLayout::Compute).inner,
             ],
         )?;
 
@@ -257,27 +279,6 @@ impl VulkanRenderer {
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
             vk::ImageAspectFlags::COLOR,
         )?;
-
-        let descriptor_pool = DescriptorPool::new(
-            device.clone(),
-            &[
-                vk::DescriptorPoolSize {
-                    descriptor_count: 8 * MAX_FRAMES_IN_FLIGHT as u32,
-                    ty: vk::DescriptorType::UNIFORM_BUFFER,
-                },
-                vk::DescriptorPoolSize {
-                    descriptor_count: 16 * MAX_FRAMES_IN_FLIGHT as u32,
-                    ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                },
-                vk::DescriptorPoolSize {
-                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
-                    ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                },
-            ],
-            200 * MAX_FRAMES_IN_FLIGHT as u32,
-        )?;
-
-        descriptors.allocate_sets(&descriptor_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
 
         let shader_binding_table = ShaderBindingTable::new(device.clone(), &rt_pipeline_ext, &pipeline_rtao, 1, 1)?;
 
@@ -359,6 +360,8 @@ impl VulkanRenderer {
                 .map_to_err("Cannot wait idle")?;
         }
 
+        let mut writes = Vec::new();
+
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             img_available.push(Semaphore::new(device.clone())?);
             render_finished.push(Semaphore::new(device.clone())?);
@@ -373,23 +376,7 @@ impl VulkanRenderer {
                 false,
             )?;
 
-            let buffer_info = vk::DescriptorBufferInfo {
-                buffer: uniform_buffer.inner,
-                offset: 0,
-                range: std::mem::size_of::<ViewProj>() as u64,
-            };
-
             uniform_buffers.push(uniform_buffer);
-
-            let desc_write = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::View)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                p_buffer_info: &buffer_info,
-                ..Default::default()
-            };
 
             let uniform_buffer_global = Buffer::new(
                 device.clone(),
@@ -400,155 +387,23 @@ impl VulkanRenderer {
                 false,
             )?;
 
-            let buffer_info_global = vk::DescriptorBufferInfo {
-                buffer: uniform_buffer_global.inner,
-                offset: 0,
-                range: std::mem::size_of::<Globals>() as u64,
-            };
-
             uniform_buffers_globals.push(uniform_buffer_global);
 
-            let desc_write_global = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::Global)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                descriptor_count: 1,
-                p_buffer_info: &buffer_info_global,
-                ..Default::default()
-            };
-
-            let structs = [tlas.inner];
-
-            let desc_write_tlas_next = vk::WriteDescriptorSetAccelerationStructureKHR {
-                acceleration_structure_count: 1,
-                p_acceleration_structures: structs.as_ptr(),
-                ..Default::default()
-            };
-
-            let desc_write_tlas = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::Global)[i].inner,
-                dst_binding: 1,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                descriptor_count: 1,
-                p_next: std::ptr::addr_of!(desc_write_tlas_next) as *const c_void,
-                ..Default::default()
-            };
-
-            let rtao_image_infos = [rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL)];
-
-            let desc_write_rtao_storage = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::Global)[i].inner,
-                dst_binding: 2,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 1,
-                p_image_info: rtao_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let gb_image_infos = [
-                vk::DescriptorImageInfo {
-                    sampler: gbuffer.sampler.inner,
-                    image_view: gbuffer.views[0].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: gbuffer.sampler.inner,
-                    image_view: gbuffer.views[1].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: gbuffer.sampler.inner,
-                    image_view: gbuffer.views[2].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-            ];
-
-            let desc_write_gb = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::GBuffer)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: gb_image_infos.len() as u32,
-                p_image_info: gb_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let gbplus_image_infos = [
-                vk::DescriptorImageInfo {
-                    sampler: gbuffer.sampler.inner,
-                    image_view: gbuffer.views[0].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: gbuffer.sampler.inner,
-                    image_view: gbuffer.views[1].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: gbuffer.sampler.inner,
-                    image_view: gbuffer.views[2].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL),
-            ];
-
-            let desc_write_gbp = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::GBufferPlus)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: gbplus_image_infos.len() as u32,
-                p_image_info: gbplus_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let tonemap_image_infos =
-                [postprocess_render_target.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-
-            let desc_write_tonemap = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::PostProcess)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: tonemap_image_infos.len() as u32,
-                p_image_info: tonemap_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let taa_image_infos = [
-                postprocess_render_target.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                taa_render_target.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            ];
-
-            let desc_write_taa = vk::WriteDescriptorSet {
-                dst_set: descriptors.get_sets(DescLayout::Taa)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: taa_image_infos.len() as u32,
-                p_image_info: taa_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            unsafe {
-                device.inner.update_descriptor_sets(
-                    &[
-                        desc_write_global,
-                        desc_write,
-                        desc_write_gb,
-                        desc_write_gbp,
-                        desc_write_tonemap,
-                        desc_write_rtao_storage,
-                        desc_write_tlas,
-                        desc_write_taa,
-                    ],
-                    &[],
-                );
-            }
+            writes.push(descriptors.global_sets[i].update_globals(&uniform_buffers_globals[i]));
+            writes.push(descriptors.global_sets[i].update_tlas(&tlas));
+            writes.push(descriptors.global_sets[i].update_view(&uniform_buffers[i]));
         }
+
+        writes.push(descriptors.rtao_set.update_target(&rtao_render_target));
+        writes.push(descriptors.rtao_set.update_rt_src(&gbuffer));
+
+        writes.push(descriptors.taa_set.update_target(&taa_render_target));
+        writes.push(descriptors.taa_set.update_taa_src(&postprocess_render_target));
+
+        writes.push(descriptors.light_set.update_light(&gbuffer, &rtao_render_target));
+        writes.push(descriptors.post_process_set.update_pp(&taa_render_target));
+
+        DescriptorWriter::batch_write(&device, writes);
 
         Ok(Self {
             instance,
@@ -568,6 +423,7 @@ impl VulkanRenderer {
             pipeline_light,
             pipeline_tonemap,
             pipeline_rtao,
+            pipeline_taa,
             render_pass_gb,
             render_pass_light,
             render_pass_tonemap,
@@ -617,7 +473,17 @@ impl VulkanRenderer {
         let fov_rad = scene.camera.fov / (180.0 / std::f32::consts::PI);
         let fovy = 2.0 * ((fov_rad / 2.0).tan() * (1.0 / aspect_ratio)).atan();
 
+        let offset = halton(self.frame_index);
+        let (offset_x, offset_y) = (
+            (offset.0 - 0.5) / drawable_size.0 as f32,
+            (offset.1 - 0.5) / drawable_size.1 as f32,
+        );
+
         let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 0.01, 5000.0);
+
+        // add jitter
+        proj.m13 = offset_x * 1.5;
+        proj.m23 = offset_y * 1.5;
 
         // flip because of vulkan
         proj.m22 *= -1.0;
@@ -637,6 +503,15 @@ impl VulkanRenderer {
             half_res: if self.quality.half_res { 1 } else { 0 },
         };
 
+        unsafe {
+            self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
+                std::ptr::addr_of!(ubo) as *const u8,
+                std::mem::size_of::<ViewProj>(),
+            ))?;
+
+            self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
+        }
+
         let transforms = scene.meshes.iter().map(|a| a.transform).collect();
 
         self.tlas = AccelerationStructure::top_build(
@@ -648,38 +523,13 @@ impl VulkanRenderer {
             vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
         )?;
 
+        let mut writes = Vec::new();
+
         for i in 0..MAX_FRAMES_IN_FLIGHT {
-            let structs = [self.tlas.inner];
-
-            let desc_write_tlas = vk::WriteDescriptorSetAccelerationStructureKHR {
-                acceleration_structure_count: 1,
-                p_acceleration_structures: structs.as_ptr(),
-                ..Default::default()
-            };
-
-            let desc_write_tlas = vk::WriteDescriptorSet {
-                dst_set: self.descriptors.get_sets(DescLayout::Global)[i].inner,
-                dst_binding: 1,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-                descriptor_count: 1,
-                p_next: std::ptr::addr_of!(desc_write_tlas) as *const c_void,
-                ..Default::default()
-            };
-
-            unsafe {
-                self.device.inner.update_descriptor_sets(&[desc_write_tlas], &[]);
-            }
+            writes.push(self.descriptors.global_sets[i].update_tlas(&self.tlas));
         }
 
-        unsafe {
-            self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
-                std::ptr::addr_of!(ubo) as *const u8,
-                std::mem::size_of::<ViewProj>(),
-            ))?;
-
-            self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
-        }
+        DescriptorWriter::batch_write(&self.device, writes);
 
         let start = Instant::now();
 
@@ -825,120 +675,18 @@ impl VulkanRenderer {
                 .map_to_err("Cannot wait idle")?;
         }
 
-        for i in 0..self.frames_in_flight {
-            let gb_image_infos = [
-                vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.sampler.inner,
-                    image_view: self.gbuffer.views[0].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.sampler.inner,
-                    image_view: self.gbuffer.views[1].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.sampler.inner,
-                    image_view: self.gbuffer.views[2].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-            ];
+        let writes = vec![
+            self.descriptors.rtao_set.update_target(&self.rtao_render_target),
+            self.descriptors.rtao_set.update_rt_src(&self.gbuffer),
+            self.descriptors.taa_set.update_target(&self.taa_render_target),
+            self.descriptors.taa_set.update_taa_src(&self.postprocess_render_target),
+            self.descriptors
+                .light_set
+                .update_light(&self.gbuffer, &self.rtao_render_target),
+            self.descriptors.post_process_set.update_pp(&self.taa_render_target),
+        ];
 
-            let desc_write_gb = vk::WriteDescriptorSet {
-                dst_set: self.descriptors.get_sets(DescLayout::GBuffer)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: gb_image_infos.len() as u32,
-                p_image_info: gb_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let gbp_image_infos = [
-                vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.sampler.inner,
-                    image_view: self.gbuffer.views[0].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.sampler.inner,
-                    image_view: self.gbuffer.views[1].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                vk::DescriptorImageInfo {
-                    sampler: self.gbuffer.sampler.inner,
-                    image_view: self.gbuffer.views[2].inner,
-                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                },
-                self.rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL),
-            ];
-
-            let desc_write_gbp = vk::WriteDescriptorSet {
-                dst_set: self.descriptors.get_sets(DescLayout::GBufferPlus)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: gbp_image_infos.len() as u32,
-                p_image_info: gbp_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let tonemap_image_infos = [self
-                .postprocess_render_target
-                .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
-
-            let desc_write_tonemap = vk::WriteDescriptorSet {
-                dst_set: self.descriptors.get_sets(DescLayout::PostProcess)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: tonemap_image_infos.len() as u32,
-                p_image_info: tonemap_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let rtao_image_infos = [self.rtao_render_target.descriptor_image_info(vk::ImageLayout::GENERAL)];
-
-            let desc_write_rtao_storage = vk::WriteDescriptorSet {
-                dst_set: self.descriptors.get_sets(DescLayout::Global)[i].inner,
-                dst_binding: 2,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                descriptor_count: 1,
-                p_image_info: rtao_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            let taa_image_infos = [
-                self.postprocess_render_target
-                    .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                self.taa_render_target
-                    .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            ];
-
-            let desc_write_taa = vk::WriteDescriptorSet {
-                dst_set: self.descriptors.get_sets(DescLayout::Taa)[i].inner,
-                dst_binding: 0,
-                dst_array_element: 0,
-                descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                descriptor_count: taa_image_infos.len() as u32,
-                p_image_info: taa_image_infos.as_ptr(),
-                ..Default::default()
-            };
-
-            unsafe {
-                self.device.inner.update_descriptor_sets(
-                    &[
-                        desc_write_gb,
-                        desc_write_tonemap,
-                        desc_write_rtao_storage,
-                        desc_write_gbp,
-                        desc_write_taa,
-                    ],
-                    &[],
-                );
-            }
-        }
+        DescriptorWriter::batch_write(&self.device, writes);
 
         self.swap_chain_fbs = self
             .swap_chain_image_views
@@ -953,17 +701,15 @@ impl VulkanRenderer {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        self.pipeline_gb.viewport.width = self.swap_chain.extent.width as f32;
-        self.pipeline_gb.viewport.height = self.swap_chain.extent.height as f32;
-        self.pipeline_gb.scissor.extent = self.swap_chain.extent;
-
-        self.pipeline_light.viewport.width = self.swap_chain.extent.width as f32;
-        self.pipeline_light.viewport.height = self.swap_chain.extent.height as f32;
-        self.pipeline_light.scissor.extent = self.swap_chain.extent;
-
-        self.pipeline_tonemap.viewport.width = self.swap_chain.extent.width as f32;
-        self.pipeline_tonemap.viewport.height = self.swap_chain.extent.height as f32;
-        self.pipeline_tonemap.scissor.extent = self.swap_chain.extent;
+        for pp in [
+            &mut self.pipeline_gb,
+            &mut self.pipeline_light,
+            &mut self.pipeline_tonemap,
+        ] {
+            pp.viewport.width = self.swap_chain.extent.width as f32;
+            pp.viewport.height = self.swap_chain.extent.height as f32;
+            pp.scissor.extent = self.swap_chain.extent;
+        }
 
         Ok(())
     }
@@ -980,7 +726,7 @@ impl VulkanRenderer {
         self.record_gbuffer_pass(command_buffer, scene, push_constants);
         self.record_rtao(command_buffer);
         self.record_light_pass(command_buffer, push_constants);
-        //self.record_taa_pass(command_buffer, push_constants);
+        self.record_taa_pass(command_buffer);
         self.record_postprocess_pass(command_buffer, framebuffer, push_constants);
 
         command_buffer.end()
@@ -1027,10 +773,7 @@ impl VulkanRenderer {
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_gb.layout,
                 0,
-                &[
-                    self.descriptors.get_sets(DescLayout::Global)[self.current_frame].inner,
-                    self.descriptors.get_sets(DescLayout::View)[self.current_frame].inner,
-                ],
+                &[self.descriptors.global_sets[self.current_frame].inner.inner],
                 &[],
             );
         }
@@ -1082,9 +825,8 @@ impl VulkanRenderer {
                 self.pipeline_rtao.layout,
                 0,
                 &[
-                    self.descriptors.get_sets(DescLayout::Global)[self.current_frame].inner,
-                    self.descriptors.get_sets(DescLayout::View)[self.current_frame].inner,
-                    self.descriptors.get_sets(DescLayout::GBuffer)[self.current_frame].inner,
+                    self.descriptors.global_sets[self.current_frame].inner.inner,
+                    self.descriptors.rtao_set.inner.inner,
                 ],
                 &[],
             );
@@ -1159,8 +901,8 @@ impl VulkanRenderer {
                 command_buffer.inner,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_light.layout,
-                2,
-                &[self.descriptors.get_sets(DescLayout::GBufferPlus)[self.current_frame].inner],
+                1,
+                &[self.descriptors.light_set.inner.inner],
                 &[],
             );
 
@@ -1172,59 +914,28 @@ impl VulkanRenderer {
         command_buffer.end_render_pass();
     }
 
-    /*fn record_taa_pass(&self, command_buffer: &CommandBuffer, push_constants: &f32) {
-        let render_pass_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_pass_taa.inner,
-            framebuffer: self.taa_render_target.framebuffer.as_ref().unwrap().inner,
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D::default(),
-                extent: self.swap_chain.extent,
-            },
-            clear_value_count: 0,
-            ..Default::default()
-        };
-
-        command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
-
-        command_buffer.bind_pipeline(&self.pipeline_taa, vk::PipelineBindPoint::GRAPHICS);
-
-        command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
+    fn record_taa_pass(&self, command_buffer: &CommandBuffer) {
+        command_buffer.bind_compute_pipeline(&self.pipeline_taa);
 
         unsafe {
-            let mut constants = [0_u8; 68];
-            constants[64..].copy_from_slice(&(push_constants).to_le_bytes());
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                self.pipeline_light.layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                0,
-                &constants,
-            );
-
-            self.device.inner.cmd_bind_index_buffer(
-                command_buffer.inner,
-                self.fs_quad.buf.inner.inner,
-                self.fs_quad.indices_offset,
-                vk::IndexType::UINT32,
-            );
-
             self.device.inner.cmd_bind_descriptor_sets(
                 command_buffer.inner,
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_taa.layout,
-                2,
-                &[self.descriptors.get_sets(DescLayout::Taa)[self.current_frame].inner],
+                0,
+                &[
+                    self.descriptors.global_sets[self.current_frame].inner.inner,
+                    self.descriptors.taa_set.inner.inner,
+                ],
                 &[],
             );
 
-            self.device
-                .inner
-                .cmd_draw_indexed(command_buffer.inner, self.fs_quad.index_count as u32, 1, 0, 0, 0);
-        }
+            let x = (self.swap_chain.extent.width / 16) + 1;
+            let y = (self.swap_chain.extent.height / 16) + 1;
 
-        command_buffer.end_render_pass();
-    }*/
+            self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
+        }
+    }
 
     fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer, push_constants: &f32) {
         let render_pass_info = vk::RenderPassBeginInfo {
@@ -1267,8 +978,8 @@ impl VulkanRenderer {
                 command_buffer.inner,
                 vk::PipelineBindPoint::GRAPHICS,
                 self.pipeline_tonemap.layout,
-                2,
-                &[self.descriptors.get_sets(DescLayout::PostProcess)[self.current_frame].inner],
+                1,
+                &[self.descriptors.post_process_set.inner.inner],
                 &[],
             );
 
@@ -1383,89 +1094,16 @@ impl Globals {
     }
 }
 
-pub struct GBuffer {
-    pub framebuffer: Framebuffer,
-    pub images: Vec<Image>,
-    pub views: Vec<ImageView>,
-    pub sampler: Sampler,
-    device: Rc<Device>,
-}
-
-impl GBuffer {
-    pub fn attrs() -> [(vk::Format, vk::ImageUsageFlags, vk::ImageAspectFlags); 3] {
-        [
-            (
-                vk::Format::A2B10G10R10_UNORM_PACK32,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                vk::ImageAspectFlags::COLOR,
-            ),
-            (
-                vk::Format::A2B10G10R10_UNORM_PACK32,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                vk::ImageAspectFlags::COLOR,
-            ),
-            (
-                vk::Format::D32_SFLOAT,
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-                vk::ImageAspectFlags::DEPTH,
-            ),
-        ]
-    }
-
-    pub fn new(device: Rc<Device>, extent: Extent3D, render_pass: &RenderPass) -> Result<Self, VulkanError> {
-        let images = Self::attrs()
-            .into_iter()
-            .map(|(format, usage, _)| Image::new(device.clone(), format, extent, usage))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let views = images
-            .iter()
-            .zip(Self::attrs().into_iter())
-            .map(|(image, (format, _, aspect))| ImageView::new(device.clone(), image.inner, format, aspect))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let framebuffer = Framebuffer::new(
-            device.clone(),
-            render_pass,
-            Extent2D {
-                width: extent.width,
-                height: extent.height,
-            },
-            &[&views[0], &views[1], &views[2]],
-        )?;
-
-        let sampler = Sampler::new(device.clone())?;
-
-        Ok(Self {
-            images,
-            views,
-            framebuffer,
-            sampler,
-            device,
-        })
-    }
-
-    pub fn resize(&mut self, extent: Extent3D, render_pass: &RenderPass) -> Result<(), VulkanError> {
-        let attrs = Self::attrs();
-
-        for (idx, image) in &mut self.images.iter_mut().enumerate() {
-            *image = Image::new(self.device.clone(), attrs[idx].0, extent, attrs[idx].1)?;
-        }
-
-        for (idx, image) in &mut self.views.iter_mut().enumerate() {
-            *image = ImageView::new(self.device.clone(), self.images[idx].inner, attrs[idx].0, attrs[idx].2)?;
-        }
-
-        self.framebuffer = Framebuffer::new(
-            self.device.clone(),
-            render_pass,
-            Extent2D {
-                width: extent.width,
-                height: extent.height,
-            },
-            &[&self.views[0], &self.views[1], &self.views[2]],
-        )?;
-
-        Ok(())
+const fn halton(index: u32) -> (f32, f32) {
+    match index % 8 {
+        0 => (0.5, 0.333),
+        1 => (0.25, 0.666),
+        2 => (0.75, 0.111),
+        3 => (0.125, 0.444),
+        4 => (0.625, 0.777),
+        5 => (0.375, 0.222),
+        6 => (0.875, 0.555),
+        7 => (0.0625, 0.888),
+        _ => (0.5, 0.5),
     }
 }

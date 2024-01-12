@@ -103,20 +103,7 @@ impl Pipeline {
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         }];
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
-            p_push_constant_ranges: ranges.as_ptr(),
-            push_constant_range_count: ranges.len() as u32,
-            p_set_layouts: descriptor_layouts.as_ptr(),
-            set_layout_count: descriptor_layouts.len() as u32,
-            ..Default::default()
-        };
-
-        let layout = unsafe {
-            device
-                .inner
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_to_err("Cannot create pipeline layout")?
-        };
+        let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo {
             depth_test_enable: vk::TRUE,
@@ -227,20 +214,7 @@ impl RtPipeline {
             stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
         }];
 
-        let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
-            p_push_constant_ranges: ranges.as_ptr(),
-            push_constant_range_count: ranges.len() as u32,
-            p_set_layouts: descriptor_layouts.as_ptr(),
-            set_layout_count: descriptor_layouts.len() as u32,
-            ..Default::default()
-        };
-
-        let layout = unsafe {
-            device
-                .inner
-                .create_pipeline_layout(&pipeline_layout_info, None)
-                .map_to_err("Cannot create pipeline layout")?
-        };
+        let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 
         let groups = [gen_group_create_info, miss_group_create_info, hit_group_create_info];
 
@@ -283,5 +257,76 @@ impl Drop for RtPipeline {
             self.device.inner.destroy_pipeline(self.inner, None);
             self.device.inner.destroy_pipeline_layout(self.layout, None);
         }
+    }
+}
+
+pub struct ComputePipeline {
+    pub inner: RawPipeline,
+    pub layout: PipelineLayout,
+    device: Rc<Device>,
+}
+
+impl ComputePipeline {
+    pub fn new(
+        device: Rc<Device>,
+        stage: PipelineShaderStageCreateInfo,
+        descriptor_layouts: &[vk::DescriptorSetLayout],
+    ) -> Result<Self, VulkanError> {
+        let ranges = [];
+
+        let layout = create_layout(&device, &ranges, descriptor_layouts)?;
+
+        let create_info = vk::ComputePipelineCreateInfo {
+            base_pipeline_index: 0,
+            stage,
+            layout,
+            ..Default::default()
+        };
+
+        let pipeline = unsafe {
+            device
+                .inner
+                .create_compute_pipelines(vk::PipelineCache::null(), &[create_info], None)
+                .map_err(|(_, code)| VulkanError {
+                    code,
+                    msg: "Cannot create compute pipeline".into(),
+                })?
+        }[0];
+
+        Ok(Self {
+            inner: pipeline,
+            layout,
+            device,
+        })
+    }
+}
+
+impl Drop for ComputePipeline {
+    fn drop(&mut self) {
+        unsafe {
+            self.device.inner.destroy_pipeline(self.inner, None);
+            self.device.inner.destroy_pipeline_layout(self.layout, None);
+        }
+    }
+}
+
+fn create_layout(
+    device: &Rc<Device>,
+    ranges: &[vk::PushConstantRange],
+    descriptor_layouts: &[vk::DescriptorSetLayout],
+) -> Result<PipelineLayout, VulkanError> {
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo {
+        p_push_constant_ranges: ranges.as_ptr(),
+        push_constant_range_count: ranges.len() as u32,
+        p_set_layouts: descriptor_layouts.as_ptr(),
+        set_layout_count: descriptor_layouts.len() as u32,
+        ..Default::default()
+    };
+
+    unsafe {
+        device
+            .inner
+            .create_pipeline_layout(&pipeline_layout_info, None)
+            .map_to_err("Cannot create pipeline layout")
     }
 }

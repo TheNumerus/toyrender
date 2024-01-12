@@ -101,6 +101,7 @@ impl App {
             for event in event_pump.poll_iter() {
                 match event {
                     Event::Quit { .. } => {
+                        renderer.device.wait_idle()?;
                         break 'running;
                     }
                     Event::Window {

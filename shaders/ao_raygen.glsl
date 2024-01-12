@@ -21,14 +21,14 @@ layout(set = 0, binding = 0) uniform Global {
 
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 
-layout(set = 0, binding = 2, rgb10_a2) uniform image2D rtao_out;
-
-layout(set = 1, binding = 0) uniform UniformBufferObject {
+layout(set = 0, binding = 2) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
 } ubo;
 
-layout(set = 2, binding = 0) uniform sampler2D[] gb;
+layout(set = 1, binding = 0) uniform sampler2D[] gb;
+
+layout(set = 1, binding = 1, rgb10_a2) uniform image2D rtao_out;
 
 layout( push_constant ) uniform constants {
     int samples;

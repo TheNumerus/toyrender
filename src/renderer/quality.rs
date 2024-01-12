@@ -6,7 +6,7 @@ pub struct QualitySettings {
 impl QualitySettings {
     pub fn new() -> Self {
         Self {
-            rtao_samples: 4,
+            rtao_samples: 1,
             half_res: false,
         }
     }

@@ -8,7 +8,7 @@ layout(location = 3) in vec2 uv;
 
 layout(location = 0) out vec2 uvOut;
 
-layout(set = 1, binding = 0) uniform UniformBufferObject {
+layout(set = 0, binding = 2) uniform UniformBufferObject {
     mat4 view;
     mat4 proj;
 } ubo;

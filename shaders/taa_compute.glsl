@@ -1,6 +1,8 @@
 #version 450
 #pragma shader_stage(compute)
 
+layout (local_size_x = 16, local_size_y = 16) in;
+
 layout(set = 0, binding = 0) uniform Global {
     float exposure;
     int debug;
@@ -11,14 +13,21 @@ layout(set = 0, binding = 0) uniform Global {
     int half_res;
 } globals;
 
-layout(set = 2, binding = 1, rgb10_a2) uniform image2D taa_out;
-layout(set = 2, binding = 0) uniform sampler2D resolve[];
+layout(set = 1, binding = 0) uniform sampler2D resolve[];
+layout(set = 1, binding = 1, rgb10_a2) uniform image2D taa_out;
 
 void main() {
-    vec2 uv = (vec2(gl_GlobalInvocationID.xy) + 0.5) / vec2(globals.res_x/2, globals.res_y/2);
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
 
-    vec4 current = texture(resolve[0], uv);
-    vec4 prev = texture(resolve[1], uv);
+    ivec2 size = imageSize(taa_out);
 
-    imageStore(taa_out, ivec2(gl_GlobalInvocationID.xy), mix(current, prev, 0.1));
+    if (x <= size.x && y <= size.y) {
+        vec2 uv = (vec2(x,y) + 0.5) / vec2(globals.res_x, globals.res_y);
+
+        vec4 current = texture(resolve[0], uv);
+        vec4 prev = imageLoad(taa_out, ivec2(x,y));
+
+        imageStore(taa_out, ivec2(x,y), mix(prev, current, 0.2));
+    }
 }

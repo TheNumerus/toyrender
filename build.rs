@@ -16,6 +16,10 @@ fn main() -> Result<(), std::io::Error> {
 
         let name = file.file_name();
 
+        if file.path().extension().unwrap() != "glsl" {
+            continue;
+        }
+
         let final_name = format!("{}.spv", file.path().file_stem().unwrap().to_str().unwrap());
 
         let input = format!("shaders/{}", name.to_str().unwrap());

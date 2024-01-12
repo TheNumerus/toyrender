@@ -1,5 +1,6 @@
 use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
+use std::ffi::c_void;
 use std::rc::Rc;
 
 pub struct DescriptorPool {
@@ -75,9 +76,18 @@ pub struct DescriptorSetLayout {
 
 impl DescriptorSetLayout {
     pub fn new(device: Rc<Device>, bindings: &[vk::DescriptorSetLayoutBinding]) -> Result<Self, VulkanError> {
+        let flags = vec![vk::DescriptorBindingFlags::PARTIALLY_BOUND; bindings.len()];
+
+        let p_next = vk::DescriptorSetLayoutBindingFlagsCreateInfo {
+            binding_count: bindings.len() as u32,
+            p_binding_flags: flags.as_ptr(),
+            ..Default::default()
+        };
+
         let create_info = vk::DescriptorSetLayoutCreateInfo {
             binding_count: bindings.len() as u32,
             p_bindings: bindings.as_ptr(),
+            p_next: std::ptr::addr_of!(p_next) as *const c_void,
             ..Default::default()
         };
 
