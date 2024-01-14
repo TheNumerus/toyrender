@@ -7,6 +7,7 @@ mod camera;
 mod err;
 mod import;
 mod input;
+mod math;
 mod mesh;
 mod renderer;
 mod scene;

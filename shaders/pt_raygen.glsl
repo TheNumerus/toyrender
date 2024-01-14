@@ -87,17 +87,17 @@ void trace (vec3 pos, vec3 dir) {
 
 void traceShadow (vec3 pos, vec3 dir) {
     traceRayEXT(
-    tlas,
-    gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-    0xFF,
-    0,
-    0,
-    0,
-    pos,
-    0.0001,
-    dir,
-    100.0,
-    0
+        tlas,
+        gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+        0xFF,
+        0,
+        0,
+        0,
+        pos,
+        0.0001,
+        dir,
+        100.0,
+        0
     );
 }
 

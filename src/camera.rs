@@ -3,7 +3,6 @@ use nalgebra_glm::{Mat4, Vec3};
 #[derive(Clone)]
 pub struct PerspectiveCamera {
     pub fov: f32,
-    pub transform: Mat4,
     pub position: Vec3,
     pub rotation: Vec3,
 }
@@ -12,7 +11,6 @@ impl PerspectiveCamera {
     pub fn new() -> Self {
         Self {
             fov: 70.0,
-            transform: Mat4::new_translation(&Vec3::from_element(0.0)),
             position: Vec3::from_element(0.0),
             rotation: Vec3::from_element(0.0),
         }

@@ -14,16 +14,19 @@ miss = "ao_raymiss"
 kind = "graphics"
 vertex = "deferred_vert"
 fragment = "deferred_frag"
+render_pass = "gb"
 
 [light]
 kind = "graphics"
 vertex = "light_vert"
 fragment = "light_frag"
+render_pass = "light"
 
 [tonemap]
 kind = "graphics"
 vertex = "light_vert"
 fragment = "tonemap_frag"
+render_pass = "tonemap"
 
 [taa]
 kind = "compute"

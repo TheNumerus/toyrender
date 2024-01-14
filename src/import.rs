@@ -1,11 +1,12 @@
 use crate::err::AppError;
+use crate::math;
 use crate::mesh::{Indices, MeshInstance, MeshResource};
 use crate::vulkan::Vertex;
 use gltf::buffer::Data;
 use gltf::json::accessor::ComponentType;
 use gltf::mesh::Mode;
 use gltf::{Accessor, Gltf, Primitive, Semantic};
-use nalgebra::Quaternion;
+use nalgebra::{Point3, Quaternion, Rotation3};
 use nalgebra_glm::{inverse, quat_cast, vec3, Mat4, Vec2, Vec3, Vec4};
 use std::rc::Rc;
 
@@ -107,14 +108,56 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Indi
     Ok((vertices_total, indices_total))
 }
 
-pub fn extract_scene(slice: &[u8]) -> Result<(Vec<Rc<MeshResource>>, Vec<MeshInstance>), AppError> {
+pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
+    let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
+
     let gltf = Gltf::from_slice(slice)?;
+
+    let mut camera = None;
+
+    for cam in gltf.cameras() {
+        if let gltf::camera::Projection::Perspective(per) = cam.projection() {
+            let index = cam.index();
+            let mut camera_node = None;
+
+            for node in gltf.nodes() {
+                if let Some(c) = node.camera() {
+                    if c.index() == index {
+                        camera_node = Some(node);
+                    }
+                    break;
+                }
+            }
+
+            let camera_node = match camera_node {
+                Some(a) => a,
+                None => return Err(AppError::Import("Error importing camera".into())),
+            };
+
+            let transform = transform_from_node(&camera_node, &gltf_convert_matrix);
+
+            let rot = camera_node.transform().decomposed().1;
+            let quat = Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
+            let rot = gltf_convert_matrix * quat_cast(&quat);
+            let mat3 = nalgebra_glm::mat4_to_mat3(&rot);
+            let rot = Rotation3::from_matrix(&mat3);
+            let angles = rot.euler_angles();
+
+            let stub = ImportedCamera {
+                fov: math::rad_to_deg(math::fovy_to_fovx(per.yfov(), per.aspect_ratio().unwrap_or(16.0 / 9.0))),
+                position: Vec4::from(transform.transform_point(&Point3::new(0.0, 0.0, 0.0))).xyz(),
+                rotation: Vec3::new(angles.0, angles.1, angles.2),
+            };
+
+            camera = Some(stub);
+            break;
+        }
+    }
+
     let buffers = gltf::import_buffers(&gltf.document, None, gltf.blob)?;
 
     let mut meshes = Vec::new();
     let mut instances = Vec::new();
-
-    let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
 
     for mesh in gltf.document.meshes() {
         let (v, i) = extract_mesh(mesh, &buffers)?;
@@ -132,20 +175,29 @@ pub fn extract_scene(slice: &[u8]) -> Result<(Vec<Rc<MeshResource>>, Vec<MeshIns
             None => continue,
         };
 
-        let (pos, rot, scale) = instance.transform().decomposed();
-
-        let quat = Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
-
-        ins.transform = Mat4::new_translation(&(Vec3::from(pos).xzy().component_mul(&vec3(1.0, -1.0, 1.0))))
-            * gltf_convert_matrix
-            * quat_cast(&quat)
-            * inverse(&gltf_convert_matrix)
-            * Mat4::new_nonuniform_scaling(&Vec3::from(scale));
+        ins.transform = transform_from_node(&instance, &gltf_convert_matrix);
 
         instances.push(ins);
     }
 
-    Ok((meshes, instances))
+    Ok(ImportedScene {
+        resources: meshes,
+        instances,
+        camera,
+    })
+}
+
+pub struct ImportedScene {
+    pub resources: Vec<Rc<MeshResource>>,
+    pub instances: Vec<MeshInstance>,
+    pub camera: Option<ImportedCamera>,
+}
+
+#[derive(Debug)]
+pub struct ImportedCamera {
+    pub fov: f32,
+    pub position: Vec3,
+    pub rotation: Vec3,
 }
 
 enum IndexType {
@@ -240,4 +292,16 @@ impl<'a> Accessors<'a> {
             _ => panic!("invalid indices format in glTF"),
         }
     }
+}
+
+fn transform_from_node(node: &gltf::Node, convert_matrix: &Mat4) -> Mat4 {
+    let (pos, rot, scale) = node.transform().decomposed();
+
+    let quat = Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
+
+    Mat4::new_translation(&(Vec3::from(pos).xzy().component_mul(&vec3(1.0, -1.0, 1.0))))
+        * convert_matrix
+        * quat_cast(&quat)
+        * inverse(convert_matrix)
+        * Mat4::new_nonuniform_scaling(&Vec3::from(scale))
 }

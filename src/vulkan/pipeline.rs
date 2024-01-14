@@ -1,19 +1,23 @@
 use crate::vulkan::{Device, IntoVulkanError, RayTracingPipeline, RenderPass, Vertex, VulkanError};
 use ash::vk;
-use ash::vk::{Extent2D, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo, Rect2D, Viewport};
+use ash::vk::{Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use std::marker::PhantomData;
 use std::rc::Rc;
 
-pub struct Pipeline {
+pub struct Graphics;
+pub struct Rt;
+pub struct Compute;
+
+pub struct Pipeline<T> {
     pub inner: RawPipeline,
     pub layout: PipelineLayout,
-    pub viewport: Viewport,
-    pub scissor: Rect2D,
     device: Rc<Device>,
+    _marker: PhantomData<T>,
 }
-impl Pipeline {
-    pub fn new(
+
+impl Pipeline<Graphics> {
+    pub fn new_graphics(
         device: Rc<Device>,
-        default_extent: Extent2D,
         render_pass: &RenderPass,
         stages: &[PipelineShaderStageCreateInfo],
         descriptor_layouts: &[vk::DescriptorSetLayout],
@@ -42,20 +46,6 @@ impl Pipeline {
             topology: vk::PrimitiveTopology::TRIANGLE_LIST,
             primitive_restart_enable: vk::FALSE,
             ..Default::default()
-        };
-
-        let viewport = Viewport {
-            x: 0.0,
-            y: 0.0,
-            width: default_extent.width as f32,
-            height: default_extent.height as f32,
-            min_depth: 0.0,
-            max_depth: 1.0,
-        };
-
-        let scissor = Rect2D {
-            offset: vk::Offset2D { x: 0, y: 0 },
-            extent: default_extent,
         };
 
         let viewport_state = vk::PipelineViewportStateCreateInfo {
@@ -99,7 +89,7 @@ impl Pipeline {
 
         let ranges = [vk::PushConstantRange {
             offset: 0,
-            size: (std::mem::size_of::<f32>() + std::mem::size_of::<nalgebra_glm::Mat4>()) as u32,
+            size: (std::mem::size_of::<nalgebra_glm::Mat4>()) as u32,
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         }];
 
@@ -147,29 +137,13 @@ impl Pipeline {
             device,
             inner: pipeline,
             layout,
-            viewport,
-            scissor,
+            _marker: PhantomData,
         })
     }
 }
 
-impl Drop for Pipeline {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.inner.destroy_pipeline_layout(self.layout, None);
-            self.device.inner.destroy_pipeline(self.inner, None);
-        }
-    }
-}
-
-pub struct RtPipeline {
-    pub inner: RawPipeline,
-    pub layout: PipelineLayout,
-    device: Rc<Device>,
-}
-
-impl RtPipeline {
-    pub fn new(
+impl Pipeline<Rt> {
+    pub fn new_rt(
         device: Rc<Device>,
         rtp: &RayTracingPipeline,
         stages: &[PipelineShaderStageCreateInfo],
@@ -247,27 +221,13 @@ impl RtPipeline {
             inner: pipeline,
             layout,
             device,
+            _marker: PhantomData,
         })
     }
 }
 
-impl Drop for RtPipeline {
-    fn drop(&mut self) {
-        unsafe {
-            self.device.inner.destroy_pipeline(self.inner, None);
-            self.device.inner.destroy_pipeline_layout(self.layout, None);
-        }
-    }
-}
-
-pub struct ComputePipeline {
-    pub inner: RawPipeline,
-    pub layout: PipelineLayout,
-    device: Rc<Device>,
-}
-
-impl ComputePipeline {
-    pub fn new(
+impl Pipeline<Compute> {
+    pub fn new_compute(
         device: Rc<Device>,
         stage: PipelineShaderStageCreateInfo,
         descriptor_layouts: &[vk::DescriptorSetLayout],
@@ -301,15 +261,16 @@ impl ComputePipeline {
             inner: pipeline,
             layout,
             device,
+            _marker: PhantomData,
         })
     }
 }
 
-impl Drop for ComputePipeline {
+impl<T> Drop for Pipeline<T> {
     fn drop(&mut self) {
         unsafe {
-            self.device.inner.destroy_pipeline(self.inner, None);
             self.device.inner.destroy_pipeline_layout(self.layout, None);
+            self.device.inner.destroy_pipeline(self.inner, None);
         }
     }
 }

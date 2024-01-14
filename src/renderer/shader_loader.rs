@@ -86,7 +86,7 @@ impl ShaderLoader {
 
         for stub in manifest.stubs.values() {
             match stub {
-                PipelineStub::Graphics { vertex, fragment } => {
+                PipelineStub::Graphics { vertex, fragment, .. } => {
                     check(vertex)?;
                     check(fragment)?;
                 }
@@ -128,7 +128,11 @@ pub struct Manifest {
 #[serde(tag = "kind")]
 pub enum PipelineStub {
     #[serde(rename = "graphics")]
-    Graphics { vertex: String, fragment: String },
+    Graphics {
+        vertex: String,
+        fragment: String,
+        render_pass: String,
+    },
     #[serde(rename = "rt")]
     Rt {
         raygen: String,

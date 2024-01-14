@@ -1,5 +1,5 @@
 use crate::vulkan::{
-    Buffer, CommandBuffer, CommandPool, Device, Fence, Instance, IntoVulkanError, RtPipeline, VulkanError,
+    Buffer, CommandBuffer, CommandPool, Device, Fence, Instance, IntoVulkanError, Pipeline, Rt, VulkanError,
 };
 use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::extensions::khr::RayTracingPipeline as RayTracingPipelineLoader;
@@ -44,7 +44,7 @@ impl ShaderBindingTable {
     pub fn new(
         device: Rc<Device>,
         rt_pipeline: &RayTracingPipeline,
-        pipeline: &RtPipeline,
+        pipeline: &Pipeline<Rt>,
         miss_count: usize,
         hit_count: usize,
     ) -> Result<Self, VulkanError> {
@@ -405,7 +405,7 @@ impl AccelerationStructure {
 
             device
                 .inner
-                .queue_submit(device.compute_queue, &[submit_info], fence.inner)
+                .queue_submit(device.async_compute_queue, &[submit_info], fence.inner)
                 .map_to_err("Cannot submit queue")?;
 
             fence.wait()?;
@@ -489,7 +489,7 @@ impl AccelerationStructure {
 
                 device
                     .inner
-                    .queue_submit(device.compute_queue, &[submit_info], fence.inner)
+                    .queue_submit(device.async_compute_queue, &[submit_info], fence.inner)
                     .map_to_err("Cannot submit queue")?;
 
                 fence.wait()?;

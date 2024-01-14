@@ -2,10 +2,9 @@ use crate::err::AppError;
 use crate::mesh::MeshResource;
 use crate::scene::Scene;
 use crate::vulkan::{
-    AccelerationStructure, Buffer, CommandBuffer, CommandPool, ComputePipeline, DescriptorPool, Device,
-    DeviceQueryResult, Fence, Framebuffer, ImageView, Instance, IntoVulkanError, Pipeline, RayTracingAs,
-    RayTracingPipeline, RenderPass, RtPipeline, Semaphore, ShaderBindingTable, ShaderModule, ShaderStage, Surface,
-    SwapChain, Vertex, VulkanError, VulkanMesh,
+    AccelerationStructure, Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence,
+    Framebuffer, ImageView, Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, RenderPass, Semaphore,
+    ShaderBindingTable, Surface, SwapChain, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk::{Extent3D, Handle};
 use ash::{vk, Entry};
@@ -20,7 +19,7 @@ use std::time::Instant;
 use zip::ZipArchive;
 
 mod descriptors;
-use descriptors::{DescLayout, DescriptorWriter, RendererDescriptors};
+use descriptors::{DescriptorWriter, RendererDescriptors};
 
 mod pipeline_builder;
 
@@ -31,6 +30,8 @@ mod render_target;
 use render_target::{GBuffer, RenderTarget};
 
 mod shader_loader;
+use crate::math;
+use crate::renderer::pipeline_builder::PipelineBuilder;
 use shader_loader::ShaderLoader;
 pub use shader_loader::ShaderLoaderError;
 
@@ -50,14 +51,8 @@ pub struct VulkanRenderer {
     pub postprocess_render_target: RenderTarget,
     pub rtao_render_target: RenderTarget,
     pub taa_render_target: RenderTarget,
-    pub pipeline_gb: Pipeline,
-    pub pipeline_light: Pipeline,
-    pub pipeline_tonemap: Pipeline,
-    pub pipeline_rtao: RtPipeline,
-    pub pipeline_taa: ComputePipeline,
-    pub render_pass_gb: RenderPass,
-    pub render_pass_light: RenderPass,
-    pub render_pass_tonemap: RenderPass,
+    pub pipeline_builder: PipelineBuilder,
+    pub render_passes: RenderPasses,
     pub shader_binding_table: ShaderBindingTable,
     pub tlas: AccelerationStructure,
     pub blases: Vec<AccelerationStructure>,
@@ -117,66 +112,6 @@ impl VulkanRenderer {
 
         let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
-        let deferred_vert_module = ShaderModule::new(
-            shader_loader.shaders.get("deferred_vert").unwrap().as_ref(),
-            device.clone(),
-            ShaderStage::Vertex,
-        )?;
-        let deferred_frag_module = ShaderModule::new(
-            include_bytes!("../build/deferred_frag.spv"),
-            device.clone(),
-            ShaderStage::Fragment,
-        )?;
-
-        let deferred_stages = [deferred_vert_module.stage_info(), deferred_frag_module.stage_info()];
-
-        let light_vert_module = ShaderModule::new(
-            include_bytes!("../build/light_vert.spv"),
-            device.clone(),
-            ShaderStage::Vertex,
-        )?;
-        let light_frag_module = ShaderModule::new(
-            include_bytes!("../build/light_frag.spv"),
-            device.clone(),
-            ShaderStage::Fragment,
-        )?;
-        let tonemap_frag_module = ShaderModule::new(
-            include_bytes!("../build/tonemap_frag.spv"),
-            device.clone(),
-            ShaderStage::Fragment,
-        )?;
-        let taa_frag_module = ShaderModule::new(
-            include_bytes!("../build/taa_compute.spv"),
-            device.clone(),
-            ShaderStage::Compute,
-        )?;
-
-        let light_stages = [light_vert_module.stage_info(), light_frag_module.stage_info()];
-
-        let tonemap_stages = [light_vert_module.stage_info(), tonemap_frag_module.stage_info()];
-
-        let rtao_raygen_module = ShaderModule::new(
-            shader_loader.shaders.get("pt_raygen").unwrap().as_ref(),
-            device.clone(),
-            ShaderStage::RayGen,
-        )?;
-        let rtao_miss_module = ShaderModule::new(
-            include_bytes!("../build/ao_raymiss.spv"),
-            device.clone(),
-            ShaderStage::RayMiss,
-        )?;
-        let rtao_hit_module = ShaderModule::new(
-            include_bytes!("../build/ao_raychit.spv"),
-            device.clone(),
-            ShaderStage::RayClosestHit,
-        )?;
-
-        let rt_stages = [
-            rtao_raygen_module.stage_info(),
-            rtao_miss_module.stage_info(),
-            rtao_hit_module.stage_info(),
-        ];
-
         let descriptor_pool = DescriptorPool::new(
             device.clone(),
             &[
@@ -198,60 +133,14 @@ impl VulkanRenderer {
 
         let descriptors = RendererDescriptors::build(device.clone(), &descriptor_pool, MAX_FRAMES_IN_FLIGHT as u32)?;
 
-        let render_pass_gb = RenderPass::new_gbuffer(device.clone())?;
-        let render_pass_light = RenderPass::new_light(device.clone())?;
-        let render_pass_tonemap = RenderPass::new_post_process(device.clone())?;
+        let render_passes = RenderPasses::new(device.clone())?;
 
-        let pipeline_gb = Pipeline::new(
-            device.clone(),
-            swap_chain.extent,
-            &render_pass_gb,
-            &deferred_stages,
-            &[descriptors.get_layout(DescLayout::Global).inner],
-            2,
-        )?;
-
-        let pipeline_light = Pipeline::new(
-            device.clone(),
-            swap_chain.extent,
-            &render_pass_light,
-            &light_stages,
-            &[
-                descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::Image).inner,
-            ],
-            1,
-        )?;
-
-        let pipeline_tonemap = Pipeline::new(
-            device.clone(),
-            swap_chain.extent,
-            &render_pass_tonemap,
-            &tonemap_stages,
-            &[
-                descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::Image).inner,
-            ],
-            1,
-        )?;
-
-        let pipeline_rtao = RtPipeline::new(
+        let pipeline_builder = PipelineBuilder::build(
+            shader_loader,
             device.clone(),
             &rt_pipeline_ext,
-            &rt_stages,
-            &[
-                descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::Compute).inner,
-            ],
-        )?;
-
-        let pipeline_taa = ComputePipeline::new(
-            device.clone(),
-            taa_frag_module.stage_info(),
-            &[
-                descriptors.get_layout(DescLayout::Global).inner,
-                descriptors.get_layout(DescLayout::Compute).inner,
-            ],
+            &descriptors,
+            &render_passes,
         )?;
 
         let extent_3d = Extent3D {
@@ -262,15 +151,22 @@ impl VulkanRenderer {
 
         let swap_chain_fbs = swap_chain_image_views
             .iter()
-            .map(|iw| Framebuffer::new(device.clone(), &render_pass_tonemap, swap_chain.extent, &[iw]))
+            .map(|iw| {
+                Framebuffer::new(
+                    device.clone(),
+                    render_passes.passes.get("tonemap").unwrap(),
+                    swap_chain.extent,
+                    &[iw],
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let gbuffer = GBuffer::new(device.clone(), extent_3d, &render_pass_gb)?;
+        let gbuffer = GBuffer::new(device.clone(), extent_3d, render_passes.passes.get("gb").unwrap())?;
 
         let postprocess_render_target = RenderTarget::new(
             device.clone(),
             extent_3d,
-            Some(&render_pass_light),
+            Some(render_passes.passes.get("light").unwrap()),
             vk::Format::A2B10G10R10_UNORM_PACK32,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::COLOR,
@@ -292,7 +188,13 @@ impl VulkanRenderer {
             vk::ImageAspectFlags::COLOR,
         )?;
 
-        let shader_binding_table = ShaderBindingTable::new(device.clone(), &rt_pipeline_ext, &pipeline_rtao, 1, 1)?;
+        let shader_binding_table = ShaderBindingTable::new(
+            device.clone(),
+            &rt_pipeline_ext,
+            pipeline_builder.get_rt("pt").unwrap(),
+            1,
+            1,
+        )?;
 
         let graphics_command_pool = CommandPool::new_graphics(device.clone())?;
         let compute_command_pool = CommandPool::new_compute(device.clone())?;
@@ -431,14 +333,8 @@ impl VulkanRenderer {
             postprocess_render_target,
             rtao_render_target,
             taa_render_target,
-            pipeline_gb,
-            pipeline_light,
-            pipeline_tonemap,
-            pipeline_rtao,
-            pipeline_taa,
-            render_pass_gb,
-            render_pass_light,
-            render_pass_tonemap,
+            pipeline_builder,
+            render_passes,
             shader_binding_table,
             tlas,
             blases: Vec::new(),
@@ -482,10 +378,10 @@ impl VulkanRenderer {
         let framebuffer = &self.swap_chain_fbs[image_index as usize];
 
         let aspect_ratio = drawable_size.0 as f32 / drawable_size.1 as f32;
-        let fov_rad = scene.camera.fov / (180.0 / std::f32::consts::PI);
-        let fovy = 2.0 * ((fov_rad / 2.0).tan() * (1.0 / aspect_ratio)).atan();
+        let fov_rad = math::deg_to_rad(scene.camera.fov);
+        let fovy = math::fovx_to_fovy(fov_rad, aspect_ratio);
 
-        let offset = halton(self.frame_index);
+        let offset = math::halton(self.frame_index);
         let (offset_x, offset_y) = (
             (offset.0 - 0.5) / drawable_size.0 as f32,
             (offset.1 - 0.5) / drawable_size.1 as f32,
@@ -630,9 +526,10 @@ impl VulkanRenderer {
             extent_3d
         };
 
-        self.gbuffer.resize(extent_3d, &self.render_pass_gb)?;
+        self.gbuffer
+            .resize(extent_3d, self.render_passes.passes.get("gb").unwrap())?;
         self.postprocess_render_target
-            .resize(extent_3d, Some(&self.render_pass_light))?;
+            .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap()))?;
         self.rtao_render_target.resize(rtao_extent, None)?;
         self.taa_render_target.resize(extent_3d, None)?;
 
@@ -706,22 +603,12 @@ impl VulkanRenderer {
             .map(|iw| {
                 Framebuffer::new(
                     self.device.clone(),
-                    &self.render_pass_tonemap,
+                    self.render_passes.passes.get("tonemap").unwrap(),
                     self.swap_chain.extent,
                     &[iw],
                 )
             })
             .collect::<Result<Vec<_>, _>>()?;
-
-        for pp in [
-            &mut self.pipeline_gb,
-            &mut self.pipeline_light,
-            &mut self.pipeline_tonemap,
-        ] {
-            pp.viewport.width = self.swap_chain.extent.width as f32;
-            pp.viewport.height = self.swap_chain.extent.height as f32;
-            pp.scissor.extent = self.swap_chain.extent;
-        }
 
         Ok(())
     }
@@ -762,7 +649,7 @@ impl VulkanRenderer {
         ];
 
         let render_pass_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_pass_gb.inner,
+            render_pass: self.render_passes.passes.get("gb").unwrap().inner,
             framebuffer: self.gbuffer.framebuffer.inner,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
@@ -773,17 +660,26 @@ impl VulkanRenderer {
             ..Default::default()
         };
 
+        let viewport = vk::Viewport {
+            width: self.swap_chain.extent.width as f32,
+            height: self.swap_chain.extent.height as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+
         command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
 
-        command_buffer.bind_pipeline(&self.pipeline_gb, vk::PipelineBindPoint::GRAPHICS);
-        command_buffer.set_viewport(self.pipeline_gb.viewport);
-        command_buffer.set_scissor(self.pipeline_gb.scissor);
+        let pipeline = self.pipeline_builder.get_graphics("deferred").unwrap();
+
+        command_buffer.bind_graphics_pipeline(pipeline);
+        command_buffer.set_viewport(viewport);
+        command_buffer.set_scissor(render_pass_info.render_area);
 
         unsafe {
             self.device.inner.cmd_bind_descriptor_sets(
                 command_buffer.inner,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_gb.layout,
+                pipeline.layout,
                 0,
                 &[self.descriptors.global_sets[self.current_frame].inner.inner],
                 &[],
@@ -801,7 +697,7 @@ impl VulkanRenderer {
 
                 self.device.inner.cmd_push_constants(
                     command_buffer.inner,
-                    self.pipeline_gb.layout,
+                    pipeline.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
                     constants,
@@ -824,13 +720,15 @@ impl VulkanRenderer {
     }
 
     fn record_rtao(&self, command_buffer: &CommandBuffer) {
-        command_buffer.bind_rt_pipeline(&self.pipeline_rtao);
+        let pipeline = self.pipeline_builder.get_rt("pt").unwrap();
+
+        command_buffer.bind_rt_pipeline(pipeline);
 
         unsafe {
             self.device.inner.cmd_bind_descriptor_sets(
                 command_buffer.inner,
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
-                self.pipeline_rtao.layout,
+                pipeline.layout,
                 0,
                 &[
                     self.descriptors.global_sets[self.current_frame].inner.inner,
@@ -843,7 +741,7 @@ impl VulkanRenderer {
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
-                self.pipeline_rtao.layout,
+                pipeline.layout,
                 vk::ShaderStageFlags::RAYGEN_KHR,
                 0,
                 &samples,
@@ -870,7 +768,7 @@ impl VulkanRenderer {
 
     fn record_light_pass(&self, command_buffer: &CommandBuffer) {
         let render_pass_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_pass_light.inner,
+            render_pass: self.render_passes.passes.get("light").unwrap().inner,
             framebuffer: self.postprocess_render_target.framebuffer.as_ref().unwrap().inner,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
@@ -880,9 +778,11 @@ impl VulkanRenderer {
             ..Default::default()
         };
 
+        let pipeline = self.pipeline_builder.get_graphics("light").unwrap();
+
         command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
 
-        command_buffer.bind_pipeline(&self.pipeline_light, vk::PipelineBindPoint::GRAPHICS);
+        command_buffer.bind_graphics_pipeline(pipeline);
 
         command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
 
@@ -897,7 +797,7 @@ impl VulkanRenderer {
             self.device.inner.cmd_bind_descriptor_sets(
                 command_buffer.inner,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_light.layout,
+                pipeline.layout,
                 1,
                 &[self.descriptors.light_set.inner.inner],
                 &[],
@@ -912,13 +812,15 @@ impl VulkanRenderer {
     }
 
     fn record_taa_pass(&self, command_buffer: &CommandBuffer, clear: bool) {
-        command_buffer.bind_compute_pipeline(&self.pipeline_taa);
+        let pipeline = self.pipeline_builder.get_compute("taa").unwrap();
+
+        command_buffer.bind_compute_pipeline(pipeline);
 
         unsafe {
             self.device.inner.cmd_bind_descriptor_sets(
                 command_buffer.inner,
                 vk::PipelineBindPoint::COMPUTE,
-                self.pipeline_taa.layout,
+                pipeline.layout,
                 0,
                 &[
                     self.descriptors.global_sets[self.current_frame].inner.inner,
@@ -935,7 +837,7 @@ impl VulkanRenderer {
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
-                self.pipeline_taa.layout,
+                pipeline.layout,
                 vk::ShaderStageFlags::COMPUTE,
                 0,
                 &clear,
@@ -950,7 +852,7 @@ impl VulkanRenderer {
 
     fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer) {
         let render_pass_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_pass_tonemap.inner,
+            render_pass: self.render_passes.passes.get("tonemap").unwrap().inner,
             framebuffer: framebuffer.inner,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
@@ -960,9 +862,11 @@ impl VulkanRenderer {
             ..Default::default()
         };
 
+        let pipeline = self.pipeline_builder.get_graphics("tonemap").unwrap();
+
         command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
 
-        command_buffer.bind_pipeline(&self.pipeline_tonemap, vk::PipelineBindPoint::GRAPHICS);
+        command_buffer.bind_graphics_pipeline(pipeline);
 
         command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
 
@@ -977,7 +881,7 @@ impl VulkanRenderer {
             self.device.inner.cmd_bind_descriptor_sets(
                 command_buffer.inner,
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline_tonemap.layout,
+                pipeline.layout,
                 1,
                 &[self.descriptors.post_process_set.inner.inner],
                 &[],
@@ -1095,17 +999,23 @@ impl Globals {
     }
 }
 
-const fn halton(index: u32) -> (f32, f32) {
-    match index % 8 {
-        0 => (0.5, 0.333),
-        1 => (0.25, 0.666),
-        2 => (0.75, 0.111),
-        3 => (0.125, 0.444),
-        4 => (0.625, 0.777),
-        5 => (0.375, 0.222),
-        6 => (0.875, 0.555),
-        7 => (0.0625, 0.888),
-        _ => (0.5, 0.5),
+pub struct RenderPasses {
+    pub passes: HashMap<String, RenderPass>,
+}
+
+impl RenderPasses {
+    pub fn new(device: Rc<Device>) -> Result<Self, VulkanError> {
+        let pass_gb = RenderPass::new_gbuffer(device.clone())?;
+        let pass_light = RenderPass::new_light(device.clone())?;
+        let pass_tonemap = RenderPass::new_post_process(device.clone())?;
+
+        Ok(Self {
+            passes: HashMap::from([
+                ("gb".to_owned(), pass_gb),
+                ("light".to_owned(), pass_light),
+                ("tonemap".to_owned(), pass_tonemap),
+            ]),
+        })
     }
 }
 

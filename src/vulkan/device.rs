@@ -17,6 +17,7 @@ pub struct Device {
     pub graphics_queue_family: usize,
     pub present_queue: Queue,
     pub present_queue_family: usize,
+    pub async_compute_queue: Queue,
     pub compute_queue: Queue,
     pub compute_queue_family: usize,
     pub physical_device: PhysicalDevice,
@@ -57,6 +58,7 @@ impl Device {
 
             if queue_families.graphics.is_some()
                 && queue_families.present.is_some()
+                && queue_families.compute.is_some()
                 && has_swapchain
                 && has_rt_acc
                 && has_rt_pipeline
@@ -90,11 +92,14 @@ impl Device {
 
         let queue_create_infos = unique_queue_families
             .iter()
-            .map(|&index| vk::DeviceQueueCreateInfo {
-                queue_family_index: index as u32,
-                queue_count: 1,
-                p_queue_priorities: &1.0,
-                ..Default::default()
+            .map(|&index| {
+                let count = if index == queue_families.compute.unwrap() { 2 } else { 1 };
+                vk::DeviceQueueCreateInfo {
+                    queue_family_index: index as u32,
+                    queue_count: count,
+                    p_queue_priorities: &1.0,
+                    ..Default::default()
+                }
             })
             .collect::<Vec<_>>();
 
@@ -147,8 +152,9 @@ impl Device {
         };
 
         let graphics_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
-        let present_queue = unsafe { inner.get_device_queue(queue_families.graphics.unwrap() as u32, 0) };
+        let present_queue = unsafe { inner.get_device_queue(queue_families.present.unwrap() as u32, 0) };
         let compute_queue = unsafe { inner.get_device_queue(queue_families.compute.unwrap() as u32, 0) };
+        let async_compute_queue = unsafe { inner.get_device_queue(queue_families.compute.unwrap() as u32, 1) };
 
         let (properties, rt_properties) = Self::get_device_properties(&instance, physical_device);
 
@@ -176,6 +182,7 @@ impl Device {
             present_queue,
             present_queue_family: queue_families.present.unwrap(),
             compute_queue,
+            async_compute_queue,
             compute_queue_family: queue_families.compute.unwrap(),
             physical_device,
             rt_properties,
@@ -294,7 +301,7 @@ impl Device {
                     .map_to_err("error getting present support")?
             };
 
-            if has_present_support {
+            if has_present_support && present_family.is_none() {
                 present_family = Some(i);
             }
         }

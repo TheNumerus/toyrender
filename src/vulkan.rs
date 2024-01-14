@@ -33,7 +33,7 @@ pub use image::Image;
 pub use image_view::ImageView;
 pub use instance::Instance;
 pub use mesh::VulkanMesh;
-pub use pipeline::{ComputePipeline, Pipeline, RtPipeline};
+pub use pipeline::{Compute, Graphics, Pipeline, Rt};
 pub use render_pass::RenderPass;
 pub use rt::{AccelerationStructure, RayTracingAs, RayTracingPipeline, ShaderBindingTable};
 pub use sampler::Sampler;

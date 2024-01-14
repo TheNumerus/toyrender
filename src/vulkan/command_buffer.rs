@@ -1,4 +1,4 @@
-use crate::vulkan::{ComputePipeline, Device, IntoVulkanError, Pipeline, RtPipeline, VertexIndexBuffer, VulkanError};
+use crate::vulkan::{Compute, Device, Graphics, IntoVulkanError, Pipeline, Rt, VertexIndexBuffer, VulkanError};
 use ash::vk;
 use ash::vk::{CommandBuffer as RawCommandBuffer, Rect2D, Viewport};
 use std::rc::Rc;
@@ -40,15 +40,15 @@ impl CommandBuffer {
         }
     }
 
-    pub fn bind_pipeline(&self, pipeline: &Pipeline, bind_point: vk::PipelineBindPoint) {
+    pub fn bind_graphics_pipeline(&self, pipeline: &Pipeline<Graphics>) {
         unsafe {
             self.device
                 .inner
-                .cmd_bind_pipeline(self.inner, bind_point, pipeline.inner)
+                .cmd_bind_pipeline(self.inner, vk::PipelineBindPoint::GRAPHICS, pipeline.inner)
         }
     }
 
-    pub fn bind_rt_pipeline(&self, pipeline: &RtPipeline) {
+    pub fn bind_rt_pipeline(&self, pipeline: &Pipeline<Rt>) {
         unsafe {
             self.device
                 .inner
@@ -56,7 +56,7 @@ impl CommandBuffer {
         }
     }
 
-    pub fn bind_compute_pipeline(&self, pipeline: &ComputePipeline) {
+    pub fn bind_compute_pipeline(&self, pipeline: &Pipeline<Compute>) {
         unsafe {
             self.device
                 .inner
