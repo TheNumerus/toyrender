@@ -187,6 +187,7 @@ impl App {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
                 clear_taa: resized || clear_taa || frame == 0,
+                frame_index: frame,
             };
 
             if sample_adjust != 0 {
@@ -284,6 +285,7 @@ impl App {
                 delta_time: 0.016,
                 total_time: frame_start.duration_since(start).as_secs_f32(),
                 clear_taa: false,
+                frame_index: 0,
             };
 
             self.renderer

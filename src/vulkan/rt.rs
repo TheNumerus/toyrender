@@ -1,3 +1,4 @@
+use crate::renderer::TlasIndex;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, Device, Fence, Instance, IntoVulkanError, Pipeline, Rt, VulkanError,
 };
@@ -5,7 +6,7 @@ use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::extensions::khr::RayTracingPipeline as RayTracingPipelineLoader;
 use ash::vk;
 use ash::vk::{AccelerationStructureKHR, Packed24_8};
-use nalgebra_glm::Mat4;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 pub struct RayTracingPipeline {
@@ -226,8 +227,8 @@ impl AccelerationStructure {
         device: Rc<Device>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_buf: &CommandBuffer,
-        blases: &Vec<Self>,
-        transforms: &Vec<Mat4>,
+        blases: &HashMap<u64, Self>,
+        tlas_index: TlasIndex,
         flags: vk::BuildAccelerationStructureFlagsKHR,
     ) -> Result<Self, VulkanError> {
         let mut instances = Vec::new();
@@ -236,8 +237,8 @@ impl AccelerationStructure {
             return Self::create(device.clone(), rt_acc_struct_ext.clone(), 256, AsLevel::Top);
         }
 
-        for (idx, blas) in blases.iter().enumerate() {
-            let transform = transforms[idx];
+        for (id, transform) in tlas_index.index {
+            let blas = &blases[&id];
 
             let instance = vk::AccelerationStructureInstanceKHR {
                 transform: vk::TransformMatrixKHR {
@@ -418,15 +419,18 @@ impl AccelerationStructure {
         device: Rc<Device>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_pool: &CommandPool,
-        ranges: Vec<vk::AccelerationStructureBuildRangeInfoKHR>,
-        geos: Vec<vk::AccelerationStructureGeometryKHR>,
+        ranges: HashMap<u64, vk::AccelerationStructureBuildRangeInfoKHR>,
+        geos: HashMap<u64, vk::AccelerationStructureGeometryKHR>,
         flags: vk::BuildAccelerationStructureFlagsKHR,
-    ) -> Result<Vec<Self>, VulkanError> {
-        let mut blases = Vec::new();
+    ) -> Result<HashMap<u64, Self>, VulkanError> {
+        let mut blases = HashMap::new();
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
-        for (range, geo) in ranges.into_iter().zip(geos.into_iter()) {
+        for id in geos.keys() {
+            let geo = *geos.get(id).unwrap();
+            let range = *ranges.get(id).unwrap();
+
             let geos = [geo];
 
             let mut build_info = vk::AccelerationStructureBuildGeometryInfoKHR {
@@ -495,7 +499,7 @@ impl AccelerationStructure {
                 fence.wait()?;
             }
 
-            blases.push(blas);
+            blases.insert(*id, blas);
         }
 
         Ok(blases)

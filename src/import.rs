@@ -6,6 +6,7 @@ use gltf::buffer::Data;
 use gltf::json::accessor::ComponentType;
 use gltf::mesh::Mode;
 use gltf::{Accessor, Gltf, Primitive, Semantic};
+use log::info;
 use nalgebra::{Point3, Quaternion, Rotation3};
 use nalgebra_glm::{inverse, quat_cast, vec3, Mat4, Vec2, Vec3, Vec4};
 use std::rc::Rc;
@@ -179,6 +180,8 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
 
         instances.push(ins);
     }
+
+    info!("Loaded {} meshes in {} instances", meshes.len(), instances.len());
 
     Ok(ImportedScene {
         resources: meshes,

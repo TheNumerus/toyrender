@@ -10,8 +10,9 @@ use ash::vk::{Extent3D, Handle};
 use ash::{vk, Entry};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use log::info;
+use nalgebra_glm::Mat4;
 use sdl2::video::Window;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
@@ -55,7 +56,7 @@ pub struct VulkanRenderer {
     pub render_passes: RenderPasses,
     pub shader_binding_table: ShaderBindingTable,
     pub tlas: AccelerationStructure,
-    pub blases: Vec<AccelerationStructure>,
+    pub blases: HashMap<u64, AccelerationStructure>,
     pub as_builder_cmd_buf: CommandBuffer,
     pub graphics_command_pool: CommandPool,
     pub compute_command_pool: CommandPool,
@@ -65,7 +66,6 @@ pub struct VulkanRenderer {
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub current_frame: usize,
-    pub frame_index: u32,
     pub quality: QualitySettings,
     pub debug_mode: i32,
     meshes: HashMap<u64, VulkanMesh>,
@@ -205,9 +205,10 @@ impl VulkanRenderer {
             device.clone(),
             rt_acc_struct_ext.clone(),
             &as_builder_cmd_buf,
-            &Vec::new(),
-            &Vec::new(),
-            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            &HashMap::new(),
+            TlasIndex { index: Vec::new() },
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS,
         )?;
 
         let mut img_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -337,7 +338,7 @@ impl VulkanRenderer {
             render_passes,
             shader_binding_table,
             tlas,
-            blases: Vec::new(),
+            blases: HashMap::new(),
             as_builder_cmd_buf,
             fs_quad,
             graphics_command_pool,
@@ -354,7 +355,6 @@ impl VulkanRenderer {
             quality: QualitySettings::new(),
             meshes: HashMap::new(),
             current_frame: 0,
-            frame_index: 0,
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
         })
     }
@@ -381,7 +381,7 @@ impl VulkanRenderer {
         let fov_rad = math::deg_to_rad(scene.camera.fov);
         let fovy = math::fovx_to_fovy(fov_rad, aspect_ratio);
 
-        let offset = math::halton(self.frame_index);
+        let offset = math::halton(context.frame_index);
         let (offset_x, offset_y) = (
             (offset.0 - 0.5) / drawable_size.0 as f32,
             (offset.1 - 0.5) / drawable_size.1 as f32,
@@ -407,7 +407,7 @@ impl VulkanRenderer {
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
             time: context.total_time,
-            frame_index: self.frame_index,
+            frame_index: context.frame_index,
             half_res: if self.quality.half_res { 1 } else { 0 },
         };
 
@@ -420,15 +420,16 @@ impl VulkanRenderer {
             self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
         }
 
-        let transforms = scene.meshes.iter().map(|a| a.transform).collect();
+        let tlas_index = self.build_tlas_index(scene);
 
         self.tlas = AccelerationStructure::top_build(
             self.device.clone(),
             self.rt_acc_struct_ext.clone(),
             &self.as_builder_cmd_buf,
             &self.blases,
-            &transforms,
-            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+            tlas_index,
+            vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS,
         )?;
 
         let mut writes = Vec::new();
@@ -492,7 +493,6 @@ impl VulkanRenderer {
         }
 
         self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
-        self.frame_index += 1;
 
         Ok((end - start).as_secs_f32())
     }
@@ -907,10 +907,16 @@ impl VulkanRenderer {
         }
 
         if changed {
-            let mut geos = Vec::new();
-            let mut ranges = Vec::new();
+            let mut geos = HashMap::new();
+            let mut ranges = HashMap::new();
+
+            let mut processed = HashSet::new();
 
             for mesh in &scene.meshes {
+                if processed.contains(&mesh.resource.id) {
+                    continue;
+                }
+
                 let res = self.meshes.get(&mesh.resource.id).unwrap();
 
                 let addr = res.buf.inner.get_device_addr().unwrap();
@@ -932,10 +938,9 @@ impl VulkanRenderer {
                     geometry_type: vk::GeometryTypeKHR::TRIANGLES,
                     geometry: vk::AccelerationStructureGeometryDataKHR { triangles },
                     flags: vk::GeometryFlagsKHR::OPAQUE,
-
                     ..Default::default()
                 };
-                geos.push(geo);
+                geos.insert(mesh.resource.id, geo);
 
                 let range = vk::AccelerationStructureBuildRangeInfoKHR {
                     primitive_count: max_prim_count as u32,
@@ -943,7 +948,8 @@ impl VulkanRenderer {
                     first_vertex: 0,
                     transform_offset: 0,
                 };
-                ranges.push(range);
+                ranges.insert(mesh.resource.id, range);
+                processed.insert(mesh.resource.id);
             }
 
             let batch = AccelerationStructure::batch_bottom_build(
@@ -952,7 +958,8 @@ impl VulkanRenderer {
                 &self.compute_command_pool,
                 ranges,
                 geos,
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE,
+                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
+                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS,
             )?;
 
             self.blases = batch;
@@ -960,12 +967,30 @@ impl VulkanRenderer {
 
         Ok(())
     }
+
+    fn build_tlas_index(&self, scene: &Scene) -> TlasIndex {
+        let mut index = Vec::new();
+
+        for mesh in &scene.meshes {
+            let transform = mesh.transform;
+            let id = mesh.resource.id;
+
+            index.push((id, transform));
+        }
+
+        TlasIndex { index }
+    }
+}
+
+pub struct TlasIndex {
+    pub index: Vec<(u64, Mat4)>,
 }
 
 pub struct FrameContext {
     pub delta_time: f32,
     pub total_time: f32,
     pub clear_taa: bool,
+    pub frame_index: u32,
 }
 
 pub struct ViewProj {
