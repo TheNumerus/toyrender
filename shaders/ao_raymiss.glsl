@@ -5,6 +5,7 @@
 layout(location = 0) rayPayloadInEXT struct {
     bool isMiss;
     float dist;
+    vec3 normal;
 } payload;
 
 

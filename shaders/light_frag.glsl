@@ -35,8 +35,8 @@ uint pcg_hash(uint i) {
     return (word >> 22u) ^ word;
 }
 
-vec3 light(vec3 color, vec3 normal, vec3 pos, vec3 lightPos, float shadow)  {
-    return color * max(dot(normal, normalize(lightPos - pos)) * shadow, 0.0);
+vec3 light(vec3 normal, vec3 light_dir, vec3 shadow)  {
+    return max(dot(normal, light_dir) * shadow, 0.0);
 }
 
 float spec(vec3 loc, vec3 normal, vec3 pos, vec3 lightPos, float shadow, float power) {
@@ -46,105 +46,28 @@ float spec(vec3 loc, vec3 normal, vec3 pos, vec3 lightPos, float shadow, float p
     return pow( max(dot(ref_dir, normalize(lightPos - pos)), 0.0), power) * shadow;
 }
 
-float gauss(float x, float var) {
-    return pow(2.7182818, -pow(x, 2.0) / (2.0 * var));
-}
-
-float blurred_ao() {
-    float base_depth = texture(gb[2], uv).x;
-
-    if (base_depth == 1.0) {
-        return 1.0;
-    }
-
-    vec3 base_normal = texture(gb[1], uv).xyz * 2.0 - 1.0;
-
-    vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, base_depth, 1.0);
-    per_pos /= per_pos.w;
-    vec3 base_pos = (inverse(ubo.view) *  per_pos).xyz;
-    vec3 loc = inverse(ubo.view)[3].xyz;
-    float vert_dist = distance(base_pos, loc);
-
-    float ao_sample = texture(gb[3], uv).x;
-
-    float sum_weigth = 0.0;
-    float sum = ao_sample * sum_weigth;
-
-    float x_offset = 1.0 / globals.res_x;
-    float y_offset = 1.0 / globals.res_y;
-
-    float max_dim = float(max(globals.res_x, globals.res_y));
-
-    vec2 offset_scale = (vec2(globals.res_y, globals.res_x) / max_dim) * 0.001;
-
-    int samples = 64;
-    float sq_samples = sqrt(float(samples));
-
-    for (int i = 0; i < samples; i++) {
-        float sq_i = sqrt(i);
-        float x = sq_i * sin((2 * PI * samples * float(i)) / PHI);
-        float y = sq_i * cos((2 * PI * samples * float(i)) / PHI);
-
-        vec2 offset = vec2(x, y) * offset_scale;
-        vec2 uv_new = uv + offset;
-
-        if (uv_new.x > 1.0 || uv_new.y > 1.0 || uv_new.x < 0.0 || uv_new.y < 0.0) {
-            continue;
-        }
-
-        vec3 normal = texture(gb[1], uv + offset).xyz * 2.0 - 1.0;
-
-        float depth_s = texture(gb[2], uv + offset).x;
-
-        vec4 per_pos_s = inverse(ubo.proj) * vec4((uv + offset) * 2.0 - 1.0, depth_s, 1.0);
-        per_pos_s /= per_pos_s.w;
-        vec3 vertPos = (inverse(ubo.view) *  per_pos_s).xyz;
-
-        float dist = distance(vertPos, base_pos);
-
-        float z_min = texture(gb[3], uv + offset).z;
-
-        float max_x = 0.3 * (1.0 / vert_dist);
-        float dev = min(max_x, 2.8 / z_min);
-
-        float weight = gauss(dist, dev);
-        if (isnan(weight) || dot(base_normal, normal) < 0.9) {
-            weight = 0.0;
-        }
-
-        float ao_sample = texture(gb[3], uv + offset).x;
-
-        sum += ao_sample * weight;
-        sum_weigth += weight;
-    }
-
-    return sum / sum_weigth;
-}
-
 float schlick(float f0, vec3 l, vec3 n) {
     return f0 + (1.0 - f0) * pow(1.0 - dot(l, n), 5.0);
 }
 
 void main() {
     if (globals.debug == 1) {
-        float ao_sample = texture(gb[3], uv).x;
+        vec3 indir = texture(gb[3], uv).xyz;
 
         outColor = vec4(
-            vec3(ao_sample),
+            indir,
             1.0
         );
         return;
     } else if (globals.debug == 2) {
         outColor = vec4(
-            vec3(blurred_ao()),
+            vec3(texture(gb[3], uv).xyz),
             1.0
         );
         return;
     } else if (globals.debug == 3) {
-        float ref = texture(gb[3], uv).y;
-
         outColor = vec4(
-            vec3(ref),
+            vec3(texture(gb[3], uv).y),
             1.0
         );
         return;
@@ -161,7 +84,7 @@ void main() {
 
         outColor = vec4(
             normal,
-        1.0
+            1.0
         );
         return;
     } else if (globals.debug == 6) {
@@ -179,9 +102,9 @@ void main() {
         return;
     }
 
-    vec3 lightPos = vec3(0.0, 0.0, 10.0);
+    vec3 light_dir = normalize(vec3(0.2, -0.5, 1.0));
 
-    float noise = ((float(pcg_hash(uint(gl_FragCoord.x + 1000) * uint(gl_FragCoord.y * 4)) % 255) / 128.0) - 1.0) * 0.001 * globals.exposure;
+    float noise = ((float(pcg_hash(uint(globals.frame_index) + uint(gl_FragCoord.x + 1000) * uint(gl_FragCoord.y * 4)) % 255) / 128.0) - 0.5) * 0.001 * globals.exposure;
 
     float ratio = globals.res_x / globals.res_y;
 
@@ -192,26 +115,25 @@ void main() {
     vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
     vec3 vertPos = (inverse(ubo.view) *  per_pos).xyz;
-
-    float shadow = texture(gb[3], uv).a;
-
     vec3 loc = inverse(ubo.view)[3].xyz;
+    vec3 view_dir = normalize(vertPos - loc);
 
-    float ref_sample = texture(gb[3], uv).y;
-    float ao = blurred_ao();
-    float fresnel = schlick(0.3, normalize(loc - vertPos), normalize(normal)) * ref_sample * ao;
+    vec3 indir = texture(gb[3], uv).xyz;
+    float shadow = texture(gb[3], uv).a;
 
     vec3 color_override = vec3(0.9);
 
-    vec3 sky = vec3(0.5, 0.6, 0.9);
+    vec3 sky = vec3(0.4, 0.6, 0.9);
+    vec3 sun = vec3(0.9, 0.8, 0.7);
 
-    vec3 diffuse_dir = light(color_override, normalize(normal), vertPos, lightPos, shadow) + ao * sky;
-    vec3 specular = vec3(0.0);//fresnel * sky + spec(loc, normalize(normal), vertPos, lightPos, shadow, 200.0);
-    vec3 ambient = sky * 0.0 * color_override;
-    vec3 lighted = ((diffuse_dir + specular + ambient)) + noise;
+    vec3 diffuse_dir = light(normalize(normal), light_dir, shadow * sun) + indir;
+    vec3 specular = vec3(0.0);
+    vec3 lighted = ((diffuse_dir + specular)) + noise;
+
+    vec3 sky_col = dot(view_dir, vec3(0.0, 0.0, 1.0)) * sky + noise;
 
     outColor = vec4(
-        mix(sky, lighted, color.a) * (1.0 / globals.exposure),
+        mix(sky_col, lighted, color.a) * (1.0 / globals.exposure),
         1.0
     );
 }

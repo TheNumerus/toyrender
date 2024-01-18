@@ -1,13 +1,14 @@
 use crate::vulkan::{
-    Instance, IntoVulkanError, Surface, VulkanError, DEFERRED_HOST_OPS_EXTENSION, RT_ACCELERATION_EXTENSION,
-    RT_PIPELINE_EXTENSION, SWAPCHAIN_EXTENSION,
+    CommandBuffer, Instance, IntoVulkanError, Surface, VulkanError, DEFERRED_HOST_OPS_EXTENSION,
+    RT_ACCELERATION_EXTENSION, RT_PIPELINE_EXTENSION, RT_POSITION_FETCH_EXTENSION, SHADER_CLOCK_EXTENSION,
+    SWAPCHAIN_EXTENSION,
 };
 use ash::vk;
 use ash::vk::{ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
 use ash::Device as RawDevice;
 use log::info;
 use std::collections::HashSet;
-use std::ffi::CStr;
+use std::ffi::{CStr, CString};
 use std::os::raw::c_void;
 use std::rc::Rc;
 
@@ -26,7 +27,7 @@ pub struct Device {
 }
 
 impl Device {
-    pub fn query_applicable(instance: &Instance, surface: &Surface) -> Result<DeviceQueryResult, VulkanError> {
+    pub fn query_applicable(instance: &Instance, surface: &Surface) -> Result<Vec<DeviceQueryResult>, VulkanError> {
         let devices = unsafe {
             instance
                 .inner
@@ -34,11 +35,16 @@ impl Device {
                 .map_to_err("Cannot enumerate physical devices")?
         };
 
-        if devices.is_empty() {
-            return Ok(DeviceQueryResult::NoDevice);
-        }
+        let needed_extensions = [
+            SWAPCHAIN_EXTENSION,
+            RT_PIPELINE_EXTENSION,
+            DEFERRED_HOST_OPS_EXTENSION,
+            RT_ACCELERATION_EXTENSION,
+            RT_POSITION_FETCH_EXTENSION,
+            SHADER_CLOCK_EXTENSION,
+        ];
 
-        let mut applicable_devices = Vec::new();
+        let mut res_devices = Vec::new();
 
         for device in devices {
             let extensions = unsafe {
@@ -48,41 +54,46 @@ impl Device {
                     .map_to_err("cannot get device extensions")?
             };
 
-            let has_swapchain = Self::has_extension(&extensions, SWAPCHAIN_EXTENSION);
-            let has_rt_pipeline = Self::has_extension(&extensions, RT_PIPELINE_EXTENSION);
-            let has_def_host_ops = Self::has_extension(&extensions, DEFERRED_HOST_OPS_EXTENSION);
-            let has_rt_acc = Self::has_extension(&extensions, RT_ACCELERATION_EXTENSION);
+            let mut missing_extensions = Vec::new();
+
+            for ext in needed_extensions {
+                if !Self::has_extension(&extensions, ext) {
+                    missing_extensions.push(ext.to_string_lossy().to_string());
+                }
+            }
 
             let queue_families = Self::find_device_queue_families(device, instance, surface)?;
             let swapchain_support = Self::query_swapchain_support(device, surface)?;
+            let (properties, _rt_properties) = Self::get_device_properties(&instance, device);
+
+            let name = unsafe {
+                CStr::from_ptr(properties.properties.device_name.as_ptr())
+                    .to_str()
+                    .unwrap_or("'no device name'")
+                    .to_owned()
+            };
 
             if queue_families.graphics.is_some()
                 && queue_families.present.is_some()
                 && queue_families.compute.is_some()
-                && has_swapchain
-                && has_rt_acc
-                && has_rt_pipeline
-                && has_def_host_ops
+                && missing_extensions.is_empty()
                 && !swapchain_support.present_modes.is_empty()
                 && !swapchain_support.formats.is_empty()
             {
-                applicable_devices.push(device);
+                res_devices.push(DeviceQueryResult::Applicable(ApplicableDevice { name, device }))
+            } else {
+                res_devices.push(DeviceQueryResult::NotApplicable(NotApplicableDevice {
+                    name,
+                    missing_extensions,
+                }))
             }
         }
 
-        if !applicable_devices.is_empty() {
-            Ok(DeviceQueryResult::ApplicableDevices(applicable_devices))
-        } else {
-            Ok(DeviceQueryResult::NoApplicableDevice)
-        }
+        Ok(res_devices)
     }
 
-    pub fn new(
-        instance: Rc<Instance>,
-        physical_device: PhysicalDevice,
-        surface: &Surface,
-    ) -> Result<Self, VulkanError> {
-        let queue_families = Self::find_device_queue_families(physical_device, &instance, surface)?;
+    pub fn new(instance: Rc<Instance>, device: ApplicableDevice, surface: &Surface) -> Result<Self, VulkanError> {
+        let queue_families = Self::find_device_queue_families(device.device, &instance, surface)?;
 
         let unique_queue_families = HashSet::from([
             queue_families.graphics.unwrap(),
@@ -108,11 +119,26 @@ impl Device {
             RT_ACCELERATION_EXTENSION,
             RT_PIPELINE_EXTENSION,
             DEFERRED_HOST_OPS_EXTENSION,
+            RT_POSITION_FETCH_EXTENSION,
+            SHADER_CLOCK_EXTENSION,
         ];
+
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
+
+        let clock_info = vk::PhysicalDeviceShaderClockFeaturesKHR {
+            shader_device_clock: 1,
+            ..Default::default()
+        };
+
+        let rt_fetch_info = vk::PhysicalDeviceRayTracingPositionFetchFeaturesKHR {
+            ray_tracing_position_fetch: 1,
+            p_next: std::ptr::addr_of!(clock_info) as *mut c_void,
+            ..Default::default()
+        };
 
         let partial_desc = vk::PhysicalDeviceDescriptorIndexingFeatures {
             descriptor_binding_partially_bound: 1,
+            p_next: std::ptr::addr_of!(rt_fetch_info) as *mut c_void,
             ..Default::default()
         };
 
@@ -147,7 +173,7 @@ impl Device {
         let inner = unsafe {
             instance
                 .inner
-                .create_device(physical_device, &create_info, None)
+                .create_device(device.device, &create_info, None)
                 .map_to_err("cannot create logical device")?
         };
 
@@ -156,7 +182,7 @@ impl Device {
         let compute_queue = unsafe { inner.get_device_queue(queue_families.compute.unwrap() as u32, 0) };
         let async_compute_queue = unsafe { inner.get_device_queue(queue_families.compute.unwrap() as u32, 1) };
 
-        let (properties, rt_properties) = Self::get_device_properties(&instance, physical_device);
+        let (properties, rt_properties) = Self::get_device_properties(&instance, device.device);
 
         let rt_properties = RtProperties {
             shader_group_base_alignment: rt_properties.shader_group_base_alignment,
@@ -167,9 +193,7 @@ impl Device {
 
         info!(
             "{} - Vulkan {}.{}.{}",
-            unsafe { CStr::from_ptr(properties.properties.device_name.as_ptr()) }
-                .to_str()
-                .unwrap(),
+            device.name,
             vk::api_version_major(properties.properties.api_version),
             vk::api_version_minor(properties.properties.api_version),
             vk::api_version_patch(properties.properties.api_version)
@@ -184,7 +208,7 @@ impl Device {
             compute_queue,
             async_compute_queue,
             compute_queue_family: queue_families.compute.unwrap(),
-            physical_device,
+            physical_device: device.device,
             rt_properties,
             instance,
         })
@@ -319,6 +343,42 @@ impl Device {
             name == ext_name
         })
     }
+
+    pub fn begin_label(&self, label: &str, command_buffer: &CommandBuffer) {
+        if !self.instance.markers_active() {
+            return;
+        }
+
+        let label = CString::new(label).expect("Invalid label name");
+
+        let label_info = vk::DebugUtilsLabelEXT {
+            p_label_name: label.as_ptr(),
+            color: [1.0, 1.0, 1.0, 1.0],
+            ..Default::default()
+        };
+
+        unsafe {
+            self.instance
+                .debug_utils
+                .as_ref()
+                .unwrap()
+                .cmd_begin_debug_utils_label(command_buffer.inner, &label_info);
+        }
+    }
+
+    pub fn end_label(&self, command_buffer: &CommandBuffer) {
+        if !self.instance.markers_active() {
+            return;
+        }
+
+        unsafe {
+            self.instance
+                .debug_utils
+                .as_ref()
+                .unwrap()
+                .cmd_end_debug_utils_label(command_buffer.inner);
+        }
+    }
 }
 
 impl Drop for Device {
@@ -327,10 +387,28 @@ impl Drop for Device {
     }
 }
 
+pub struct ApplicableDevice {
+    pub name: String,
+    pub device: PhysicalDevice,
+}
+
+pub struct NotApplicableDevice {
+    pub name: String,
+    pub missing_extensions: Vec<String>,
+}
+
 pub enum DeviceQueryResult {
-    NoDevice,
-    NoApplicableDevice,
-    ApplicableDevices(Vec<PhysicalDevice>),
+    Applicable(ApplicableDevice),
+    NotApplicable(NotApplicableDevice),
+}
+
+impl DeviceQueryResult {
+    pub fn is_applicable(&self) -> bool {
+        match self {
+            DeviceQueryResult::Applicable(_) => true,
+            DeviceQueryResult::NotApplicable { .. } => false,
+        }
+    }
 }
 
 struct QueueFamilyIndices {

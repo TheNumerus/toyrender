@@ -13,6 +13,7 @@ use log::info;
 use nalgebra_glm::Mat4;
 use sdl2::video::Window;
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
@@ -51,6 +52,7 @@ pub struct VulkanRenderer {
     pub gbuffer: GBuffer,
     pub postprocess_render_target: RenderTarget,
     pub rtao_render_target: RenderTarget,
+    pub denoise_render_target: RenderTarget,
     pub taa_render_target: RenderTarget,
     pub pipeline_builder: PipelineBuilder,
     pub render_passes: RenderPasses,
@@ -87,13 +89,7 @@ impl VulkanRenderer {
             .map_err(AppError::Other)?;
         let surface = Surface::new(&instance, &entry, surface)?;
 
-        let devices = match Device::query_applicable(&instance, &surface)? {
-            DeviceQueryResult::ApplicableDevices(d) => Ok(d),
-            DeviceQueryResult::NoDevice => Err(AppError::Other("no GPUs with Vulkan support found".into())),
-            DeviceQueryResult::NoApplicableDevice => Err(AppError::Other("No suitable physical device found".into())),
-        }?;
-
-        let device = Rc::new(Device::new(instance.clone(), devices[0], &surface)?);
+        let device = Self::init_device(instance.clone(), &surface)?;
 
         let allocator = Allocator::new(&AllocatorCreateDesc {
             instance: instance.inner.clone(),
@@ -188,6 +184,15 @@ impl VulkanRenderer {
             vk::ImageAspectFlags::COLOR,
         )?;
 
+        let denoise_render_target = RenderTarget::new(
+            device.clone(),
+            extent_3d,
+            None,
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
             &rt_pipeline_ext,
@@ -229,23 +234,26 @@ impl VulkanRenderer {
 
             cmd_buf.begin_one_time()?;
 
-            let barrier = vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::empty(),
-                dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: rtao_render_target.image.inner,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
+            let barriers = [rtao_render_target.image.inner, denoise_render_target.image.inner]
+                .into_iter()
+                .map(|image| vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::empty(),
+                    dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>();
 
             device.inner.cmd_pipeline_barrier(
                 cmd_buf.inner,
@@ -254,7 +262,7 @@ impl VulkanRenderer {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[barrier],
+                &barriers,
             );
 
             cmd_buf.end()?;
@@ -315,7 +323,14 @@ impl VulkanRenderer {
         writes.push(descriptors.taa_set.update_target(&taa_render_target));
         writes.push(descriptors.taa_set.update_taa_src(&postprocess_render_target));
 
-        writes.push(descriptors.light_set.update_light(&gbuffer, &rtao_render_target));
+        writes.push(descriptors.atrous_set.update_rt_src(&gbuffer));
+        writes.push(
+            descriptors
+                .atrous_set
+                .update_atrous(&denoise_render_target, &rtao_render_target),
+        );
+
+        writes.push(descriptors.light_set.update_light(&gbuffer, &denoise_render_target));
         writes.push(descriptors.post_process_set.update_pp(&taa_render_target));
 
         DescriptorWriter::batch_write(&device, writes);
@@ -334,6 +349,7 @@ impl VulkanRenderer {
             postprocess_render_target,
             rtao_render_target,
             taa_render_target,
+            denoise_render_target,
             pipeline_builder,
             render_passes,
             shader_binding_table,
@@ -359,6 +375,39 @@ impl VulkanRenderer {
         })
     }
 
+    fn init_device(instance: Rc<Instance>, surface: &Surface) -> Result<Rc<Device>, AppError> {
+        let devices = Device::query_applicable(&instance, &surface)?;
+        if devices.is_empty() {
+            return Err(AppError::Other("No GPUs with Vulkan support found".into()));
+        }
+
+        let no_applicable = devices.iter().all(|d| !d.is_applicable());
+
+        if no_applicable {
+            let mut message = String::from("No applicable device found: \n");
+            for device in devices {
+                if let DeviceQueryResult::NotApplicable(device) = device {
+                    let extensions = device.missing_extensions.iter().fold(String::new(), |mut out, ext| {
+                        let _ = write!(out, "\t\t - {}", ext);
+                        out
+                    });
+
+                    let device_msg = format!("\t{}\n\t\tMissing extensions:\n{}", device.name, &extensions);
+                    message.push_str(&device_msg);
+                }
+            }
+
+            Err(AppError::Other(message))
+        } else {
+            for device in devices {
+                if let DeviceQueryResult::Applicable(device) = device {
+                    return Ok(Rc::new(Device::new(instance, device, &surface)?));
+                }
+            }
+            unreachable!()
+        }
+    }
+
     pub fn render_frame(
         &mut self,
         scene: &Scene,
@@ -381,7 +430,10 @@ impl VulkanRenderer {
         let fov_rad = math::deg_to_rad(scene.camera.fov);
         let fovy = math::fovx_to_fovy(fov_rad, aspect_ratio);
 
-        let offset = math::halton(context.frame_index);
+        let mut offset = math::halton(context.frame_index);
+        if context.clear_taa {
+            offset = (0.5, 0.5);
+        }
         let (offset_x, offset_y) = (
             (offset.0 - 0.5) / drawable_size.0 as f32,
             (offset.1 - 0.5) / drawable_size.1 as f32,
@@ -532,20 +584,25 @@ impl VulkanRenderer {
             .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap()))?;
         self.rtao_render_target.resize(rtao_extent, None)?;
         self.taa_render_target.resize(extent_3d, None)?;
+        self.denoise_render_target.resize(rtao_extent, None)?;
 
         unsafe {
             let cmd_buf = self.graphics_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
             cmd_buf.begin_one_time()?;
 
-            let barrier = vk::ImageMemoryBarrier {
+            let barriers = [
+                self.rtao_render_target.image.inner,
+                self.denoise_render_target.image.inner,
+            ]
+            .map(|image| vk::ImageMemoryBarrier {
                 src_access_mask: vk::AccessFlags::empty(),
                 dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
                 old_layout: vk::ImageLayout::UNDEFINED,
                 new_layout: vk::ImageLayout::GENERAL,
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.rtao_render_target.image.inner,
+                image,
                 subresource_range: vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
@@ -554,7 +611,7 @@ impl VulkanRenderer {
                     layer_count: 1,
                 },
                 ..Default::default()
-            };
+            });
 
             self.device.inner.cmd_pipeline_barrier(
                 cmd_buf.inner,
@@ -563,7 +620,7 @@ impl VulkanRenderer {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[barrier],
+                &barriers,
             );
 
             cmd_buf.end()?;
@@ -589,9 +646,13 @@ impl VulkanRenderer {
             self.descriptors.rtao_set.update_rt_src(&self.gbuffer),
             self.descriptors.taa_set.update_target(&self.taa_render_target),
             self.descriptors.taa_set.update_taa_src(&self.postprocess_render_target),
+            self.descriptors.atrous_set.update_rt_src(&self.gbuffer),
+            self.descriptors
+                .atrous_set
+                .update_atrous(&self.denoise_render_target, &self.rtao_render_target),
             self.descriptors
                 .light_set
-                .update_light(&self.gbuffer, &self.rtao_render_target),
+                .update_light(&self.gbuffer, &self.denoise_render_target),
             self.descriptors.post_process_set.update_pp(&self.taa_render_target),
         ];
 
@@ -624,6 +685,7 @@ impl VulkanRenderer {
 
         self.record_gbuffer_pass(command_buffer, scene);
         self.record_rtao(command_buffer);
+        self.record_denoise_pass(command_buffer);
         self.record_light_pass(command_buffer);
         self.record_taa_pass(command_buffer, context.clear_taa);
         self.record_postprocess_pass(command_buffer, framebuffer);
@@ -632,6 +694,8 @@ impl VulkanRenderer {
     }
 
     fn record_gbuffer_pass(&self, command_buffer: &CommandBuffer, scene: &Scene) {
+        self.device.begin_label("GBuffer", command_buffer);
+
         let clears = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
@@ -717,9 +781,13 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
+
+        self.device.end_label(command_buffer);
     }
 
     fn record_rtao(&self, command_buffer: &CommandBuffer) {
+        self.device.begin_label("Path Tracing", command_buffer);
+
         let pipeline = self.pipeline_builder.get_rt("pt").unwrap();
 
         command_buffer.bind_rt_pipeline(pipeline);
@@ -763,10 +831,117 @@ impl VulkanRenderer {
                 height,
                 1,
             );
+
+            let barrier = vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: self.rtao_render_target.image.inner,
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[barrier],
+            );
         }
+
+        self.device.end_label(command_buffer);
+    }
+
+    fn record_denoise_pass(&self, command_buffer: &CommandBuffer) {
+        self.device.begin_label("RT Denoise", command_buffer);
+
+        let pipeline = self.pipeline_builder.get_compute("atrous").unwrap();
+
+        command_buffer.bind_compute_pipeline(pipeline);
+
+        unsafe {
+            self.device.inner.cmd_bind_descriptor_sets(
+                command_buffer.inner,
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                0,
+                &[
+                    self.descriptors.global_sets[self.current_frame].inner.inner,
+                    self.descriptors.atrous_set.inner.inner,
+                ],
+                &[],
+            );
+
+            let (width, height) = if self.quality.half_res {
+                (self.swap_chain.extent.width / 2, self.swap_chain.extent.height / 2)
+            } else {
+                (self.swap_chain.extent.width, self.swap_chain.extent.height)
+            };
+
+            let x = (width / 16) + 1;
+            let y = (height / 16) + 1;
+
+            for level in 0..3_i32 {
+                let level = level.to_le_bytes();
+
+                self.device.inner.cmd_push_constants(
+                    command_buffer.inner,
+                    pipeline.layout,
+                    vk::ShaderStageFlags::COMPUTE,
+                    0,
+                    &level,
+                );
+
+                self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
+
+                let barrier = vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image: self.denoise_render_target.image.inner,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                };
+
+                self.device.inner.cmd_pipeline_barrier(
+                    command_buffer.inner,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[barrier],
+                );
+            }
+        }
+
+        self.device.end_label(command_buffer);
     }
 
     fn record_light_pass(&self, command_buffer: &CommandBuffer) {
+        self.device.begin_label("Lighting", command_buffer);
+
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_passes.passes.get("light").unwrap().inner,
             framebuffer: self.postprocess_render_target.framebuffer.as_ref().unwrap().inner,
@@ -809,9 +984,13 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
+
+        self.device.end_label(command_buffer);
     }
 
     fn record_taa_pass(&self, command_buffer: &CommandBuffer, clear: bool) {
+        self.device.begin_label("TAA Resolve", command_buffer);
+
         let pipeline = self.pipeline_builder.get_compute("taa").unwrap();
 
         command_buffer.bind_compute_pipeline(pipeline);
@@ -848,9 +1027,13 @@ impl VulkanRenderer {
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
         }
+
+        self.device.end_label(command_buffer);
     }
 
     fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer) {
+        self.device.begin_label("Post-processing", command_buffer);
+
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_passes.passes.get("tonemap").unwrap().inner,
             framebuffer: framebuffer.inner,
@@ -893,6 +1076,8 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_render_pass();
+
+        self.device.end_label(command_buffer);
     }
 
     fn prepare_meshes(&mut self, scene: &Scene) -> Result<(), VulkanError> {

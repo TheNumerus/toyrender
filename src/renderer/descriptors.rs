@@ -11,6 +11,7 @@ use std::rc::Rc;
 pub struct RendererDescriptors {
     pub global_sets: Vec<GlobalSet>,
     pub taa_set: ComputeSet,
+    pub atrous_set: ComputeSet,
     pub rtao_set: ComputeSet,
     pub light_set: ImageSet,
     pub post_process_set: ImageSet,
@@ -33,8 +34,11 @@ impl RendererDescriptors {
             .map(|inner| GlobalSet { inner })
             .collect();
 
-        let mut compute_sets = pool.allocate_sets(2, layouts.get(&DescLayout::Compute).unwrap().inner)?;
+        let mut compute_sets = pool.allocate_sets(3, layouts.get(&DescLayout::Compute).unwrap().inner)?;
         let taa_set = ComputeSet {
+            inner: compute_sets.pop().unwrap(),
+        };
+        let atrous_set = ComputeSet {
             inner: compute_sets.pop().unwrap(),
         };
         let rtao_set = ComputeSet {
@@ -53,6 +57,7 @@ impl RendererDescriptors {
             layouts,
             global_sets,
             taa_set,
+            atrous_set,
             rtao_set,
             light_set,
             post_process_set,
@@ -128,7 +133,7 @@ impl DescLayout {
                     },
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
-                        descriptor_count: 1,
+                        descriptor_count: 4,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()
@@ -300,6 +305,28 @@ impl ComputeSet {
             dst_binding: 0,
             dst_array_element: 0,
             descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            ..Default::default()
+        };
+
+        DescriptorWrite {
+            write,
+            buffer_info: None,
+            image_info: Some(image_info),
+            tlases: None,
+        }
+    }
+
+    pub fn update_atrous(&self, src: &RenderTarget, dst: &RenderTarget) -> DescriptorWrite {
+        let image_info = vec![
+            src.descriptor_image_info(vk::ImageLayout::GENERAL),
+            dst.descriptor_image_info(vk::ImageLayout::GENERAL),
+        ];
+
+        let write = vk::WriteDescriptorSet {
+            dst_set: self.inner.inner,
+            dst_binding: 1,
+            dst_array_element: 0,
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
             ..Default::default()
         };
 

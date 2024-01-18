@@ -31,3 +31,7 @@ render_pass = "tonemap"
 [taa]
 kind = "compute"
 compute = "taa_compute"
+
+[atrous]
+kind = "compute"
+compute = "atrous"

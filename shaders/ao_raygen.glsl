@@ -7,6 +7,7 @@
 layout(location = 0) rayPayloadEXT struct {
     bool isMiss;
     float dist;
+    vec3 normal;
 } payload;
 
 layout(set = 0, binding = 0) uniform Global {

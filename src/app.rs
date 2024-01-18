@@ -59,6 +59,9 @@ impl App {
 
     pub fn run(mut self, args: Args) -> Result<(), AppError> {
         if let Some(path) = args.file_to_open {
+            info!("loading file `{:?}`", path);
+            let start = Instant::now();
+
             let file = std::fs::read(&path).map_err(|e| {
                 let msg = format!("file {} cannot be read: {e}", path.to_string_lossy());
 
@@ -71,6 +74,10 @@ impl App {
                 camera,
             } = import::extract_scene(&file)?;
             self.scene.meshes.extend(instances);
+
+            let end = Instant::now();
+
+            info!("Loaded in {} s", (end - start).as_secs_f32());
 
             if let Some(camera) = camera {
                 self.scene.camera.fov = camera.fov;
@@ -87,6 +94,7 @@ impl App {
         let movement_speed = 4.0;
         let mut debug_mode = 0;
         let mut focused = true;
+        let mut taa_enable = true;
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -161,6 +169,9 @@ impl App {
                             flip_half_res = true;
                             clear_taa = true;
                         }
+                        Some(Keycode::T) => {
+                            taa_enable = !taa_enable;
+                        }
                         _ => {}
                     },
                     _ => {}
@@ -186,12 +197,12 @@ impl App {
             let context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
-                clear_taa: resized || clear_taa || frame == 0,
+                clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
                 frame_index: frame,
             };
 
             if sample_adjust != 0 {
-                let new_samples = (self.renderer.quality.rtao_samples + sample_adjust).max(1);
+                let new_samples = (self.renderer.quality.rtao_samples + sample_adjust).max(0);
                 self.renderer.quality.rtao_samples = new_samples;
                 info!("new sample count: {new_samples}");
             }

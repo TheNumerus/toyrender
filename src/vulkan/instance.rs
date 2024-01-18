@@ -1,4 +1,5 @@
-use crate::vulkan::IntoVulkanError;
+use crate::vulkan::{IntoVulkanError, DEBUG_UTILS_EXTENSION};
+use ash::extensions::ext::DebugUtils;
 use ash::{vk, Entry, Instance as RawInstance};
 use log::warn;
 use std::ffi::{CStr, CString};
@@ -7,6 +8,7 @@ use super::{VulkanError, VALIDATION_LAYER};
 
 pub struct Instance {
     pub inner: RawInstance,
+    pub debug_utils: Option<DebugUtils>,
 }
 
 impl Instance {
@@ -22,14 +24,20 @@ impl Instance {
             ..Default::default()
         };
 
-        let instance_extensions = required_extensions
+        let mut required_instance_extensions = required_extensions
             .iter()
             .map(|e| CString::new(e.as_ref()).unwrap())
             .collect::<Vec<_>>();
 
         let instance_layers = get_instance_layers(entry)?;
+        let instance_extensions = get_instance_extensions(entry)?;
+        let markers_active = !instance_extensions.is_empty();
+        required_instance_extensions.extend(instance_extensions);
 
-        let instance_ext_ptrs = instance_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
+        let instance_ext_ptrs = required_instance_extensions
+            .iter()
+            .map(|c| (*c).as_ptr())
+            .collect::<Vec<_>>();
         let instance_layers_ptrs = instance_layers.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
 
         let create_info = vk::InstanceCreateInfo {
@@ -47,7 +55,20 @@ impl Instance {
                 .map_to_err("Cannot create instance")?
         };
 
-        Ok(Self { inner: instance })
+        let debug_utils = if markers_active {
+            Some(DebugUtils::new(entry, &instance))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            inner: instance,
+            debug_utils,
+        })
+    }
+
+    pub fn markers_active(&self) -> bool {
+        self.debug_utils.is_some()
     }
 }
 
@@ -80,6 +101,33 @@ fn get_instance_layers(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
         Ok(vec![CString::new(VALIDATION_LAYER).unwrap()])
     } else {
         warn!("{} not found", VALIDATION_LAYER);
+        Ok(vec![])
+    }
+}
+
+fn get_instance_extensions(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
+    if cfg!(not(debug_assertions)) {
+        return Ok(vec![]);
+    }
+
+    let layers = entry
+        .enumerate_instance_extension_properties(None)
+        .map_to_err("cannot get possible layers")?;
+
+    let has_markers = layers
+        .iter()
+        .filter(|l| {
+            let name = unsafe { CStr::from_ptr(l.extension_name.as_ptr()) };
+
+            name == DEBUG_UTILS_EXTENSION
+        })
+        .count()
+        != 0;
+
+    if has_markers {
+        Ok(vec![CString::from(DEBUG_UTILS_EXTENSION)])
+    } else {
+        warn!("{} not found", DEBUG_UTILS_EXTENSION.to_string_lossy());
         Ok(vec![])
     }
 }

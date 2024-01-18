@@ -1,5 +1,6 @@
 #version 460 core
 #extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_shader_realtime_clock : enable
 #pragma shader_stage(raygen)
 
 #define PI 3.141569
@@ -7,6 +8,7 @@
 layout(location = 0) rayPayloadEXT struct {
     bool isMiss;
     float dist;
+    vec3 normal;
 } payload;
 
 layout(set = 0, binding = 0) uniform Global {
@@ -101,8 +103,14 @@ void traceShadow (vec3 pos, vec3 dir) {
     );
 }
 
+uint time_diff(uint startTime, uint endTime) {
+    return endTime >= startTime ? (endTime-startTime) : (~0u-(startTime-endTime));
+}
+
 void main () {
     payload.isMiss = false;
+
+    uint start = clockRealtime2x32EXT().x;
 
     vec2 uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x, globals.res_y);
     if (globals.half_res == 1) {
@@ -126,20 +134,11 @@ void main () {
     float dis = distance(loc, vertPos);
     vec3 bias = dis * normal * 0.001;
 
-    float indir = 0.0;
+    vec3 indir = vec3(0.0);
 
     int samples = push_consts.samples;
 
     vec3 tangent, bitangent;
-    compute_default_basis(normal, tangent, bitangent);
-
-    vec3 hemi = rand_hemi(
-        vec2(
-            float((pcg_hash((int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
-            float((pcg_hash((1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
-        )
-    );
-    vec3 dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
 
     vec3 sphere = rand_sphere(
         vec2(
@@ -149,79 +148,88 @@ void main () {
     ) * 0.1;
 
     vec3 ray_shadow_dir = normalize(vec3(0.2, -0.5, 1.0) + sphere * 0.1);
+    vec3 sky = vec3(0.4, 0.6, 0.9);
+    vec3 sun = vec3(0.9, 0.8, 0.7);
 
-    trace(vertPos + bias, dir);
+    float intensity_indirect = 0.4;
+    vec3 pos = vertPos;
+    vec3 hitNormal = normal;
+    vec3 dir = view_dir;
 
-    if (payload.isMiss) {
-        // sky on first bounce
-        indir += 0.3;
-    } else {
-        // hit on first bounce
-        vec3 new_pos = vertPos + dir * payload.dist;
-        traceShadow(new_pos + bias, ray_shadow_dir);
+    for (int i = 0; i < samples; i++) {
+        compute_default_basis(hitNormal, tangent, bitangent);
 
+        vec3 hemi = rand_hemi(
+            vec2(
+                float((pcg_hash((i + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
+                float((pcg_hash((i + 1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+            )
+        );
+        dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
+
+        trace(pos + bias, dir);
+
+        // sky
         if (payload.isMiss) {
-            // bounced sun, 1 bouce
-            indir += 0.6;
+            indir += intensity_indirect * 0.9 * sky;
+            break;
         } else {
-            // try second bounce
-            hemi = rand_hemi(
-                vec2(
-                    float((2 + pcg_hash((int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
-                    float((3 + pcg_hash((1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
-                )
-            );
-            dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
+            // try shadow on new position
+            pos += dir * payload.dist;
+            hitNormal = payload.normal;
 
-            trace(new_pos + bias, dir);
+            // flip on backface hit
+            if (dot(dir, hitNormal) > 0.0) {
+                hitNormal = -hitNormal;
+            }
 
+            // ignore shadow rays from unreachable normals
+            if (dot(ray_shadow_dir, hitNormal) <= 0.0) {
+                continue;
+            }
+
+            traceShadow(pos + bias, ray_shadow_dir);
+
+            // sun boounce
             if (payload.isMiss) {
-                // sky on second bounce
-                indir += 0.1;
-            } else {
-                // hit on second bounce
-                new_pos = new_pos + dir * payload.dist;
-                trace(new_pos + bias, ray_shadow_dir);
-
-                if (payload.isMiss) {
-                    // bounced sun, 2 bouce
-                    indir += 0.2;
-                } else {
-
-                }
+                indir += intensity_indirect * 0.9 * sun;
             }
         }
+
+        intensity_indirect *= 0.4;
     }
 
     payload.isMiss = false;
 
     if (dot(ray_shadow_dir, normal) > 0.0) {
         payload.isMiss = true;
-        traceRayEXT(
-            tlas,
-            gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-            0xFF,
-            0,
-            0,
-            0,
-            vertPos + bias,
-            0.001,
-            ray_shadow_dir,
-            1000.0,
-            0
-        );
+        traceShadow(vertPos + bias, ray_shadow_dir);
     }
 
     float shadow = float(payload.isMiss);
 
-    imageStore(
-        rtao_out,
-        ivec2(gl_LaunchIDEXT.xy),
-        vec4(
-            indir,
-            1.0,
-            1.0,
-            shadow
-        )
-    );
+    uint end = clockRealtime2x32EXT().x;
+
+    if (globals.debug == 2) {
+        float time = float(time_diff(start, end)) / 1024 / 256;
+        imageStore(
+            rtao_out,
+            ivec2(gl_LaunchIDEXT.xy),
+            vec4(
+                (2.0 * time) - 1.0,
+                -(abs(4.0 * time - 2.0)) + 1.0,
+                -(2.0 * time) + 1.0,
+                shadow
+            )
+        );
+    } else {
+        imageStore(
+            rtao_out,
+            ivec2(gl_LaunchIDEXT.xy),
+            vec4(
+                indir,
+                shadow
+            )
+        );
+    }
 }

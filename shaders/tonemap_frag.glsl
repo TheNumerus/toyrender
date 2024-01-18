@@ -66,7 +66,7 @@ void main() {
     vec3 sum = vec3(0.0);
 
     for (int i = 0; i < 7; i++) {
-        float scale = (float(i) - 3.0) * 0.001 + 1.0;
+        float scale = (float(i) - 3.0) * 0.0006 + 1.0;
 
         vec2 uv_scaled = ((uv - 0.5) * scale) + 0.5;
 

@@ -25,6 +25,6 @@ void main() {
         1.0
     );
 
-    outNormal = vec4(fragNormal + 1.0 - 0.5, 1.0);
+    outNormal = vec4((fragNormal + 1.0) * 0.5, 1.0);
     outDepth = gl_FragCoord.z;
 }

@@ -32,10 +32,25 @@ void main() {
         vec4 current = texture(resolve[0], uv);
         vec4 prev = imageLoad(taa_out, ivec2(x,y));
 
+        vec4 min_color = vec4(1.0);
+        vec4 max_color = vec4(0.0);
+
+        for(int offset_x = -1; offset_x <= 1; offset_x ++) {
+            for(int offset_y = -1; offset_y <= 1; offset_y ++) {
+                vec2 uv_sample = (vec2(x + offset_x, y + offset_y) + 0.5) / vec2(globals.res_x, globals.res_y);
+
+                vec4 sample_color = texture(resolve[0], uv_sample);
+                min_color = min(min_color, sample_color);
+                max_color = max(max_color, sample_color);
+            }
+        }
+
+        vec4 prev_clamped = clamp(prev, min_color, max_color);
+
         if (push_consts.clear == 1) {
             imageStore(taa_out, ivec2(x,y), current);
         } else {
-            imageStore(taa_out, ivec2(x,y), mix(prev, current, 0.2));
+            imageStore(taa_out, ivec2(x,y), mix(prev_clamped, current, 0.1));
         }
     }
 }
