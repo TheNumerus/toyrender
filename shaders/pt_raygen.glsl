@@ -107,6 +107,17 @@ uint time_diff(uint startTime, uint endTime) {
     return endTime >= startTime ? (endTime-startTime) : (~0u-(startTime-endTime));
 }
 
+vec3 sky_color(vec3 view_dir) {
+    float vertical = dot(view_dir, vec3(0.0, 0.0, 1.0));
+
+    vec3 sky = mix(vec3(0.5, 0.5, 0.6), vec3(0.2, 0.4, 0.9), pow(abs(vertical), 0.7));
+    vec3 ground = mix(vec3(0.2, 0.2, 0.2), vec3(0.03, 0.02, 0.01), -vertical);
+
+    float factor = smoothstep(0.02, -0.02, vertical);
+
+    return mix(sky, ground, factor);
+}
+
 void main () {
     payload.isMiss = false;
 
@@ -148,10 +159,9 @@ void main () {
     ) * 0.1;
 
     vec3 ray_shadow_dir = normalize(vec3(0.2, -0.5, 1.0) + sphere * 0.1);
-    vec3 sky = vec3(0.4, 0.6, 0.9);
     vec3 sun = vec3(0.9, 0.8, 0.7);
 
-    float intensity_indirect = 0.4;
+    float intensity_indirect = 0.5;
     vec3 pos = vertPos;
     vec3 hitNormal = normal;
     vec3 dir = view_dir;
@@ -171,7 +181,7 @@ void main () {
 
         // sky
         if (payload.isMiss) {
-            indir += intensity_indirect * 0.9 * sky;
+            indir += intensity_indirect * 0.9 * sky_color(dir);
             break;
         } else {
             // try shadow on new position
@@ -196,7 +206,7 @@ void main () {
             }
         }
 
-        intensity_indirect *= 0.4;
+        intensity_indirect *= 0.5;
     }
 
     payload.isMiss = false;

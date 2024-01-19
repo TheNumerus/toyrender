@@ -50,6 +50,17 @@ float schlick(float f0, vec3 l, vec3 n) {
     return f0 + (1.0 - f0) * pow(1.0 - dot(l, n), 5.0);
 }
 
+vec3 sky_color(vec3 view_dir) {
+    float vertical = dot(view_dir, vec3(0.0, 0.0, 1.0));
+
+    vec3 sky = mix(vec3(0.5, 0.5, 0.6), vec3(0.2, 0.4, 0.9), pow(abs(vertical), 0.7));
+    vec3 ground = mix(vec3(0.2, 0.2, 0.2), vec3(0.03, 0.02, 0.01), -vertical);
+
+    float factor = smoothstep(0.02, -0.02, vertical);
+
+    return mix(sky, ground, factor);
+}
+
 void main() {
     if (globals.debug == 1) {
         vec3 indir = texture(gb[3], uv).xyz;
@@ -130,7 +141,7 @@ void main() {
     vec3 specular = vec3(0.0);
     vec3 lighted = ((diffuse_dir + specular)) + noise;
 
-    vec3 sky_col = dot(view_dir, vec3(0.0, 0.0, 1.0)) * sky + noise;
+    vec3 sky_col = sky_color(view_dir) + noise;
 
     outColor = vec4(
         mix(sky_col, lighted, color.a) * (1.0 / globals.exposure),
