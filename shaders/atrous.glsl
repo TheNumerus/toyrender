@@ -63,7 +63,7 @@ void main() {
 
     ivec2 size = imageSize(atrous[0]);
 
-    if (globals.debug == 2) {
+    if (globals.debug == 1 || globals.debug == 2) {
         vec4 raw = imageLoad(atrous[1], ivec2(x_base, y_base));
         imageStore(atrous[0], ivec2(x_base, y_base), raw);
         return;

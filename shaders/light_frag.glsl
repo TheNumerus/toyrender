@@ -63,46 +63,38 @@ vec3 sky_color(vec3 view_dir) {
 
 void main() {
     if (globals.debug == 1) {
-        vec3 indir = texture(gb[3], uv).xyz;
-
         outColor = vec4(
-            indir,
+            texture(gb[3], uv).xyz,
             1.0
         );
         return;
     } else if (globals.debug == 2) {
         outColor = vec4(
-            vec3(texture(gb[3], uv).xyz),
+            texture(gb[4], uv).xyz,
             1.0
         );
         return;
     } else if (globals.debug == 3) {
         outColor = vec4(
-            vec3(texture(gb[3], uv).y),
+            texture(gb[3], uv).xyz,
             1.0
         );
         return;
     } else if (globals.debug == 4) {
-        float shadow = texture(gb[3], uv).w;
-
         outColor = vec4(
-            vec3(shadow),
+            texture(gb[0], uv).xyz,
             1.0
         );
         return;
     } else if (globals.debug == 5) {
-        vec3 normal = texture(gb[1], uv).xyz;
-
         outColor = vec4(
-            normal,
+            texture(gb[1], uv).xyz,
             1.0
         );
         return;
     } else if (globals.debug == 6) {
-        float depth = texture(gb[2], uv).x;
-
         outColor = vec4(
-            vec3(depth),
+            vec3(pow(texture(gb[2], uv).x, 5.0)),
             1.0
         );
         return;
@@ -129,15 +121,15 @@ void main() {
     vec3 loc = inverse(ubo.view)[3].xyz;
     vec3 view_dir = normalize(vertPos - loc);
 
-    vec3 indir = texture(gb[3], uv).xyz;
-    float shadow = texture(gb[3], uv).a;
+    vec3 direct = texture(gb[3], uv).xyz;
+    vec3 indirect = texture(gb[4], uv).xyz;
 
     vec3 color_override = vec3(0.9);
 
     vec3 sky = vec3(0.4, 0.6, 0.9);
     vec3 sun = vec3(0.9, 0.8, 0.7);
 
-    vec3 diffuse_dir = light(normalize(normal), light_dir, shadow * sun) + indir;
+    vec3 diffuse_dir = light(normalize(normal), light_dir, direct) + indirect;
     vec3 specular = vec3(0.0);
     vec3 lighted = ((diffuse_dir + specular)) + noise;
 

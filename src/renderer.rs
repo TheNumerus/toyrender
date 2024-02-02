@@ -1,6 +1,6 @@
 use crate::err::AppError;
 use crate::mesh::MeshResource;
-use crate::scene::Scene;
+use crate::scene::{Environment, Scene};
 use crate::vulkan::{
     AccelerationStructure, Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence,
     Framebuffer, ImageView, Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, RenderPass, Semaphore,
@@ -51,7 +51,8 @@ pub struct VulkanRenderer {
     pub swap_chain_fbs: Vec<Framebuffer>,
     pub gbuffer: GBuffer,
     pub postprocess_render_target: RenderTarget,
-    pub rtao_render_target: RenderTarget,
+    pub rt_direct_render_target: RenderTarget,
+    pub rt_indirect_render_target: RenderTarget,
     pub denoise_render_target: RenderTarget,
     pub taa_render_target: RenderTarget,
     pub pipeline_builder: PipelineBuilder,
@@ -67,6 +68,7 @@ pub struct VulkanRenderer {
     pub descriptors: RendererDescriptors,
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
+    pub env_uniforms: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub debug_mode: i32,
@@ -112,7 +114,7 @@ impl VulkanRenderer {
             device.clone(),
             &[
                 vk::DescriptorPoolSize {
-                    descriptor_count: 8 * MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 20 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
                 },
                 vk::DescriptorPoolSize {
@@ -167,7 +169,15 @@ impl VulkanRenderer {
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::COLOR,
         )?;
-        let rtao_render_target = RenderTarget::new(
+        let rt_direct_render_target = RenderTarget::new(
+            device.clone(),
+            extent_3d,
+            None,
+            vk::Format::A2B10G10R10_UNORM_PACK32,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+        let rt_indirect_render_target = RenderTarget::new(
             device.clone(),
             extent_3d,
             None,
@@ -221,6 +231,7 @@ impl VulkanRenderer {
         let mut in_flight = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let (fs_quad_v, fs_quad_i) = crate::mesh::fs_triangle();
         let fs_quad = VulkanMesh::new(
@@ -234,26 +245,30 @@ impl VulkanRenderer {
 
             cmd_buf.begin_one_time()?;
 
-            let barriers = [rtao_render_target.image.inner, denoise_render_target.image.inner]
-                .into_iter()
-                .map(|image| vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::empty(),
-                    dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                    old_layout: vk::ImageLayout::UNDEFINED,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                })
-                .collect::<Vec<_>>();
+            let barriers = [
+                rt_direct_render_target.image.inner,
+                rt_indirect_render_target.image.inner,
+                denoise_render_target.image.inner,
+            ]
+            .into_iter()
+            .map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::empty(),
+                dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                old_layout: vk::ImageLayout::UNDEFINED,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image,
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
 
             device.inner.cmd_pipeline_barrier(
                 cmd_buf.inner,
@@ -312,13 +327,29 @@ impl VulkanRenderer {
 
             uniform_buffers_globals.push(uniform_buffer_global);
 
+            let env_buf = Buffer::new(
+                device.clone(),
+                vk::BufferUsageFlags::UNIFORM_BUFFER,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                std::mem::size_of::<f32>() as u64 * 8,
+                true,
+                false,
+            )?;
+
+            env_uniforms.push(env_buf);
+
             writes.push(descriptors.global_sets[i].update_globals(&uniform_buffers_globals[i]));
             writes.push(descriptors.global_sets[i].update_tlas(&tlas));
             writes.push(descriptors.global_sets[i].update_view(&uniform_buffers[i]));
+            writes.push(descriptors.global_sets[i].update_env(&env_uniforms[i]));
         }
 
-        writes.push(descriptors.rtao_set.update_target(&rtao_render_target));
-        writes.push(descriptors.rtao_set.update_rt_src(&gbuffer));
+        writes.push(
+            descriptors
+                .rt_set
+                .update_targets(&rt_direct_render_target, &rt_indirect_render_target),
+        );
+        writes.push(descriptors.rt_set.update_rt_src(&gbuffer));
 
         writes.push(descriptors.taa_set.update_target(&taa_render_target));
         writes.push(descriptors.taa_set.update_taa_src(&postprocess_render_target));
@@ -327,10 +358,14 @@ impl VulkanRenderer {
         writes.push(
             descriptors
                 .atrous_set
-                .update_atrous(&denoise_render_target, &rtao_render_target),
+                .update_atrous(&denoise_render_target, &rt_indirect_render_target),
         );
 
-        writes.push(descriptors.light_set.update_light(&gbuffer, &denoise_render_target));
+        writes.push(
+            descriptors
+                .light_set
+                .update_light(&gbuffer, &rt_direct_render_target, &denoise_render_target),
+        );
         writes.push(descriptors.post_process_set.update_pp(&taa_render_target));
 
         DescriptorWriter::batch_write(&device, writes);
@@ -347,7 +382,8 @@ impl VulkanRenderer {
             swap_chain_fbs,
             gbuffer,
             postprocess_render_target,
-            rtao_render_target,
+            rt_direct_render_target,
+            rt_indirect_render_target,
             taa_render_target,
             denoise_render_target,
             pipeline_builder,
@@ -366,6 +402,7 @@ impl VulkanRenderer {
             descriptors,
             uniform_buffers,
             uniform_buffers_globals,
+            env_uniforms,
             in_flight,
             debug_mode: 0,
             quality: QualitySettings::new(),
@@ -376,7 +413,7 @@ impl VulkanRenderer {
     }
 
     fn init_device(instance: Rc<Instance>, surface: &Surface) -> Result<Rc<Device>, AppError> {
-        let devices = Device::query_applicable(&instance, &surface)?;
+        let devices = Device::query_applicable(&instance, surface)?;
         if devices.is_empty() {
             return Err(AppError::Other("No GPUs with Vulkan support found".into()));
         }
@@ -401,7 +438,7 @@ impl VulkanRenderer {
         } else {
             for device in devices {
                 if let DeviceQueryResult::Applicable(device) = device {
-                    return Ok(Rc::new(Device::new(instance, device, &surface)?));
+                    return Ok(Rc::new(Device::new(instance, device, surface)?));
                 }
             }
             unreachable!()
@@ -463,6 +500,8 @@ impl VulkanRenderer {
             half_res: if self.quality.half_res { 1 } else { 0 },
         };
 
+        let env = env_to_buffer(&scene.env);
+
         unsafe {
             self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
                 std::ptr::addr_of!(ubo) as *const u8,
@@ -470,6 +509,7 @@ impl VulkanRenderer {
             ))?;
 
             self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
+            self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
         }
 
         let tlas_index = self.build_tlas_index(scene);
@@ -582,7 +622,8 @@ impl VulkanRenderer {
             .resize(extent_3d, self.render_passes.passes.get("gb").unwrap())?;
         self.postprocess_render_target
             .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap()))?;
-        self.rtao_render_target.resize(rtao_extent, None)?;
+        self.rt_direct_render_target.resize(rtao_extent, None)?;
+        self.rt_indirect_render_target.resize(rtao_extent, None)?;
         self.taa_render_target.resize(extent_3d, None)?;
         self.denoise_render_target.resize(rtao_extent, None)?;
 
@@ -592,7 +633,8 @@ impl VulkanRenderer {
             cmd_buf.begin_one_time()?;
 
             let barriers = [
-                self.rtao_render_target.image.inner,
+                self.rt_direct_render_target.image.inner,
+                self.rt_indirect_render_target.image.inner,
                 self.denoise_render_target.image.inner,
             ]
             .map(|image| vk::ImageMemoryBarrier {
@@ -642,17 +684,21 @@ impl VulkanRenderer {
         }
 
         let writes = vec![
-            self.descriptors.rtao_set.update_target(&self.rtao_render_target),
-            self.descriptors.rtao_set.update_rt_src(&self.gbuffer),
+            self.descriptors
+                .rt_set
+                .update_targets(&self.rt_direct_render_target, &self.rt_indirect_render_target),
+            self.descriptors.rt_set.update_rt_src(&self.gbuffer),
             self.descriptors.taa_set.update_target(&self.taa_render_target),
             self.descriptors.taa_set.update_taa_src(&self.postprocess_render_target),
             self.descriptors.atrous_set.update_rt_src(&self.gbuffer),
             self.descriptors
                 .atrous_set
-                .update_atrous(&self.denoise_render_target, &self.rtao_render_target),
-            self.descriptors
-                .light_set
-                .update_light(&self.gbuffer, &self.denoise_render_target),
+                .update_atrous(&self.denoise_render_target, &self.rt_indirect_render_target),
+            self.descriptors.light_set.update_light(
+                &self.gbuffer,
+                &self.rt_direct_render_target,
+                &self.denoise_render_target,
+            ),
             self.descriptors.post_process_set.update_pp(&self.taa_render_target),
         ];
 
@@ -800,7 +846,7 @@ impl VulkanRenderer {
                 0,
                 &[
                     self.descriptors.global_sets[self.current_frame].inner.inner,
-                    self.descriptors.rtao_set.inner.inner,
+                    self.descriptors.rt_set.inner.inner,
                 ],
                 &[],
             );
@@ -839,7 +885,25 @@ impl VulkanRenderer {
                 new_layout: vk::ImageLayout::GENERAL,
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.rtao_render_target.image.inner,
+                image: self.rt_direct_render_target.image.inner,
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            };
+
+            let barrier_2 = vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: self.rt_indirect_render_target.image.inner,
                 subresource_range: vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::COLOR,
                     base_mip_level: 0,
@@ -857,7 +921,7 @@ impl VulkanRenderer {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[barrier],
+                &[barrier, barrier_2],
             );
         }
 
@@ -1197,13 +1261,13 @@ impl Globals {
     pub fn to_boxed_slice(&self) -> Box<[u8]> {
         let mut vec = Vec::with_capacity(std::mem::size_of::<Self>());
 
-        vec.extend(self.max_bright.to_ne_bytes());
-        vec.extend(self.debug_mode.to_ne_bytes());
-        vec.extend(self.res_x.to_ne_bytes());
-        vec.extend(self.res_y.to_ne_bytes());
-        vec.extend(self.time.to_ne_bytes());
-        vec.extend(self.frame_index.to_ne_bytes());
-        vec.extend(self.half_res.to_ne_bytes());
+        vec.extend(self.max_bright.to_le_bytes());
+        vec.extend(self.debug_mode.to_le_bytes());
+        vec.extend(self.res_x.to_le_bytes());
+        vec.extend(self.res_y.to_le_bytes());
+        vec.extend(self.time.to_le_bytes());
+        vec.extend(self.frame_index.to_le_bytes());
+        vec.extend(self.half_res.to_le_bytes());
 
         vec.into_boxed_slice()
     }
@@ -1242,4 +1306,23 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
     let arch = ZipArchive::new(file).map_err(|e| AppError::Other(format!("Cannot read shaders library: {e}")))?;
 
     Ok(arch)
+}
+
+fn env_to_buffer(env: &Environment) -> Box<[u8]> {
+    let mut buf = Vec::new();
+
+    for x in [
+        env.sun_direction.x,
+        env.sun_direction.y,
+        env.sun_direction.z,
+        0.0,
+        env.sun_color.x,
+        env.sun_color.y,
+        env.sun_color.z,
+        0.0,
+    ] {
+        buf.extend(x.to_le_bytes());
+    }
+
+    buf.into_boxed_slice()
 }

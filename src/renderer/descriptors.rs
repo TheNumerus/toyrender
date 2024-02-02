@@ -12,7 +12,7 @@ pub struct RendererDescriptors {
     pub global_sets: Vec<GlobalSet>,
     pub taa_set: ComputeSet,
     pub atrous_set: ComputeSet,
-    pub rtao_set: ComputeSet,
+    pub rt_set: ComputeSet,
     pub light_set: ImageSet,
     pub post_process_set: ImageSet,
     pub layouts: HashMap<DescLayout, DescriptorSetLayout>,
@@ -41,7 +41,7 @@ impl RendererDescriptors {
         let atrous_set = ComputeSet {
             inner: compute_sets.pop().unwrap(),
         };
-        let rtao_set = ComputeSet {
+        let rt_set = ComputeSet {
             inner: compute_sets.pop().unwrap(),
         };
 
@@ -58,7 +58,7 @@ impl RendererDescriptors {
             global_sets,
             taa_set,
             atrous_set,
-            rtao_set,
+            rt_set,
             light_set,
             post_process_set,
         })
@@ -78,19 +78,21 @@ pub enum DescLayout {
 
 impl DescLayout {
     pub fn get_bindings(&self) -> Vec<vk::DescriptorSetLayoutBinding> {
+        let uniform = |binding: u32| vk::DescriptorSetLayoutBinding {
+            binding,
+            descriptor_count: 1,
+            stage_flags: vk::ShaderStageFlags::VERTEX
+                | vk::ShaderStageFlags::FRAGMENT
+                | vk::ShaderStageFlags::RAYGEN_KHR
+                | vk::ShaderStageFlags::COMPUTE,
+            descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+            ..Default::default()
+        };
+
         match self {
             DescLayout::Global => {
                 vec![
-                    vk::DescriptorSetLayoutBinding {
-                        binding: 0,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::VERTEX
-                            | vk::ShaderStageFlags::FRAGMENT
-                            | vk::ShaderStageFlags::RAYGEN_KHR
-                            | vk::ShaderStageFlags::COMPUTE,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        ..Default::default()
-                    },
+                    uniform(0),
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
                         descriptor_count: 1,
@@ -101,16 +103,8 @@ impl DescLayout {
                         descriptor_type: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                         ..Default::default()
                     },
-                    vk::DescriptorSetLayoutBinding {
-                        binding: 2,
-                        descriptor_count: 1,
-                        stage_flags: vk::ShaderStageFlags::VERTEX
-                            | vk::ShaderStageFlags::FRAGMENT
-                            | vk::ShaderStageFlags::RAYGEN_KHR
-                            | vk::ShaderStageFlags::COMPUTE,
-                        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
-                        ..Default::default()
-                    },
+                    uniform(2),
+                    uniform(3),
                 ]
             }
             DescLayout::Image => {
@@ -236,6 +230,10 @@ impl GlobalSet {
     pub fn update_view(&self, buffer: &Buffer) -> DescriptorWrite {
         create_buffer_update(buffer, std::mem::size_of::<ViewProj>() as u64, &self.inner, 2)
     }
+
+    pub fn update_env(&self, buffer: &Buffer) -> DescriptorWrite {
+        create_buffer_update(buffer, std::mem::size_of::<f32>() as u64 * 8, &self.inner, 3)
+    }
 }
 
 pub struct ComputeSet {
@@ -280,6 +278,28 @@ impl ComputeSet {
 
     pub fn update_target(&self, target: &RenderTarget) -> DescriptorWrite {
         let image_info = vec![target.descriptor_image_info(vk::ImageLayout::GENERAL)];
+
+        let write = vk::WriteDescriptorSet {
+            dst_set: self.inner.inner,
+            dst_binding: 1,
+            dst_array_element: 0,
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+            ..Default::default()
+        };
+
+        DescriptorWrite {
+            write,
+            buffer_info: None,
+            image_info: Some(image_info),
+            tlases: None,
+        }
+    }
+
+    pub fn update_targets(&self, target_1: &RenderTarget, target_2: &RenderTarget) -> DescriptorWrite {
+        let image_info = vec![
+            target_1.descriptor_image_info(vk::ImageLayout::GENERAL),
+            target_2.descriptor_image_info(vk::ImageLayout::GENERAL),
+        ];
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
@@ -363,7 +383,12 @@ impl ImageSet {
         }
     }
 
-    pub fn update_light(&self, gbuffer: &GBuffer, rt: &RenderTarget) -> DescriptorWrite {
+    pub fn update_light(
+        &self,
+        gbuffer: &GBuffer,
+        rt_direct: &RenderTarget,
+        rt_indirect: &RenderTarget,
+    ) -> DescriptorWrite {
         let image_info = vec![
             vk::DescriptorImageInfo {
                 sampler: gbuffer.sampler.inner,
@@ -380,7 +405,8 @@ impl ImageSet {
                 image_view: gbuffer.views[2].inner,
                 image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             },
-            rt.descriptor_image_info(vk::ImageLayout::GENERAL),
+            rt_direct.descriptor_image_info(vk::ImageLayout::GENERAL),
+            rt_indirect.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
 
         let write = vk::WriteDescriptorSet {

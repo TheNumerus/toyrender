@@ -16,6 +16,9 @@ fn main() -> Result<(), std::io::Error> {
 
     for file in std::fs::read_dir("shaders")? {
         let file = file?;
+        if file.path().is_dir() {
+            continue;
+        }
 
         let name = file.file_name();
 

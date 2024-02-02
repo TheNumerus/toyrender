@@ -3,6 +3,8 @@
 #extension GL_EXT_shader_realtime_clock : enable
 #pragma shader_stage(raygen)
 
+#include "common/sampling.glsl"
+
 #define PI 3.141569
 
 layout(location = 0) rayPayloadEXT struct {
@@ -28,9 +30,14 @@ layout(set = 0, binding = 2) uniform UniformBufferObject {
     mat4 proj;
 } ubo;
 
+layout(set = 0, binding = 3) uniform Environment {
+    vec3 sun_direction;
+    vec3 sun_color;
+} env;
+
 layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
-layout(set = 1, binding = 1, rgb10_a2) uniform image2D rtao_out;
+layout(set = 1, binding = 1, rgb10_a2) uniform image2D rt_out[];
 
 layout( push_constant ) uniform constants {
     int samples;
@@ -42,33 +49,12 @@ uint pcg_hash(uint i) {
     return (word >> 22u) ^ word;
 }
 
-void compute_default_basis(const vec3 normal, out vec3 x, out vec3 y)
-{
-    vec3        z  = normal;
+void compute_default_basis(const vec3 normal, out vec3 x, out vec3 y) {
+    vec3 z  = normal;
     const float yz = -z.y * z.z;
     y = normalize(((abs(z.z) > 0.99999f) ? vec3(-z.x * z.y, 1.0f - z.y * z.y, yz) : vec3(-z.x * z.z, yz, 1.0f - z.z * z.z)));
 
     x = cross(y, z);
-}
-
-vec3 rand_hemi(vec2 rand) {
-    float sq_x = sqrt(rand.x);
-
-    float x = sq_x * cos(2.0 * PI * rand.y);
-    float y = sq_x * sin(2.0 * PI * rand.y);
-    float z = sqrt(1.0 - rand.x);
-
-    return vec3(x, y, z);
-}
-
-vec3 rand_sphere(vec2 rand) {
-    float a = 1 - 2 * rand.x;
-    float b = sqrt(1 - a * a);
-    float phi = 2 * PI * rand.y;
-    float x = b * cos(phi);
-    float y = b * sin(phi);
-    float z = a;
-    return normalize(vec3(x, y, z));
 }
 
 void trace (vec3 pos, vec3 dir) {
@@ -145,21 +131,23 @@ void main () {
     float dis = distance(loc, vertPos);
     vec3 bias = dis * normal * 0.001;
 
-    vec3 indir = vec3(0.0);
+    vec3 indirect = vec3(0.0);
 
     int samples = push_consts.samples;
 
     vec3 tangent, bitangent;
 
-    vec3 sphere = rand_sphere(
-        vec2(
-            float((pcg_hash((2 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
-            float((pcg_hash((2 + 1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
-        )
-    ) * 0.1;
+    vec2 rand = vec2(
+        float((pcg_hash((2 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
+        float((pcg_hash((2 + 1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+    );
 
-    vec3 ray_shadow_dir = normalize(vec3(0.2, -0.5, 1.0) + sphere * 0.1);
-    vec3 sun = vec3(0.9, 0.8, 0.7);
+    vec3 sphere = rand_sphere(rand) * 0.1;
+
+    compute_default_basis(env.sun_direction, tangent, bitangent);
+
+    vec3 cone = rand_cone(rand, cos(0.02));
+    vec3 ray_shadow_dir = cone.x * tangent + cone.y * bitangent + cone.z * env.sun_direction;
 
     float intensity_indirect = 0.5;
     vec3 pos = vertPos;
@@ -171,8 +159,8 @@ void main () {
 
         vec3 hemi = rand_hemi(
             vec2(
-                float((pcg_hash((i + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0,
-                float((pcg_hash((i + 1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x)))) % 1024) / 1024.0
+                float((pcg_hash((int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x) + i))) % 1024) / 1024.0,
+                float((pcg_hash((1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x) + i))) % 1024) / 1024.0
             )
         );
         dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
@@ -181,7 +169,7 @@ void main () {
 
         // sky
         if (payload.isMiss) {
-            indir += intensity_indirect * 0.9 * sky_color(dir);
+            indirect += intensity_indirect * 0.9 * sky_color(dir);
             break;
         } else {
             // try shadow on new position
@@ -202,7 +190,7 @@ void main () {
 
             // sun boounce
             if (payload.isMiss) {
-                indir += intensity_indirect * 0.9 * sun;
+                indirect += intensity_indirect * 0.9 * env.sun_color;
             }
         }
 
@@ -218,27 +206,37 @@ void main () {
 
     float shadow = float(payload.isMiss);
 
+    vec3 direct = shadow * env.sun_color;
+
     uint end = clockRealtime2x32EXT().x;
 
-    if (globals.debug == 2) {
+    if (globals.debug == 3) {
         float time = float(time_diff(start, end)) / 1024 / 256;
         imageStore(
-            rtao_out,
+            rt_out[0],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
                 (2.0 * time) - 1.0,
                 -(abs(4.0 * time - 2.0)) + 1.0,
                 -(2.0 * time) + 1.0,
-                shadow
+                0.0
             )
         );
     } else {
         imageStore(
-            rtao_out,
+            rt_out[0],
+            ivec2(gl_LaunchIDEXT.xy),
+                vec4(
+                direct,
+                0.0
+            )
+        );
+        imageStore(
+            rt_out[1],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
-                indir,
-                shadow
+                indirect,
+                0.0
             )
         );
     }
