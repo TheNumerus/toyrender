@@ -1,6 +1,9 @@
 #version 450
 #pragma shader_stage(fragment)
 
+#include "common/debug_modes.glsl"
+#include "common/defs.glsl"
+
 #define PI 3.141569
 #define PHI 1.618033988
 
@@ -8,20 +11,8 @@ layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 outColor;
 
-layout(set = 0, binding = 0) uniform Global {
-    float exposure;
-    int debug;
-    float res_x;
-    float res_y;
-    float time;
-    int frame_index;
-    int half_res;
-} globals;
-
-layout(set = 0, binding = 2) uniform UniformBufferObject {
-    mat4 view;
-    mat4 proj;
-} ubo;
+layout(set = 0, binding = 0) GLOBAL;
+layout(set = 0, binding = 2) VIEW_PROJ;
 
 layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
@@ -61,47 +52,45 @@ vec3 sky_color(vec3 view_dir) {
     return mix(sky, ground, factor);
 }
 
-void main() {
-    if (globals.debug == 1) {
-        outColor = vec4(
+vec4 get_debug_color() {
+    if (globals.debug == DEBUG_DIRECT) {
+        return vec4(
             texture(gb[3], uv).xyz,
             1.0
         );
-        return;
-    } else if (globals.debug == 2) {
-        outColor = vec4(
+    } else if (globals.debug == DEBUG_INDIRECT) {
+        return vec4(
             texture(gb[4], uv).xyz,
             1.0
         );
-        return;
-    } else if (globals.debug == 3) {
-        outColor = vec4(
+    } else if (globals.debug == DEBUG_TIME) {
+        return vec4(
             texture(gb[3], uv).xyz,
             1.0
         );
-        return;
-    } else if (globals.debug == 4) {
-        outColor = vec4(
+    } else if (globals.debug == DEBUG_BASE_COLOR) {
+        return vec4(
             texture(gb[0], uv).xyz,
             1.0
         );
-        return;
-    } else if (globals.debug == 5) {
-        outColor = vec4(
+    } else if (globals.debug == DEBUG_NORMAL) {
+        return vec4(
             texture(gb[1], uv).xyz,
             1.0
         );
-        return;
-    } else if (globals.debug == 6) {
-        outColor = vec4(
-            vec3(pow(texture(gb[2], uv).x, 5.0)),
+    } else if (globals.debug == DEBUG_DEPTH) {
+        return vec4(
+            vec3(fract(texture(gb[2], uv).x * 500.0)),
             1.0
         );
-        return;
-    } else if (globals.debug == 7) {
-        float color = texture(gb[3], uv).z;
+    }
 
-        outColor = vec4(vec3(color), 1.0);
+    return vec4(1.0);
+}
+
+void main() {
+    if (!(globals.debug == DEBUG_NONE || globals.debug == DEBUG_DISOCCLUSION)) {
+        outColor = get_debug_color();
         return;
     }
 
@@ -113,12 +102,12 @@ void main() {
 
     vec4 color = texture(gb[0], uv);
     vec3 normal = texture(gb[1], uv).xyz * 2.0 - 1.0;
-    float depth = texture(gb[2], uv).x;
+    float depth = 1.0 - texture(gb[2], uv).x;
 
-    vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
-    vec3 vertPos = (inverse(ubo.view) *  per_pos).xyz;
-    vec3 loc = inverse(ubo.view)[3].xyz;
+    vec3 vertPos = (inverse(view_proj.view[0]) *  per_pos).xyz;
+    vec3 loc = inverse(view_proj.view[0])[3].xyz;
     vec3 view_dir = normalize(vertPos - loc);
 
     vec3 direct = texture(gb[3], uv).xyz;

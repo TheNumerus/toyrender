@@ -1,4 +1,5 @@
 use crate::err::AppError;
+use crate::math;
 use crate::mesh::MeshResource;
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
@@ -24,6 +25,7 @@ mod descriptors;
 use descriptors::{DescriptorWriter, RendererDescriptors};
 
 mod pipeline_builder;
+use pipeline_builder::PipelineBuilder;
 
 mod quality;
 use quality::QualitySettings;
@@ -31,9 +33,10 @@ use quality::QualitySettings;
 mod render_target;
 use render_target::{GBuffer, RenderTarget};
 
+mod debug;
+use debug::DebugMode;
+
 mod shader_loader;
-use crate::math;
-use crate::renderer::pipeline_builder::PipelineBuilder;
 use shader_loader::ShaderLoader;
 pub use shader_loader::ShaderLoaderError;
 
@@ -50,6 +53,7 @@ pub struct VulkanRenderer {
     pub swap_chain_image_views: Vec<ImageView>,
     pub swap_chain_fbs: Vec<Framebuffer>,
     pub gbuffer: GBuffer,
+    pub last_depth_render_target: RenderTarget,
     pub postprocess_render_target: RenderTarget,
     pub rt_direct_render_target: RenderTarget,
     pub rt_indirect_render_target: RenderTarget,
@@ -71,12 +75,13 @@ pub struct VulkanRenderer {
     pub env_uniforms: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
-    pub debug_mode: i32,
+    pub debug_mode: DebugMode,
     meshes: HashMap<u64, VulkanMesh>,
     fs_quad: VulkanMesh,
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     in_flight: Vec<Fence>,
+    last_view_proj: ViewProj,
     frames_in_flight: usize,
 }
 
@@ -203,6 +208,15 @@ impl VulkanRenderer {
             vk::ImageAspectFlags::COLOR,
         )?;
 
+        let last_depth_render_target = RenderTarget::new(
+            device.clone(),
+            extent_3d,
+            None,
+            vk::Format::D32_SFLOAT,
+            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+            vk::ImageAspectFlags::DEPTH,
+        )?;
+
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
             &rt_pipeline_ext,
@@ -245,7 +259,7 @@ impl VulkanRenderer {
 
             cmd_buf.begin_one_time()?;
 
-            let barriers = [
+            let mut barriers = [
                 rt_direct_render_target.image.inner,
                 rt_indirect_render_target.image.inner,
                 denoise_render_target.image.inner,
@@ -269,6 +283,24 @@ impl VulkanRenderer {
                 ..Default::default()
             })
             .collect::<Vec<_>>();
+
+            barriers.push(vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::empty(),
+                dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                old_layout: vk::ImageLayout::UNDEFINED,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image: last_depth_render_target.image.inner,
+                subresource_range: vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                ..Default::default()
+            });
 
             device.inner.cmd_pipeline_barrier(
                 cmd_buf.inner,
@@ -309,7 +341,7 @@ impl VulkanRenderer {
                 device.clone(),
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
-                std::mem::size_of::<ViewProj>() as u64,
+                std::mem::size_of::<ViewProj>() as u64 * 2,
                 true,
                 false,
             )?;
@@ -352,7 +384,11 @@ impl VulkanRenderer {
         writes.push(descriptors.rt_set.update_rt_src(&gbuffer));
 
         writes.push(descriptors.taa_set.update_target(&taa_render_target));
-        writes.push(descriptors.taa_set.update_taa_src(&postprocess_render_target));
+        writes.push(descriptors.taa_set.update_taa_src(
+            &postprocess_render_target,
+            &gbuffer,
+            &last_depth_render_target,
+        ));
 
         writes.push(descriptors.atrous_set.update_rt_src(&gbuffer));
         writes.push(
@@ -381,6 +417,7 @@ impl VulkanRenderer {
             swap_chain_image_views,
             swap_chain_fbs,
             gbuffer,
+            last_depth_render_target,
             postprocess_render_target,
             rt_direct_render_target,
             rt_indirect_render_target,
@@ -404,7 +441,8 @@ impl VulkanRenderer {
             uniform_buffers_globals,
             env_uniforms,
             in_flight,
-            debug_mode: 0,
+            last_view_proj: ViewProj::default(),
+            debug_mode: DebugMode::None,
             quality: QualitySettings::new(),
             meshes: HashMap::new(),
             current_frame: 0,
@@ -476,23 +514,23 @@ impl VulkanRenderer {
             (offset.1 - 0.5) / drawable_size.1 as f32,
         );
 
-        let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 0.01, 5000.0);
+        let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 500.0, 0.01);
 
         // add jitter
-        proj.m13 = offset_x * 1.5;
-        proj.m23 = offset_y * 1.5;
+        proj.m13 = offset_x;
+        proj.m23 = offset_y;
 
         // flip because of vulkan
         proj.m22 *= -1.0;
 
-        let ubo = ViewProj {
+        let view_proj = ViewProj {
             view: scene.camera.view(),
             projection: proj,
         };
 
         let globals = Globals {
             max_bright: 4.0,
-            debug_mode: self.debug_mode,
+            debug_mode: self.debug_mode as i32,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
             time: context.total_time,
@@ -501,13 +539,10 @@ impl VulkanRenderer {
         };
 
         let env = env_to_buffer(&scene.env);
+        let view_proj_buf = view_proj_to_buffer(&view_proj, &self.last_view_proj);
 
         unsafe {
-            self.uniform_buffers[self.current_frame].fill_host(std::slice::from_raw_parts(
-                std::ptr::addr_of!(ubo) as *const u8,
-                std::mem::size_of::<ViewProj>(),
-            ))?;
-
+            self.uniform_buffers[self.current_frame].fill_host(view_proj_buf.as_ref())?;
             self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
             self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
         }
@@ -585,6 +620,7 @@ impl VulkanRenderer {
         }
 
         self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
+        self.last_view_proj = view_proj;
 
         Ok((end - start).as_secs_f32())
     }
@@ -620,6 +656,7 @@ impl VulkanRenderer {
 
         self.gbuffer
             .resize(extent_3d, self.render_passes.passes.get("gb").unwrap())?;
+        self.last_depth_render_target.resize(extent_3d, None)?;
         self.postprocess_render_target
             .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap()))?;
         self.rt_direct_render_target.resize(rtao_extent, None)?;
@@ -689,7 +726,11 @@ impl VulkanRenderer {
                 .update_targets(&self.rt_direct_render_target, &self.rt_indirect_render_target),
             self.descriptors.rt_set.update_rt_src(&self.gbuffer),
             self.descriptors.taa_set.update_target(&self.taa_render_target),
-            self.descriptors.taa_set.update_taa_src(&self.postprocess_render_target),
+            self.descriptors.taa_set.update_taa_src(
+                &self.postprocess_render_target,
+                &self.gbuffer,
+                &self.last_depth_render_target,
+            ),
             self.descriptors.atrous_set.update_rt_src(&self.gbuffer),
             self.descriptors
                 .atrous_set
@@ -754,7 +795,7 @@ impl VulkanRenderer {
                 },
             },
             vk::ClearValue {
-                depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 },
+                depth_stencil: vk::ClearDepthStencilValue { depth: 0.0, stencil: 0 },
             },
         ];
 
@@ -1090,6 +1131,36 @@ impl VulkanRenderer {
             let y = (self.swap_chain.extent.height / 16) + 1;
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
+
+            let extent_3d = vk::Extent3D {
+                width: self.swap_chain.extent.width,
+                height: self.swap_chain.extent.height,
+                depth: 1,
+            };
+
+            self.device.inner.cmd_copy_image(
+                command_buffer.inner,
+                self.gbuffer.images[2].inner,
+                vk::ImageLayout::GENERAL,
+                self.last_depth_render_target.image.inner,
+                vk::ImageLayout::GENERAL,
+                &[vk::ImageCopy {
+                    extent: extent_3d,
+                    dst_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    src_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                }],
+            );
         }
 
         self.device.end_label(command_buffer);
@@ -1242,6 +1313,7 @@ pub struct FrameContext {
     pub frame_index: u32,
 }
 
+#[derive(Default)]
 pub struct ViewProj {
     pub view: nalgebra_glm::Mat4,
     pub projection: nalgebra_glm::Mat4,
@@ -1322,6 +1394,18 @@ fn env_to_buffer(env: &Environment) -> Box<[u8]> {
         0.0,
     ] {
         buf.extend(x.to_le_bytes());
+    }
+
+    buf.into_boxed_slice()
+}
+
+fn view_proj_to_buffer(current: &ViewProj, old: &ViewProj) -> Box<[u8]> {
+    let mut buf = Vec::new();
+
+    for x in [current.view, old.view, current.projection, old.projection] {
+        buf.extend(unsafe {
+            std::slice::from_raw_parts(x.as_ptr() as *const u8, std::mem::size_of::<f32>() * x.len())
+        });
     }
 
     buf.into_boxed_slice()

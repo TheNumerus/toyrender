@@ -4,6 +4,8 @@
 #pragma shader_stage(raygen)
 
 #include "common/sampling.glsl"
+#include "common/debug_modes.glsl"
+#include "common/defs.glsl"
 
 #define PI 3.141569
 
@@ -13,23 +15,9 @@ layout(location = 0) rayPayloadEXT struct {
     vec3 normal;
 } payload;
 
-layout(set = 0, binding = 0) uniform Global {
-    float exposure;
-    int debug;
-    float res_x;
-    float res_y;
-    float time;
-    uint frame_index;
-    int half_res;
-} globals;
-
+layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
-
-layout(set = 0, binding = 2) uniform UniformBufferObject {
-    mat4 view;
-    mat4 proj;
-} ubo;
-
+layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) uniform Environment {
     vec3 sun_direction;
     vec3 sun_color;
@@ -122,11 +110,11 @@ void main () {
 
     vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0);
 
-    vec4 per_pos = inverse(ubo.proj) * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
-    vec3 vertPos = (inverse(ubo.view) * per_pos).xyz;
+    vec3 vertPos = (inverse(view_proj.view[0]) * per_pos).xyz;
 
-    vec3 loc = inverse(ubo.view)[3].xyz;
+    vec3 loc = inverse(view_proj.view[0])[3].xyz;
     vec3 view_dir = normalize(vertPos - loc);
     float dis = distance(loc, vertPos);
     vec3 bias = dis * normal * 0.001;
@@ -210,7 +198,7 @@ void main () {
 
     uint end = clockRealtime2x32EXT().x;
 
-    if (globals.debug == 3) {
+    if (globals.debug == DEBUG_TIME) {
         float time = float(time_diff(start, end)) / 1024 / 256;
         imageStore(
             rt_out[0],

@@ -120,7 +120,7 @@ impl DescLayout {
                 vec![
                     vk::DescriptorSetLayoutBinding {
                         binding: 0,
-                        descriptor_count: 4,
+                        descriptor_count: 5,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                         ..Default::default()
@@ -228,7 +228,7 @@ impl GlobalSet {
     }
 
     pub fn update_view(&self, buffer: &Buffer) -> DescriptorWrite {
-        create_buffer_update(buffer, std::mem::size_of::<ViewProj>() as u64, &self.inner, 2)
+        create_buffer_update(buffer, std::mem::size_of::<ViewProj>() as u64 * 2, &self.inner, 2)
     }
 
     pub fn update_env(&self, buffer: &Buffer) -> DescriptorWrite {
@@ -317,8 +317,26 @@ impl ComputeSet {
         }
     }
 
-    pub fn update_taa_src(&self, src: &RenderTarget) -> DescriptorWrite {
-        let image_info = vec![src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+    pub fn update_taa_src(&self, src: &RenderTarget, gbuffer: &GBuffer, last_depth: &RenderTarget) -> DescriptorWrite {
+        let image_info = vec![
+            src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            vk::DescriptorImageInfo {
+                sampler: gbuffer.sampler.inner,
+                image_view: gbuffer.views[0].inner,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            },
+            vk::DescriptorImageInfo {
+                sampler: gbuffer.sampler.inner,
+                image_view: gbuffer.views[1].inner,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            },
+            vk::DescriptorImageInfo {
+                sampler: gbuffer.sampler.inner,
+                image_view: gbuffer.views[2].inner,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            },
+            last_depth.descriptor_image_info(vk::ImageLayout::GENERAL),
+        ];
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,

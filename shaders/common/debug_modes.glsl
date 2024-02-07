@@ -1,0 +1,8 @@
+#define DEBUG_NONE 0
+#define DEBUG_DIRECT 1
+#define DEBUG_INDIRECT 2
+#define DEBUG_TIME 3
+#define DEBUG_BASE_COLOR 4
+#define DEBUG_NORMAL 5
+#define DEBUG_DEPTH 6
+#define DEBUG_DISOCCLUSION 7

@@ -106,7 +106,9 @@ impl GBuffer {
             ),
             (
                 vk::Format::D32_SFLOAT,
-                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::TRANSFER_SRC,
                 vk::ImageAspectFlags::DEPTH,
             ),
         ]

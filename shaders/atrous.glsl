@@ -1,17 +1,12 @@
 #version 450
 #pragma shader_stage(compute)
 
+#include "common/debug_modes.glsl"
+#include "common/defs.glsl"
+
 layout (local_size_x = 16, local_size_y = 16) in;
 
-layout(set = 0, binding = 0) uniform Global {
-    float exposure;
-    int debug;
-    float res_x;
-    float res_y;
-    float time;
-    int frame_index;
-    int half_res;
-} globals;
+layout(set = 0, binding = 0) GLOBAL;
 
 layout(set = 1, binding = 0) uniform sampler2D[] gb;
 layout(set = 1, binding = 1, rgb10_a2) uniform image2D atrous[];
@@ -63,7 +58,7 @@ void main() {
 
     ivec2 size = imageSize(atrous[0]);
 
-    if (globals.debug == 1 || globals.debug == 2) {
+    if (globals.debug == DEBUG_INDIRECT || globals.debug == DEBUG_DIRECT) {
         vec4 raw = imageLoad(atrous[1], ivec2(x_base, y_base));
         imageStore(atrous[0], ivec2(x_base, y_base), raw);
         return;

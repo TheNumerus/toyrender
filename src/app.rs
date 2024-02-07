@@ -92,7 +92,6 @@ impl App {
         let mouse_sens = 0.002;
         let scroll_sens = 0.5;
         let movement_speed = 4.0;
-        let mut debug_mode = 0;
         let mut focused = true;
         let mut taa_enable = true;
 
@@ -115,6 +114,7 @@ impl App {
             let mut sample_adjust = 0;
             let mut flip_half_res = false;
             let mut clear_taa = false;
+            let mut debug_mode_flip = false;
 
             for event in self.event_pump.poll_iter() {
                 match event {
@@ -162,7 +162,7 @@ impl App {
                         Some(Keycode::LeftBracket) => sample_adjust = -1,
                         Some(Keycode::RightBracket) => sample_adjust = 1,
                         Some(Keycode::R) => {
-                            debug_mode = (debug_mode + 1) % 8;
+                            debug_mode_flip = true;
                             clear_taa = true;
                         }
                         Some(Keycode::H) => {
@@ -211,7 +211,9 @@ impl App {
                 self.renderer.quality.half_res = !self.renderer.quality.half_res;
             }
 
-            self.renderer.debug_mode = debug_mode;
+            if debug_mode_flip {
+                self.renderer.debug_mode = self.renderer.debug_mode.next();
+            }
 
             if resized || flip_half_res {
                 self.renderer.resize(self.window.drawable_size())?;

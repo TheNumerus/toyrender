@@ -1,9 +1,3 @@
-[rtao]
-kind = "rt"
-raygen = "ao_raygen"
-closest = "ao_raychit"
-miss = "ao_raymiss"
-
 [pt]
 kind = "rt"
 raygen = "pt_raygen"

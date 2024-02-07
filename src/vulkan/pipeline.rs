@@ -98,7 +98,7 @@ impl Pipeline<Graphics> {
         let depth_stencil = vk::PipelineDepthStencilStateCreateInfo {
             depth_test_enable: vk::TRUE,
             depth_write_enable: vk::TRUE,
-            depth_compare_op: vk::CompareOp::LESS,
+            depth_compare_op: vk::CompareOp::GREATER,
             depth_bounds_test_enable: vk::FALSE,
             min_depth_bounds: 0.0,
             max_depth_bounds: 1.0,

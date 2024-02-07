@@ -1,24 +1,15 @@
 #version 450
 #pragma shader_stage(fragment)
 
+#include "common/debug_modes.glsl"
+#include "common/defs.glsl"
+
 layout(location = 0) in vec2 uv;
 
 layout(location = 0) out vec4 outColor;
 
-layout(set = 0, binding = 0) uniform Global {
-    float exposure;
-    int debug;
-    float res_x;
-    float res_y;
-    float time;
-    int frame_index;
-    int half_res;
-} globals;
-
-layout(set = 0, binding = 2) uniform UniformBufferObject {
-    mat4 view;
-    mat4 proj;
-} ubo;
+layout(set = 0, binding = 0) GLOBAL;
+layout(set = 0, binding = 2) VIEW_PROJ;
 
 layout(set = 1, binding = 0) uniform sampler2D colorBuf;
 
@@ -53,7 +44,7 @@ vec3 abberation(int i) {
 }
 
 void main() {
-    if (globals.debug != 0) {
+    if (globals.debug != DEBUG_NONE) {
         outColor = vec4(
             texture(colorBuf, uv).rgb,
             1.0
