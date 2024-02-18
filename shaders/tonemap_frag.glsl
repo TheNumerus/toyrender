@@ -61,7 +61,7 @@ void main() {
 
         vec2 uv_scaled = ((uv - 0.5) * scale) + 0.5;
 
-        vec3 color = texture(colorBuf, uv_scaled).rgb * globals.exposure * abberation(i);
+        vec3 color = texture(colorBuf, uv_scaled).rgb * abberation(i);
 
         sum += color * 0.5;
     }

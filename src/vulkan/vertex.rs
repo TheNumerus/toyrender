@@ -1,6 +1,10 @@
-use crate::vulkan::{Buffer, CommandPool, Device, IntoVulkanError, VulkanError};
+use crate::err::AppError;
+use crate::vulkan::{Buffer, CommandPool, Device, IntoVulkanError};
 use ash::vk;
+use gpu_allocator::vulkan::Allocator;
+use gpu_allocator::MemoryLocation;
 use nalgebra_glm::{Vec2, Vec3, Vec4};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 #[repr(C)]
@@ -56,32 +60,33 @@ pub struct VertexIndexBuffer {
 }
 
 impl VertexIndexBuffer {
-    pub fn new(device: Rc<Device>, cmd_pool: &CommandPool, data: &[u8]) -> Result<Self, VulkanError> {
-        let staging = Buffer::new(
+    pub fn new(
+        device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
+        cmd_pool: &CommandPool,
+        data: &[u8],
+    ) -> Result<Self, AppError> {
+        let mut staging = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             data.len() as u64,
-            false,
-            false,
         )?;
 
-        unsafe {
-            staging.fill_host(data)?;
-        }
+        staging.fill_host(data)?;
 
         let inner = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::GpuOnly,
             vk::BufferUsageFlags::TRANSFER_DST
                 | vk::BufferUsageFlags::VERTEX_BUFFER
                 | vk::BufferUsageFlags::INDEX_BUFFER
                 | vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
             data.len() as u64,
-            false,
-            true,
         )?;
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();

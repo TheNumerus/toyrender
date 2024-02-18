@@ -13,15 +13,13 @@ layout(location = 0) rayPayloadEXT struct {
     bool isMiss;
     float dist;
     vec3 normal;
+    vec3 color;
 } payload;
 
 layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 2) VIEW_PROJ;
-layout(set = 0, binding = 3) uniform Environment {
-    vec3 sun_direction;
-    vec3 sun_color;
-} env;
+layout(set = 0, binding = 3) ENV;
 
 layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
@@ -94,6 +92,7 @@ vec3 sky_color(vec3 view_dir) {
 
 void main () {
     payload.isMiss = false;
+    payload.color = vec3(0.0);
 
     uint start = clockRealtime2x32EXT().x;
 
@@ -104,8 +103,17 @@ void main () {
 
     float depth = texture(gb[2], uv).x;
 
-    if (depth == 1.0) {
-        return;
+    if (depth == 0.0) {
+        imageStore(
+            rt_out[0],
+            ivec2(gl_LaunchIDEXT.xy),
+            vec4(0.0)
+        );
+        imageStore(
+            rt_out[1],
+            ivec2(gl_LaunchIDEXT.xy),
+            vec4(0.0)
+        );
     }
 
     vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0);
@@ -179,6 +187,8 @@ void main () {
             // sun boounce
             if (payload.isMiss) {
                 indirect += intensity_indirect * 0.9 * env.sun_color;
+            } else {
+                indirect += intensity_indirect * 0.9 * payload.color;
             }
         }
 
@@ -193,7 +203,6 @@ void main () {
     }
 
     float shadow = float(payload.isMiss);
-
     vec3 direct = shadow * env.sun_color;
 
     uint end = clockRealtime2x32EXT().x;
@@ -215,7 +224,7 @@ void main () {
             rt_out[0],
             ivec2(gl_LaunchIDEXT.xy),
                 vec4(
-                direct,
+                direct * pow(2.0, globals.exposure),
                 0.0
             )
         );
@@ -223,7 +232,7 @@ void main () {
             rt_out[1],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
-                indirect,
+                indirect * pow(2.0, globals.exposure),
                 0.0
             )
         );

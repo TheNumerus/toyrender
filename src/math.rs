@@ -1,15 +1,18 @@
-pub const fn halton(index: u32) -> (f32, f32) {
-    match index % 8 {
-        0 => (0.5, 0.333),
-        1 => (0.25, 0.666),
-        2 => (0.75, 0.111),
-        3 => (0.125, 0.444),
-        4 => (0.625, 0.777),
-        5 => (0.375, 0.222),
-        6 => (0.875, 0.555),
-        7 => (0.0625, 0.888),
-        _ => (0.5, 0.5),
+pub fn halton(index: u32) -> (f32, f32) {
+    (halton_sequence(index, 2), halton_sequence(index, 3))
+}
+
+pub fn halton_sequence(mut index: u32, base: u32) -> f32 {
+    let mut f = 1.0;
+    let mut r = 0.0;
+
+    while index > 0 {
+        f /= base as f32;
+        r += f * (index % base) as f32;
+        index = (index as f32 / base as f32).floor() as u32;
     }
+
+    r
 }
 
 pub fn deg_to_rad(deg: f32) -> f32 {

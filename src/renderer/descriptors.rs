@@ -11,7 +11,10 @@ use std::rc::Rc;
 pub struct RendererDescriptors {
     pub global_sets: Vec<GlobalSet>,
     pub taa_set: ComputeSet,
-    pub atrous_set: ComputeSet,
+    pub denoise_direct_temporal_set: ComputeSet,
+    pub denoise_indirect_temporal_set: ComputeSet,
+    pub atrous_direct_set: ComputeSet,
+    pub atrous_indirect_set: ComputeSet,
     pub rt_set: ComputeSet,
     pub light_set: ImageSet,
     pub post_process_set: ImageSet,
@@ -34,30 +37,36 @@ impl RendererDescriptors {
             .map(|inner| GlobalSet { inner })
             .collect();
 
-        let mut compute_sets = pool.allocate_sets(3, layouts.get(&DescLayout::Compute).unwrap().inner)?;
-        let taa_set = ComputeSet {
-            inner: compute_sets.pop().unwrap(),
-        };
-        let atrous_set = ComputeSet {
-            inner: compute_sets.pop().unwrap(),
-        };
-        let rt_set = ComputeSet {
-            inner: compute_sets.pop().unwrap(),
-        };
+        let mut compute_sets = pool
+            .allocate_sets(6, layouts.get(&DescLayout::Compute).unwrap().inner)?
+            .into_iter()
+            .map(|inner| ComputeSet { inner })
+            .collect::<Vec<_>>();
 
-        let mut image_sets = pool.allocate_sets(2, layouts.get(&DescLayout::Image).unwrap().inner)?;
-        let light_set = ImageSet {
-            inner: image_sets.pop().unwrap(),
-        };
-        let post_process_set = ImageSet {
-            inner: image_sets.pop().unwrap(),
-        };
+        let taa_set = compute_sets.pop().unwrap();
+        let denoise_direct_temporal_set = compute_sets.pop().unwrap();
+        let denoise_indirect_temporal_set = compute_sets.pop().unwrap();
+        let atrous_direct_set = compute_sets.pop().unwrap();
+        let atrous_indirect_set = compute_sets.pop().unwrap();
+        let rt_set = compute_sets.pop().unwrap();
+
+        let mut image_sets = pool
+            .allocate_sets(2, layouts.get(&DescLayout::Image).unwrap().inner)?
+            .into_iter()
+            .map(|inner| ImageSet { inner })
+            .collect::<Vec<_>>();
+
+        let light_set = image_sets.pop().unwrap();
+        let post_process_set = image_sets.pop().unwrap();
 
         Ok(Self {
             layouts,
             global_sets,
             taa_set,
-            atrous_set,
+            denoise_direct_temporal_set,
+            denoise_indirect_temporal_set,
+            atrous_direct_set,
+            atrous_indirect_set,
             rt_set,
             light_set,
             post_process_set,
@@ -120,14 +129,14 @@ impl DescLayout {
                 vec![
                     vk::DescriptorSetLayoutBinding {
                         binding: 0,
-                        descriptor_count: 5,
+                        descriptor_count: 6,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                         ..Default::default()
                     },
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
-                        descriptor_count: 4,
+                        descriptor_count: 5,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()
@@ -241,24 +250,20 @@ pub struct ComputeSet {
 }
 
 impl ComputeSet {
+    fn get_layout() -> DescLayout {
+        DescLayout::Compute
+    }
+
     pub fn update_rt_src(&self, gbuffer: &GBuffer) -> DescriptorWrite {
         let image_info = vec![
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[0].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[1].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[2].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
+            gbuffer_image_info(gbuffer, 0),
+            gbuffer_image_info(gbuffer, 1),
+            gbuffer_image_info(gbuffer, 2),
         ];
+
+        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
@@ -278,6 +283,10 @@ impl ComputeSet {
 
     pub fn update_target(&self, target: &RenderTarget) -> DescriptorWrite {
         let image_info = vec![target.descriptor_image_info(vk::ImageLayout::GENERAL)];
+
+        if image_info.len() > Self::get_layout().get_bindings()[1].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
@@ -301,6 +310,10 @@ impl ComputeSet {
             target_2.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
 
+        if image_info.len() > Self::get_layout().get_bindings()[1].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
+
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
             dst_binding: 1,
@@ -317,26 +330,25 @@ impl ComputeSet {
         }
     }
 
-    pub fn update_taa_src(&self, src: &RenderTarget, gbuffer: &GBuffer, last_depth: &RenderTarget) -> DescriptorWrite {
+    pub fn update_taa_src(
+        &self,
+        src: &RenderTarget,
+        hist: &RenderTarget,
+        gbuffer: &GBuffer,
+        last_depth: &RenderTarget,
+    ) -> DescriptorWrite {
         let image_info = vec![
             src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[0].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[1].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[2].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
+            hist.descriptor_image_info(vk::ImageLayout::GENERAL),
+            gbuffer_image_info(gbuffer, 0),
+            gbuffer_image_info(gbuffer, 1),
+            gbuffer_image_info(gbuffer, 2),
             last_depth.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
+
+        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
@@ -360,6 +372,10 @@ impl ComputeSet {
             dst.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
 
+        if image_info.len() > Self::get_layout().get_bindings()[1].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
+
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
             dst_binding: 1,
@@ -382,8 +398,16 @@ pub struct ImageSet {
 }
 
 impl ImageSet {
+    fn get_layout() -> DescLayout {
+        DescLayout::Image
+    }
+
     pub fn update_pp(&self, src: &RenderTarget) -> DescriptorWrite {
         let image_info = vec![src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+
+        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
@@ -408,24 +432,16 @@ impl ImageSet {
         rt_indirect: &RenderTarget,
     ) -> DescriptorWrite {
         let image_info = vec![
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[0].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[1].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
-            vk::DescriptorImageInfo {
-                sampler: gbuffer.sampler.inner,
-                image_view: gbuffer.views[2].inner,
-                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            },
+            gbuffer_image_info(gbuffer, 0),
+            gbuffer_image_info(gbuffer, 1),
+            gbuffer_image_info(gbuffer, 2),
             rt_direct.descriptor_image_info(vk::ImageLayout::GENERAL),
             rt_indirect.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
+
+        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
 
         let write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
@@ -465,5 +481,13 @@ fn create_buffer_update(buffer: &Buffer, range: u64, dst_set: &DescriptorSet, bi
         buffer_info: Some(buffer_info),
         tlases: None,
         image_info: None,
+    }
+}
+
+fn gbuffer_image_info(gbuffer: &GBuffer, index: usize) -> vk::DescriptorImageInfo {
+    vk::DescriptorImageInfo {
+        sampler: gbuffer.sampler.inner,
+        image_view: gbuffer.views[index].inner,
+        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
     }
 }

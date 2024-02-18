@@ -1,5 +1,8 @@
+use crate::err::AppError;
 use crate::mesh::MeshResource;
-use crate::vulkan::{CommandPool, Device, Vertex, VertexIndexBuffer, VulkanError};
+use crate::vulkan::{CommandPool, Device, Vertex, VertexIndexBuffer};
+use gpu_allocator::vulkan::Allocator;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct VulkanMesh {
@@ -9,7 +12,12 @@ pub struct VulkanMesh {
 }
 
 impl VulkanMesh {
-    pub fn new(device: Rc<Device>, cmd_pool: &CommandPool, mesh: &MeshResource) -> Result<Self, VulkanError> {
+    pub fn new(
+        device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
+        cmd_pool: &CommandPool,
+        mesh: &MeshResource,
+    ) -> Result<Self, AppError> {
         let vertices = &mesh.vertices;
         let indices = mesh.indices.to_vec_u32();
 
@@ -29,7 +37,7 @@ impl VulkanMesh {
             std::slice::from_raw_parts(indices.as_ptr() as *const u8, std::mem::size_of_val(indices.as_slice()))
         });
 
-        let buf = VertexIndexBuffer::new(device, cmd_pool, &data)?;
+        let buf = VertexIndexBuffer::new(device, allocator, cmd_pool, &data)?;
 
         Ok(Self {
             buf,

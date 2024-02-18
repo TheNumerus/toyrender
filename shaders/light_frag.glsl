@@ -13,6 +13,7 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 2) VIEW_PROJ;
+layout(set = 0, binding = 3) ENV;
 
 layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
@@ -83,6 +84,16 @@ vec4 get_debug_color() {
             vec3(fract(texture(gb[2], uv).x * 500.0)),
             1.0
         );
+    } else if (globals.debug == DEBUG_DIRECT_VARIANCE) {
+        return vec4(
+            vec3(texture(gb[3], uv).x),
+            1.0
+        );
+    } else if (globals.debug == DEBUG_INDIRECT_VARIANCE) {
+        return vec4(
+            vec3(texture(gb[4], uv).x),
+            1.0
+        );
     }
 
     return vec4(1.0);
@@ -95,8 +106,6 @@ void main() {
     }
 
     vec3 light_dir = normalize(vec3(0.2, -0.5, 1.0));
-
-    float noise = ((float(pcg_hash(uint(globals.frame_index) + uint(gl_FragCoord.x + 1000) * uint(gl_FragCoord.y * 4)) % 255) / 128.0) - 0.5) * 0.001 * globals.exposure;
 
     float ratio = globals.res_x / globals.res_y;
 
@@ -113,19 +122,14 @@ void main() {
     vec3 direct = texture(gb[3], uv).xyz;
     vec3 indirect = texture(gb[4], uv).xyz;
 
-    vec3 color_override = vec3(0.9);
-
-    vec3 sky = vec3(0.4, 0.6, 0.9);
-    vec3 sun = vec3(0.9, 0.8, 0.7);
-
     vec3 diffuse_dir = light(normalize(normal), light_dir, direct) + indirect;
     vec3 specular = vec3(0.0);
-    vec3 lighted = ((diffuse_dir + specular)) + noise;
+    vec3 lighted = ((diffuse_dir + specular));
 
-    vec3 sky_col = sky_color(view_dir) + noise;
+    vec3 sky_col = sky_color(view_dir) * pow(2.0, globals.exposure);
 
     outColor = vec4(
-        mix(sky_col, lighted, color.a) * (1.0 / globals.exposure),
+        mix(sky_col, lighted, color.a),
         1.0
     );
 }

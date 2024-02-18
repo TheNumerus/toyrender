@@ -94,7 +94,7 @@ impl RenderPass {
 
     pub fn new_light(device: Rc<Device>) -> Result<Self, VulkanError> {
         let color_attachment = vk::AttachmentDescription {
-            format: vk::Format::A2B10G10R10_UNORM_PACK32,
+            format: vk::Format::R16G16B16A16_SFLOAT,
             samples: vk::SampleCountFlags::TYPE_1,
             load_op: vk::AttachmentLoadOp::DONT_CARE,
             store_op: vk::AttachmentStoreOp::STORE,

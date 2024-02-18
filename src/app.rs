@@ -112,6 +112,7 @@ impl App {
             let mut mouse_scroll = 0.0;
             let mut dragging;
             let mut sample_adjust = 0;
+            let mut exposure_adjust = 0.0;
             let mut flip_half_res = false;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
@@ -172,6 +173,12 @@ impl App {
                         Some(Keycode::T) => {
                             taa_enable = !taa_enable;
                         }
+                        Some(Keycode::KpPlus) => {
+                            exposure_adjust += 0.5;
+                        }
+                        Some(Keycode::KpMinus) => {
+                            exposure_adjust -= 0.5;
+                        }
                         _ => {}
                     },
                     _ => {}
@@ -206,6 +213,8 @@ impl App {
                 self.renderer.quality.rtao_samples = new_samples;
                 info!("new sample count: {new_samples}");
             }
+
+            self.scene.env.exposure += exposure_adjust;
 
             if flip_half_res {
                 self.renderer.quality.half_res = !self.renderer.quality.half_res;

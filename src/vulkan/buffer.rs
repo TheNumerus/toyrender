@@ -1,25 +1,27 @@
+use crate::err::AppError;
+use crate::err::AppError::VulkanAllocatorError;
 use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use std::ffi::c_void;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use gpu_allocator::MemoryLocation;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct Buffer {
     pub inner: vk::Buffer,
-    pub memory: vk::DeviceMemory,
-    persistent_ptr: Option<*mut c_void>,
-    get_address: bool,
+    allocation: Option<Allocation>,
     device: Rc<Device>,
+    allocator: Rc<RefCell<Allocator>>,
 }
 
 impl Buffer {
     pub fn new(
         device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
+        location: MemoryLocation,
         usage: vk::BufferUsageFlags,
-        properties: vk::MemoryPropertyFlags,
         size: u64,
-        is_persistent: bool,
-        get_address: bool,
-    ) -> Result<Self, VulkanError> {
+    ) -> Result<Self, AppError> {
         let info = vk::BufferCreateInfo {
             size,
             usage,
@@ -34,107 +36,61 @@ impl Buffer {
                 .map_to_err("Cannot create vertex buffer")?
         };
 
-        let mem_req = unsafe { device.inner.get_buffer_memory_requirements(inner) };
+        let requirements = unsafe { device.inner.get_buffer_memory_requirements(inner) };
 
-        let flags = vk::MemoryAllocateFlagsInfo {
-            flags: vk::MemoryAllocateFlags::DEVICE_ADDRESS,
-            ..Default::default()
-        };
-
-        let next = if get_address {
-            std::ptr::addr_of!(flags)
-        } else {
-            std::ptr::null()
-        };
-
-        let alloc_info = vk::MemoryAllocateInfo {
-            allocation_size: mem_req.size,
-            memory_type_index: device
-                .find_memory_type_index(mem_req.memory_type_bits, properties)
-                .ok_or(VulkanError {
-                    msg: "Cannot find memory type".into(),
-                    code: vk::Result::ERROR_UNKNOWN,
-                })?,
-            p_next: next as *const c_void,
-            ..Default::default()
-        };
-
-        let memory = unsafe {
-            device
-                .inner
-                .allocate_memory(&alloc_info, None)
-                .map_to_err("Cannot allocate memory")?
-        };
+        let allocation = allocator
+            .borrow_mut()
+            .allocate(&AllocationCreateDesc {
+                name: "TEST",
+                requirements,
+                location,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(VulkanAllocatorError)?;
 
         unsafe {
             device
                 .inner
-                .bind_buffer_memory(inner, memory, 0)
+                .bind_buffer_memory(inner, allocation.memory(), allocation.offset())
                 .map_to_err("Cannot bind memory to buffer")
         }?;
-
-        let persistent_ptr = if is_persistent {
-            unsafe {
-                Some(
-                    device
-                        .inner
-                        .map_memory(memory, 0, size, vk::MemoryMapFlags::empty())
-                        .map_to_err("Cannot map memory")?,
-                )
-            }
-        } else {
-            None
-        };
 
         Ok(Self {
             inner,
             device,
-            memory,
-            persistent_ptr,
-            get_address,
+            allocation: Some(allocation),
+            allocator,
         })
     }
 
-    pub unsafe fn fill_host(&self, data: &[u8]) -> Result<(), VulkanError> {
-        let ptr = match self.persistent_ptr {
-            Some(p) => p,
-            None => self
-                .device
-                .inner
-                .map_memory(self.memory, 0, data.len() as u64, vk::MemoryMapFlags::empty())
-                .map_to_err("Cannot map memory")?,
-        };
-
-        ptr.copy_from(data.as_ptr() as *const c_void, data.len());
-
-        if self.persistent_ptr.is_none() {
-            self.device.inner.unmap_memory(self.memory);
-        }
+    pub fn fill_host(&mut self, data: &[u8]) -> Result<(), VulkanError> {
+        self.allocation
+            .as_mut()
+            .unwrap()
+            .mapped_slice_mut()
+            .unwrap()
+            .copy_from_slice(data);
 
         Ok(())
     }
 
-    pub fn get_device_addr(&self) -> Option<vk::DeviceAddress> {
-        if self.get_address {
-            let addr_info = vk::BufferDeviceAddressInfo {
-                buffer: self.inner,
-                ..Default::default()
-            };
+    pub fn get_device_addr(&self) -> vk::DeviceAddress {
+        let addr_info = vk::BufferDeviceAddressInfo {
+            buffer: self.inner,
+            ..Default::default()
+        };
 
-            let addr = unsafe { self.device.inner.get_buffer_device_address(&addr_info) };
-            Some(addr)
-        } else {
-            None
-        }
+        unsafe { self.device.inner.get_buffer_device_address(&addr_info) }
     }
 }
 
 impl Drop for Buffer {
     fn drop(&mut self) {
-        if self.persistent_ptr.is_some() {
-            unsafe { self.device.inner.unmap_memory(self.memory) }
-        }
+        self.allocator
+            .borrow_mut()
+            .free(self.allocation.take().unwrap())
+            .unwrap();
         unsafe { self.device.inner.destroy_buffer(self.inner, None) }
-        unsafe { self.device.inner.free_memory(self.memory, None) }
     }
 }

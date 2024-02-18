@@ -9,6 +9,8 @@ pub enum DebugMode {
     Normal = 5,
     Depth = 6,
     DisOcclusion = 7,
+    VarianceDirect = 8,
+    VarianceIndirect = 9,
 }
 
 impl TryFrom<i32> for DebugMode {
@@ -24,6 +26,8 @@ impl TryFrom<i32> for DebugMode {
             5 => Ok(DebugMode::Normal),
             6 => Ok(DebugMode::Depth),
             7 => Ok(DebugMode::DisOcclusion),
+            8 => Ok(DebugMode::VarianceDirect),
+            9 => Ok(DebugMode::VarianceIndirect),
             _ => Err(""),
         }
     }
@@ -31,6 +35,6 @@ impl TryFrom<i32> for DebugMode {
 
 impl DebugMode {
     pub fn next(self) -> DebugMode {
-        ((self as i32 + 1) % 8).try_into().unwrap()
+        ((self as i32 + 1) % 10).try_into().unwrap()
     }
 }

@@ -29,3 +29,7 @@ compute = "taa_compute"
 [atrous]
 kind = "compute"
 compute = "atrous"
+
+[denoise_temporal]
+kind = "compute"
+compute = "denoise_temporal"

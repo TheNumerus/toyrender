@@ -54,6 +54,31 @@ impl RenderTarget {
         })
     }
 
+    pub fn new_compute(
+        device: Rc<Device>,
+        extent: Extent3D,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        aspect: vk::ImageAspectFlags,
+    ) -> Result<Self, VulkanError> {
+        let image = Image::new(device.clone(), format, extent, usage)?;
+
+        let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
+
+        let sampler = Sampler::new(device.clone())?;
+
+        Ok(Self {
+            image,
+            view,
+            framebuffer: None,
+            sampler,
+            device,
+            format,
+            usage,
+            aspect,
+        })
+    }
+
     pub fn resize(&mut self, extent: Extent3D, render_pass: Option<&RenderPass>) -> Result<(), VulkanError> {
         self.image = Image::new(self.device.clone(), self.format, extent, self.usage)?;
 
@@ -169,5 +194,41 @@ impl GBuffer {
         )?;
 
         Ok(())
+    }
+}
+
+pub struct DenoiseRenderTargets {
+    pub direct_out: RenderTarget,
+    pub indirect_out: RenderTarget,
+    pub direct_history: RenderTarget,
+    pub indirect_history: RenderTarget,
+    pub direct_acc: RenderTarget,
+    pub indirect_acc: RenderTarget,
+}
+
+impl DenoiseRenderTargets {
+    pub fn new(device: Rc<Device>, extent: Extent3D) -> Result<Self, VulkanError> {
+        let get_rt = || {
+            RenderTarget::new_compute(
+                device.clone(),
+                extent,
+                vk::Format::R16G16B16A16_SFLOAT,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::SAMPLED
+                    | vk::ImageUsageFlags::STORAGE
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+                vk::ImageAspectFlags::COLOR,
+            )
+        };
+
+        Ok(Self {
+            direct_out: get_rt()?,
+            indirect_out: get_rt()?,
+            direct_acc: get_rt()?,
+            indirect_acc: get_rt()?,
+            direct_history: get_rt()?,
+            indirect_history: get_rt()?,
+        })
     }
 }

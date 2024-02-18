@@ -1,3 +1,4 @@
+use crate::err::AppError;
 use crate::renderer::TlasIndex;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, Device, Fence, Instance, IntoVulkanError, Pipeline, Rt, VulkanError,
@@ -6,6 +7,9 @@ use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::extensions::khr::RayTracingPipeline as RayTracingPipelineLoader;
 use ash::vk;
 use ash::vk::{AccelerationStructureKHR, Packed24_8};
+use gpu_allocator::vulkan::Allocator;
+use gpu_allocator::MemoryLocation;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -44,11 +48,12 @@ pub struct ShaderBindingTable {
 impl ShaderBindingTable {
     pub fn new(
         device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
         rt_pipeline: &RayTracingPipeline,
         pipeline: &Pipeline<Rt>,
         miss_count: usize,
         hit_count: usize,
-    ) -> Result<Self, VulkanError> {
+    ) -> Result<Self, AppError> {
         let align_up = |size: u32, alignment: u32| (size + (alignment - 1)) & !(alignment - 1);
 
         let handle_count = 1 + miss_count + hit_count;
@@ -94,18 +99,17 @@ impl ShaderBindingTable {
 
         let buf_size = raygen_region.size + miss_region.size + call_region.size + hit_region.size;
 
-        let buffer = Buffer::new(
+        let mut buffer = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             buf_size,
-            false,
-            true,
         )?;
 
-        let addr = buffer.get_device_addr().unwrap();
+        let addr = buffer.get_device_addr();
         raygen_region.device_address = addr;
         miss_region.device_address = addr + raygen_region.size;
         hit_region.device_address = addr + raygen_region.size + miss_region.size;
@@ -188,17 +192,17 @@ pub struct AccelerationStructure {
 impl AccelerationStructure {
     fn create(
         device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
         ray_tracing_as: Rc<RayTracingAs>,
         size: u64,
         level: AsLevel,
-    ) -> Result<Self, VulkanError> {
+    ) -> Result<Self, AppError> {
         let buf = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
             size,
-            false,
-            true,
         )?;
 
         let create_info = vk::AccelerationStructureCreateInfoKHR {
@@ -225,16 +229,17 @@ impl AccelerationStructure {
 
     pub fn top_build(
         device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_buf: &CommandBuffer,
         blases: &HashMap<u64, Self>,
         tlas_index: TlasIndex,
         flags: vk::BuildAccelerationStructureFlagsKHR,
-    ) -> Result<Self, VulkanError> {
+    ) -> Result<Self, AppError> {
         let mut instances = Vec::new();
 
         if blases.is_empty() {
-            return Self::create(device.clone(), rt_acc_struct_ext.clone(), 256, AsLevel::Top);
+            return Self::create(device.clone(), allocator, rt_acc_struct_ext.clone(), 256, AsLevel::Top);
         }
 
         for (id, transform) in tlas_index.index {
@@ -260,7 +265,7 @@ impl AccelerationStructure {
                 instance_custom_index_and_mask: Packed24_8::new(0, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, 1),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
-                    device_handle: blas.buf.get_device_addr().unwrap(),
+                    device_handle: blas.buf.get_device_addr(),
                 },
             };
 
@@ -269,24 +274,22 @@ impl AccelerationStructure {
 
         let mem_size = instances.len() as u64 * std::mem::size_of::<vk::AccelerationStructureInstanceKHR>() as u64;
 
-        let stag_buf = Buffer::new(
+        let mut stag_buf = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR | vk::BufferUsageFlags::TRANSFER_SRC,
-            vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             mem_size,
-            false,
-            false,
         )?;
 
         let buf = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::GpuOnly,
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS
                 | vk::BufferUsageFlags::TRANSFER_DST,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
             mem_size,
-            false,
-            true,
         )?;
 
         unsafe {
@@ -326,7 +329,7 @@ impl AccelerationStructure {
             );
         }
 
-        let addr = buf.get_device_addr().unwrap();
+        let addr = buf.get_device_addr();
 
         let instances_data = vk::AccelerationStructureGeometryInstancesDataKHR {
             data: vk::DeviceOrHostAddressConstKHR { device_address: addr },
@@ -361,15 +364,15 @@ impl AccelerationStructure {
 
         let scr_buf = Buffer::new(
             device.clone(),
+            allocator.clone(),
+            MemoryLocation::GpuOnly,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-            vk::MemoryPropertyFlags::DEVICE_LOCAL,
             size_info.build_scratch_size,
-            false,
-            true,
         )?;
 
         let tlas = Self::create(
             device.clone(),
+            allocator,
             rt_acc_struct_ext.clone(),
             size_info.acceleration_structure_size,
             AsLevel::Top,
@@ -377,7 +380,7 @@ impl AccelerationStructure {
 
         build_info.dst_acceleration_structure = tlas.inner;
         build_info.scratch_data = vk::DeviceOrHostAddressKHR {
-            device_address: scr_buf.get_device_addr().unwrap(),
+            device_address: scr_buf.get_device_addr(),
         };
 
         let offset_info = vk::AccelerationStructureBuildRangeInfoKHR {
@@ -406,7 +409,7 @@ impl AccelerationStructure {
 
             device
                 .inner
-                .queue_submit(device.async_compute_queue, &[submit_info], fence.inner)
+                .queue_submit(device.compute_queue, &[submit_info], fence.inner)
                 .map_to_err("Cannot submit queue")?;
 
             fence.wait()?;
@@ -417,12 +420,13 @@ impl AccelerationStructure {
 
     pub fn batch_bottom_build(
         device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_pool: &CommandPool,
         ranges: HashMap<u64, vk::AccelerationStructureBuildRangeInfoKHR>,
         geos: HashMap<u64, vk::AccelerationStructureGeometryKHR>,
         flags: vk::BuildAccelerationStructureFlagsKHR,
-    ) -> Result<HashMap<u64, Self>, VulkanError> {
+    ) -> Result<HashMap<u64, Self>, AppError> {
         let mut blases = HashMap::new();
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
@@ -453,15 +457,15 @@ impl AccelerationStructure {
 
             let buf = Buffer::new(
                 device.clone(),
+                allocator.clone(),
+                MemoryLocation::GpuOnly,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                vk::MemoryPropertyFlags::DEVICE_LOCAL,
                 size_info.build_scratch_size,
-                false,
-                true,
             )?;
 
             let blas = Self::create(
                 device.clone(),
+                allocator.clone(),
                 rt_acc_struct_ext.clone(),
                 size_info.acceleration_structure_size,
                 AsLevel::Bottom,
@@ -469,7 +473,7 @@ impl AccelerationStructure {
 
             build_info.dst_acceleration_structure = blas.inner;
             build_info.scratch_data = vk::DeviceOrHostAddressKHR {
-                device_address: buf.get_device_addr().unwrap(),
+                device_address: buf.get_device_addr(),
             };
 
             cmd_buf.begin_one_time()?;
@@ -493,7 +497,7 @@ impl AccelerationStructure {
 
                 device
                     .inner
-                    .queue_submit(device.async_compute_queue, &[submit_info], fence.inner)
+                    .queue_submit(device.compute_queue, &[submit_info], fence.inner)
                     .map_to_err("Cannot submit queue")?;
 
                 fence.wait()?;
