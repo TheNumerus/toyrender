@@ -214,7 +214,7 @@ impl App {
                 info!("new sample count: {new_samples}");
             }
 
-            self.scene.env.exposure += exposure_adjust;
+            self.scene.env.exposure = (self.scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
 
             if flip_half_res {
                 self.renderer.quality.half_res = !self.renderer.quality.half_res;

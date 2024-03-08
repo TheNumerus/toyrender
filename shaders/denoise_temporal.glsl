@@ -16,27 +16,6 @@ layout( push_constant ) uniform constants {
     int clear;
 } push_consts;
 
-bool reproject(vec2 uv_in, out vec2 uv_out) {
-    float curr_depth = texture(rt_in[4], uv_in).x;
-
-    vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv_in * 2.0 - 1.0, curr_depth, 1.0);
-    per_pos /= per_pos.w;
-    vec3 curr_pos = (inverse(view_proj.view[0]) * per_pos).xyz;
-
-    vec4 prev_uv = view_proj.proj[1] * view_proj.view[1] * vec4(curr_pos, 1.0);
-    prev_uv /= prev_uv.w;
-    prev_uv = prev_uv * 0.5 + 0.5;
-
-    float prev_depth = texture(rt_in[5], prev_uv.xy).x;
-    uv_out = prev_uv.xy;
-
-    if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0/* || abs(curr_depth - prev_depth) > 0.0002*/) {
-        return false;
-    }
-
-    return true;
-}
-
 float get_linear_depth(sampler2D depth, vec2 uv) {
     float curr_depth = texture(depth, uv).x;
 
@@ -46,6 +25,35 @@ float get_linear_depth(sampler2D depth, vec2 uv) {
     vec4 pos = view_proj.proj[0] * view_proj.view[0] * vec4(curr_pos, 1.0);
 
     return pos.z * pos.w;
+}
+
+bool reproject(vec2 uv_in, out vec2 uv_out) {
+    ivec2 size = imageSize(denoise_out);
+
+    float curr_depth = texture(rt_in[4], uv_in).x;
+
+    vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv_in * 2.0 - 1.0, curr_depth, 1.0);
+    per_pos /= per_pos.w;
+    vec3 curr_pos = (inverse(view_proj.view[0]) * per_pos).xyz;
+    vec4 pos = view_proj.proj[0] * view_proj.view[0] * vec4(curr_pos, 1.0);
+    float lin_depth = pos.z * pos.w;
+
+    vec4 prev_uv = view_proj.proj[1] * view_proj.view[1] * vec4(curr_pos, 1.0);
+    prev_uv /= prev_uv.w;
+    prev_uv = prev_uv * 0.5 + 0.5;
+
+    vec2 snapped_uv = prev_uv.xy;
+    snapped_uv.x = (round((snapped_uv.x * size.x) - 0.5) + 0.5) / size.x;
+    snapped_uv.y = (round((snapped_uv.y * size.y) - 0.5) + 0.5) / size.y;
+
+    float prev_lin_depth = get_linear_depth(rt_in[5], snapped_uv.xy);
+    uv_out = prev_uv.xy;
+
+    if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0 || abs(lin_depth - prev_lin_depth) > 0.01) {
+        return false;
+    }
+
+    return true;
 }
 
 float get_depth_gradient(uint x, uint y, sampler2D depth) {

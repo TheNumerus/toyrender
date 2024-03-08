@@ -26,6 +26,8 @@ use zip::ZipArchive;
 mod descriptors;
 use descriptors::{DescriptorWriter, RendererDescriptors};
 
+mod passes;
+
 mod pipeline_builder;
 use pipeline_builder::PipelineBuilder;
 
@@ -33,13 +35,15 @@ mod quality;
 use quality::QualitySettings;
 
 mod render_target;
-use render_target::{GBuffer, RenderTarget};
+use render_target::{
+    DenoiseRenderTargets, MultipleRenderTargetBuilder, RenderTarget, RenderTargetBuilder, RenderTargetSize,
+    RenderTargets,
+};
 
 mod debug;
 use debug::DebugMode;
 
 mod shader_loader;
-use crate::renderer::render_target::DenoiseRenderTargets;
 use shader_loader::ShaderLoader;
 pub use shader_loader::ShaderLoaderError;
 
@@ -55,14 +59,11 @@ pub struct VulkanRenderer {
     pub rt_acc_struct_ext: Rc<RayTracingAs>,
     pub swap_chain_image_views: Vec<ImageView>,
     pub swap_chain_fbs: Vec<Framebuffer>,
-    pub gbuffer: GBuffer,
-    pub last_depth_render_target: RenderTarget,
+    pub render_targets: RenderTargets,
     pub postprocess_render_target: RenderTarget,
     pub rt_direct_render_target: RenderTarget,
     pub rt_indirect_render_target: RenderTarget,
     pub denoise_render_targets: DenoiseRenderTargets,
-    pub taa_render_target: RenderTarget,
-    pub taa_history_render_target: RenderTarget,
     pub pipeline_builder: PipelineBuilder,
     pub render_passes: RenderPasses,
     pub shader_binding_table: ShaderBindingTable,
@@ -171,65 +172,64 @@ impl VulkanRenderer {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let gbuffer = GBuffer::new(device.clone(), extent_3d, render_passes.passes.get("gb").unwrap())?;
+        let mut render_targets = RenderTargets::new(device.clone(), extent_3d);
+
+        let gbuffer = render_targets.add_mrt(
+            MultipleRenderTargetBuilder::new("gbuffer", render_passes.passes.get("gb").unwrap().clone())
+                .add_target(
+                    vk::Format::A2B10G10R10_UNORM_PACK32,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    vk::ImageAspectFlags::COLOR,
+                )
+                .add_target(
+                    vk::Format::A2B10G10R10_UNORM_PACK32,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    vk::ImageAspectFlags::COLOR,
+                )
+                .add_target(
+                    vk::Format::D32_SFLOAT,
+                    vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
+                    vk::ImageAspectFlags::DEPTH,
+                ),
+        )?;
 
         let postprocess_render_target = RenderTarget::new(
             device.clone(),
             extent_3d,
-            Some(render_passes.passes.get("light").unwrap()),
+            render_passes.passes.get("light").unwrap(),
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
             vk::ImageAspectFlags::COLOR,
         )?;
-        let rt_direct_render_target = RenderTarget::new(
+        let rt_direct_render_target = RenderTarget::new_compute(
             device.clone(),
             extent_3d,
-            None,
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
             vk::ImageAspectFlags::COLOR,
         )?;
-        let rt_indirect_render_target = RenderTarget::new(
+        let rt_indirect_render_target = RenderTarget::new_compute(
             device.clone(),
             extent_3d,
-            None,
             vk::Format::R16G16B16A16_SFLOAT,
             vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
             vk::ImageAspectFlags::COLOR,
         )?;
-        let taa_render_target = RenderTarget::new(
-            device.clone(),
-            extent_3d,
-            None,
-            vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::SAMPLED
-                | vk::ImageUsageFlags::STORAGE
-                | vk::ImageUsageFlags::TRANSFER_SRC,
-            vk::ImageAspectFlags::COLOR,
-        )?;
-        let taa_history_render_target = RenderTarget::new(
-            device.clone(),
-            extent_3d,
-            None,
-            vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT
-                | vk::ImageUsageFlags::SAMPLED
-                | vk::ImageUsageFlags::STORAGE
-                | vk::ImageUsageFlags::TRANSFER_DST,
-            vk::ImageAspectFlags::COLOR,
-        )?;
+
+        let taa_builder = RenderTargetBuilder::new("taa_target")
+            .with_transfer()
+            .with_storage()
+            .with_size(RenderTargetSize::Scaled(1.0))
+            .with_color_attachment();
+
+        render_targets.add(taa_builder.duplicate("taa_history_target"))?;
+        render_targets.add(taa_builder)?;
 
         let denoise_render_targets = DenoiseRenderTargets::new(device.clone(), extent_3d)?;
 
-        let last_depth_render_target = RenderTarget::new(
-            device.clone(),
-            extent_3d,
-            None,
-            vk::Format::D32_SFLOAT,
-            vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
-            vk::ImageAspectFlags::DEPTH,
-        )?;
+        render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
@@ -279,8 +279,8 @@ impl VulkanRenderer {
             let mut barriers = [
                 rt_direct_render_target.image.inner,
                 rt_indirect_render_target.image.inner,
-                taa_render_target.image.inner,
-                taa_history_render_target.image.inner,
+                render_targets.get("taa_target").unwrap().borrow().image.inner,
+                render_targets.get("taa_history_target").unwrap().borrow().image.inner,
                 denoise_render_targets.direct_acc.image.inner,
                 denoise_render_targets.indirect_acc.image.inner,
                 denoise_render_targets.direct_out.image.inner,
@@ -315,7 +315,7 @@ impl VulkanRenderer {
                 new_layout: vk::ImageLayout::GENERAL,
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: last_depth_render_target.image.inner,
+                image: render_targets.get("last_depth").unwrap().borrow().image.inner,
                 subresource_range: vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::DEPTH,
                     base_mip_level: 0,
@@ -404,12 +404,16 @@ impl VulkanRenderer {
         );
         writes.push(descriptors.rt_set.update_rt_src(&gbuffer));
 
-        writes.push(descriptors.taa_set.update_target(&taa_render_target));
+        writes.push(
+            descriptors
+                .taa_set
+                .update_target(&render_targets.get("taa_target").unwrap().borrow()),
+        );
         writes.push(descriptors.taa_set.update_taa_src(
             &postprocess_render_target,
-            &taa_history_render_target,
+            &render_targets.get("taa_history_target").unwrap().borrow(),
             &gbuffer,
-            &last_depth_render_target,
+            &render_targets.get("last_depth").unwrap().borrow(),
         ));
 
         writes.push(
@@ -421,7 +425,7 @@ impl VulkanRenderer {
             &rt_indirect_render_target,
             &denoise_render_targets.indirect_history,
             &gbuffer,
-            &last_depth_render_target,
+            &render_targets.get("last_depth").unwrap().borrow(),
         ));
         writes.push(
             descriptors
@@ -432,7 +436,7 @@ impl VulkanRenderer {
             &rt_direct_render_target,
             &denoise_render_targets.direct_history,
             &gbuffer,
-            &last_depth_render_target,
+            &render_targets.get("last_depth").unwrap().borrow(),
         ));
 
         writes.push(descriptors.atrous_direct_set.update_rt_src(&gbuffer));
@@ -453,7 +457,11 @@ impl VulkanRenderer {
             &denoise_render_targets.direct_out,
             &denoise_render_targets.indirect_out,
         ));
-        writes.push(descriptors.post_process_set.update_pp(&taa_render_target));
+        writes.push(
+            descriptors
+                .post_process_set
+                .update_pp(&render_targets.get("taa_target").unwrap().borrow()),
+        );
 
         DescriptorWriter::batch_write(&device, writes);
 
@@ -467,13 +475,10 @@ impl VulkanRenderer {
             swap_chain,
             swap_chain_image_views,
             swap_chain_fbs,
-            gbuffer,
-            last_depth_render_target,
+            render_targets,
             postprocess_render_target,
             rt_direct_render_target,
             rt_indirect_render_target,
-            taa_render_target,
-            taa_history_render_target,
             denoise_render_targets,
             pipeline_builder,
             render_passes,
@@ -703,21 +708,19 @@ impl VulkanRenderer {
             depth: 1,
         };
 
+        self.render_targets.set_extent(extent_3d);
+        self.render_targets.resize()?;
+
         let rtao_extent = if self.quality.half_res {
             extent_3d_half
         } else {
             extent_3d
         };
 
-        self.gbuffer
-            .resize(extent_3d, self.render_passes.passes.get("gb").unwrap())?;
-        self.last_depth_render_target.resize(extent_3d, None)?;
         self.postprocess_render_target
-            .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap()))?;
+            .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap().clone()))?;
         self.rt_direct_render_target.resize(rtao_extent, None)?;
         self.rt_indirect_render_target.resize(rtao_extent, None)?;
-        self.taa_render_target.resize(extent_3d, None)?;
-        self.taa_history_render_target.resize(extent_3d, None)?;
         self.denoise_render_targets.direct_out.resize(rtao_extent, None)?;
         self.denoise_render_targets.indirect_out.resize(rtao_extent, None)?;
         self.denoise_render_targets.direct_acc.resize(rtao_extent, None)?;
@@ -733,8 +736,13 @@ impl VulkanRenderer {
             let mut barriers = vec![
                 self.rt_direct_render_target.image.inner,
                 self.rt_indirect_render_target.image.inner,
-                self.taa_render_target.image.inner,
-                self.taa_history_render_target.image.inner,
+                self.render_targets.get("taa_target").unwrap().borrow().image.inner,
+                self.render_targets
+                    .get("taa_history_target")
+                    .unwrap()
+                    .borrow()
+                    .image
+                    .inner,
                 self.denoise_render_targets.direct_out.image.inner,
                 self.denoise_render_targets.indirect_out.image.inner,
                 self.denoise_render_targets.direct_acc.image.inner,
@@ -769,7 +777,7 @@ impl VulkanRenderer {
                 new_layout: vk::ImageLayout::GENERAL,
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.last_depth_render_target.image.inner,
+                image: self.render_targets.get("last_depth").unwrap().borrow().image.inner,
                 subresource_range: vk::ImageSubresourceRange {
                     aspect_mask: vk::ImageAspectFlags::DEPTH,
                     base_mip_level: 0,
@@ -812,13 +820,17 @@ impl VulkanRenderer {
             self.descriptors
                 .rt_set
                 .update_targets(&self.rt_direct_render_target, &self.rt_indirect_render_target),
-            self.descriptors.rt_set.update_rt_src(&self.gbuffer),
-            self.descriptors.taa_set.update_target(&self.taa_render_target),
+            self.descriptors
+                .rt_set
+                .update_rt_src(&self.render_targets.get_mrt("gbuffer").unwrap()),
+            self.descriptors
+                .taa_set
+                .update_target(&self.render_targets.get("taa_target").unwrap().borrow()),
             self.descriptors.taa_set.update_taa_src(
                 &self.postprocess_render_target,
-                &self.taa_history_render_target,
-                &self.gbuffer,
-                &self.last_depth_render_target,
+                &self.render_targets.get("taa_history_target").unwrap().borrow(),
+                &self.render_targets.get_mrt("gbuffer").unwrap(),
+                &self.render_targets.get("last_depth").unwrap().borrow(),
             ),
             self.descriptors
                 .denoise_indirect_temporal_set
@@ -826,8 +838,8 @@ impl VulkanRenderer {
             self.descriptors.denoise_indirect_temporal_set.update_taa_src(
                 &self.rt_indirect_render_target,
                 &self.denoise_render_targets.indirect_history,
-                &self.gbuffer,
-                &self.last_depth_render_target,
+                &self.render_targets.get_mrt("gbuffer").unwrap(),
+                &self.render_targets.get("last_depth").unwrap().borrow(),
             ),
             self.descriptors
                 .denoise_direct_temporal_set
@@ -835,25 +847,31 @@ impl VulkanRenderer {
             self.descriptors.denoise_direct_temporal_set.update_taa_src(
                 &self.rt_direct_render_target,
                 &self.denoise_render_targets.direct_history,
-                &self.gbuffer,
-                &self.last_depth_render_target,
+                &self.render_targets.get_mrt("gbuffer").unwrap(),
+                &self.render_targets.get("last_depth").unwrap().borrow(),
             ),
-            self.descriptors.atrous_direct_set.update_rt_src(&self.gbuffer),
+            self.descriptors
+                .atrous_direct_set
+                .update_rt_src(&self.render_targets.get_mrt("gbuffer").unwrap()),
             self.descriptors.atrous_direct_set.update_atrous(
                 &self.denoise_render_targets.direct_out,
                 &self.denoise_render_targets.direct_acc,
             ),
-            self.descriptors.atrous_indirect_set.update_rt_src(&self.gbuffer),
+            self.descriptors
+                .atrous_indirect_set
+                .update_rt_src(&self.render_targets.get_mrt("gbuffer").unwrap()),
             self.descriptors.atrous_indirect_set.update_atrous(
                 &self.denoise_render_targets.indirect_out,
                 &self.denoise_render_targets.indirect_acc,
             ),
             self.descriptors.light_set.update_light(
-                &self.gbuffer,
+                &self.render_targets.get_mrt("gbuffer").unwrap(),
                 &self.denoise_render_targets.direct_out,
                 &self.denoise_render_targets.indirect_out,
             ),
-            self.descriptors.post_process_set.update_pp(&self.taa_render_target),
+            self.descriptors
+                .post_process_set
+                .update_pp(&self.render_targets.get("taa_target").unwrap().borrow()),
         ];
 
         DescriptorWriter::batch_write(&self.device, writes);
@@ -915,7 +933,13 @@ impl VulkanRenderer {
 
         let render_pass_info = vk::RenderPassBeginInfo {
             render_pass: self.render_passes.passes.get("gb").unwrap().inner,
-            framebuffer: self.gbuffer.framebuffer.inner,
+            framebuffer: self
+                .render_targets
+                .get_mrt("gbuffer")
+                .unwrap()
+                .borrow()
+                .framebuffer
+                .inner,
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
                 extent: self.swap_chain.extent,
@@ -1375,22 +1399,24 @@ impl VulkanRenderer {
                 depth: 1,
             };
 
-            let barriers = [self.last_depth_render_target.image.inner].map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::DEPTH,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
+            let barriers = [self.render_targets.get("last_depth").unwrap().borrow().image.inner].map(|image| {
+                vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                }
             });
 
             self.device.inner.cmd_pipeline_barrier(
@@ -1405,9 +1431,9 @@ impl VulkanRenderer {
 
             self.device.inner.cmd_copy_image(
                 command_buffer.inner,
-                self.gbuffer.images[2].inner,
+                self.render_targets.get_mrt("gbuffer").unwrap().borrow().images[2].inner,
                 vk::ImageLayout::GENERAL,
-                self.last_depth_render_target.image.inner,
+                self.render_targets.get("last_depth").unwrap().borrow().image.inner,
                 vk::ImageLayout::GENERAL,
                 &[vk::ImageCopy {
                     extent: extent_3d,
@@ -1476,9 +1502,14 @@ impl VulkanRenderer {
 
             self.device.inner.cmd_copy_image(
                 command_buffer.inner,
-                self.taa_render_target.image.inner,
+                self.render_targets.get("taa_target").unwrap().borrow().image.inner,
                 vk::ImageLayout::GENERAL,
-                self.taa_history_render_target.image.inner,
+                self.render_targets
+                    .get("taa_history_target")
+                    .unwrap()
+                    .borrow()
+                    .image
+                    .inner,
                 vk::ImageLayout::GENERAL,
                 &[vk::ImageCopy {
                     extent: extent_3d,
@@ -1694,7 +1725,7 @@ impl Globals {
 }
 
 pub struct RenderPasses {
-    pub passes: HashMap<String, RenderPass>,
+    pub passes: HashMap<String, Rc<RenderPass>>,
 }
 
 impl RenderPasses {
@@ -1705,9 +1736,9 @@ impl RenderPasses {
 
         Ok(Self {
             passes: HashMap::from([
-                ("gb".to_owned(), pass_gb),
-                ("light".to_owned(), pass_light),
-                ("tonemap".to_owned(), pass_tonemap),
+                ("gb".to_owned(), Rc::new(pass_gb)),
+                ("light".to_owned(), Rc::new(pass_light)),
+                ("tonemap".to_owned(), Rc::new(pass_tonemap)),
             ]),
         })
     }

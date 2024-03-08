@@ -24,22 +24,14 @@ float luminance(vec3 color) {
     return dot(color, vec3(0.2126f, 0.7152f, 0.0722f));
 }
 
+const float atrous_weights[] = float[](0.375, 0.25, 0.0625);
 float get_weight(int offset) {
-    if (offset == 0) {
-        return 0.375;
-    } else if (abs(offset) == 1) {
-        return 0.25;
-    } else {
-        return 0.0625;
-    }
+    return atrous_weights[abs(offset)];
 }
 
+const float gauss_3x3[] = float[](0.5, 0.25);
 float get_gauss_3x3_weight(int offset) {
-    if (offset == 0) {
-        return 0.25;
-    } else {
-        return 0.125;
-    }
+    return gauss_3x3[abs(offset)];
 }
 
 float get_linear_depth(sampler2D depth, vec2 uv) {
@@ -87,9 +79,9 @@ float get_blurred_variance(ivec2 uv) {
     float sum = 0.0;
     float weight = 0.0;
 
-    for (int x = -1; x <= -1; x++) {
-        for (int y = -1; y <= -1; y++) {
-            float val = imageLoad(atrous[0], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).x;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float val = imageLoad(atrous[0], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
             float weight_sample = get_gauss_3x3_weight(x) * get_gauss_3x3_weight(y);
             sum += val * weight_sample;
             weight += weight_sample;
@@ -104,9 +96,9 @@ float get_blurred_variance_1(ivec2 uv) {
     float sum = 0.0;
     float weight = 0.0;
 
-    for (int x = -1; x <= -1; x++) {
-        for (int y = -1; y <= -1; y++) {
-            float val = imageLoad(atrous[1], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).x;
+    for (int x = -1; x <= 1; x++) {
+        for (int y = -1; y <= 1; y++) {
+            float val = imageLoad(atrous[1], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
             float weight_sample = get_gauss_3x3_weight(x) * get_gauss_3x3_weight(y);
             sum += val * weight_sample;
             weight += weight_sample;
@@ -148,6 +140,7 @@ void main() {
         vec3 normal_base = normalize(texture(gb[1], uv).xyz * 2.0 - 1.0);
         float depth_base = get_linear_depth(gb[2], uv);
         float gradient = get_depth_gradient(x_base, y_base, gb[2]);
+        float blurred_variance = get_blurred_variance(ivec2(x_base, y_base));
 
         for (int y = -2; y <= 2; y++) {
             for (int x = -2; x <= 2; x++) {
@@ -164,18 +157,16 @@ void main() {
                 float sample_dist = distance(sample_uv, uv);
 
                 vec4 img_in;
-                float variance;
                 if (push_consts.level == 0) {
                     img_in = imageLoad(atrous[1], ivec2(x_final, y_final));
-                    variance = get_blurred_variance_1(ivec2(x_final, y_final));
                 } else {
                     img_in = imageLoad(atrous[0], ivec2(x_final, y_final));
-                    variance = get_blurred_variance(ivec2(x_final, y_final));
                 }
+                float variance = img_in.a;
 
                 float normal_weight = pow(max(dot(normal_base, sample_normal), 0.0), 128.0);
                 float depth_weight = get_depth_weight(depth_base, sample_depth, gradient, sample_dist);
-                float luma_weight = get_luma_weight(luminance(img_in.xyz), luma_base, variance);
+                float luma_weight = get_luma_weight(luminance(img_in.xyz), luma_base, blurred_variance);
 
                 float weight = max(get_weight(x) * get_weight(y) * normal_weight * depth_weight * luma_weight, 0.00001);
                 float variance_weight = max(pow(get_weight(x) * get_weight(y), 2.0) * pow(normal_weight * depth_weight * luma_weight, 2.0), 0.00001);
@@ -187,7 +178,7 @@ void main() {
             }
         }
 
-        vec4 total = vec4((sum / weight_sum).xyz, new_variance_sum / new_variance_weight_sum);
+        vec4 total = vec4((sum / weight_sum).xyz, max(new_variance_sum / new_variance_weight_sum, 0.0));
 
         if (push_consts.level == 0) {
             imageStore(atrous[1], ivec2(x_base, y_base), total);

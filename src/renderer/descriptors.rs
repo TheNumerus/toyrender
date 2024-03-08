@@ -1,9 +1,11 @@
-use crate::renderer::render_target::{GBuffer, RenderTarget};
+use crate::renderer::render_target::{MultipleRenderTarget, RenderTarget};
 use crate::renderer::{Globals, ViewProj};
+use crate::scene::Environment;
 use crate::vulkan::{
     AccelerationStructure, Buffer, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, VulkanError,
 };
 use ash::vk;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
@@ -241,7 +243,7 @@ impl GlobalSet {
     }
 
     pub fn update_env(&self, buffer: &Buffer) -> DescriptorWrite {
-        create_buffer_update(buffer, std::mem::size_of::<f32>() as u64 * 8, &self.inner, 3)
+        create_buffer_update(buffer, std::mem::size_of::<Environment>() as u64, &self.inner, 3)
     }
 }
 
@@ -254,11 +256,17 @@ impl ComputeSet {
         DescLayout::Compute
     }
 
-    pub fn update_rt_src(&self, gbuffer: &GBuffer) -> DescriptorWrite {
+    pub fn update_rt_src(&self, gbuffer: &Rc<RefCell<MultipleRenderTarget>>) -> DescriptorWrite {
         let image_info = vec![
-            gbuffer_image_info(gbuffer, 0),
-            gbuffer_image_info(gbuffer, 1),
-            gbuffer_image_info(gbuffer, 2),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(0, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(1, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(2, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
         ];
 
         if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
@@ -334,15 +342,21 @@ impl ComputeSet {
         &self,
         src: &RenderTarget,
         hist: &RenderTarget,
-        gbuffer: &GBuffer,
+        gbuffer: &Rc<RefCell<MultipleRenderTarget>>,
         last_depth: &RenderTarget,
     ) -> DescriptorWrite {
         let image_info = vec![
             src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             hist.descriptor_image_info(vk::ImageLayout::GENERAL),
-            gbuffer_image_info(gbuffer, 0),
-            gbuffer_image_info(gbuffer, 1),
-            gbuffer_image_info(gbuffer, 2),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(0, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(1, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(2, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             last_depth.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
 
@@ -393,6 +407,17 @@ impl ComputeSet {
     }
 }
 
+pub struct NewImageSet {
+    pub inner: DescriptorSet,
+    targets: Vec<Rc<RefCell<RenderTarget>>>,
+}
+
+impl NewImageSet {
+    pub fn build(inner: DescriptorSet, targets: Vec<Rc<RefCell<RenderTarget>>>) -> Result<Self, ()> {
+        Err(())
+    }
+}
+
 pub struct ImageSet {
     pub inner: DescriptorSet,
 }
@@ -427,14 +452,20 @@ impl ImageSet {
 
     pub fn update_light(
         &self,
-        gbuffer: &GBuffer,
+        gbuffer: &Rc<RefCell<MultipleRenderTarget>>,
         rt_direct: &RenderTarget,
         rt_indirect: &RenderTarget,
     ) -> DescriptorWrite {
         let image_info = vec![
-            gbuffer_image_info(gbuffer, 0),
-            gbuffer_image_info(gbuffer, 1),
-            gbuffer_image_info(gbuffer, 2),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(0, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(1, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+            gbuffer
+                .borrow()
+                .descriptor_image_info(2, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
             rt_direct.descriptor_image_info(vk::ImageLayout::GENERAL),
             rt_indirect.descriptor_image_info(vk::ImageLayout::GENERAL),
         ];
@@ -481,13 +512,5 @@ fn create_buffer_update(buffer: &Buffer, range: u64, dst_set: &DescriptorSet, bi
         buffer_info: Some(buffer_info),
         tlases: None,
         image_info: None,
-    }
-}
-
-fn gbuffer_image_info(gbuffer: &GBuffer, index: usize) -> vk::DescriptorImageInfo {
-    vk::DescriptorImageInfo {
-        sampler: gbuffer.sampler.inner,
-        image_view: gbuffer.views[index].inner,
-        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
     }
 }

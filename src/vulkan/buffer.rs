@@ -65,12 +65,10 @@ impl Buffer {
     }
 
     pub fn fill_host(&mut self, data: &[u8]) -> Result<(), VulkanError> {
-        self.allocation
-            .as_mut()
-            .unwrap()
-            .mapped_slice_mut()
-            .unwrap()
-            .copy_from_slice(data);
+        let slice = self.allocation.as_mut().unwrap().mapped_slice_mut().unwrap();
+
+        let (left, _) = slice.split_at_mut(data.len());
+        left.copy_from_slice(data);
 
         Ok(())
     }
