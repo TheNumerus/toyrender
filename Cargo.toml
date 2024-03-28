@@ -22,6 +22,7 @@ gpu-allocator = { version = "0.25.0", features = ["vulkan"], default-features = 
 toml = "0.8.8"
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 serde = { version = "1.0.195", features = ["derive"] }
+uuid = "1.7.0"
 
 [build-dependencies]
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

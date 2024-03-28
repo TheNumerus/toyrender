@@ -40,14 +40,10 @@ impl PipelineBuilder {
                     )))?;
 
                     let attachments = if render_pass == "gb" { 2 } else { 1 };
-                    let descriptor_layouts = if render_pass == "gb" {
-                        vec![descriptors.get_layout(DescLayout::Global).inner]
-                    } else {
-                        vec![
-                            descriptors.get_layout(DescLayout::Global).inner,
-                            descriptors.get_layout(DescLayout::Image).inner,
-                        ]
-                    };
+                    let descriptor_layouts = vec![
+                        descriptors.get_layout(DescLayout::Global).inner,
+                        descriptors.get_layout(DescLayout::Images).inner,
+                    ];
 
                     let vertex_module = Self::get_or_compile(
                         &mut modules,
@@ -114,7 +110,7 @@ impl PipelineBuilder {
                         &rt_stages,
                         &[
                             descriptors.get_layout(DescLayout::Global).inner,
-                            descriptors.get_layout(DescLayout::Compute).inner,
+                            descriptors.get_layout(DescLayout::Images).inner,
                         ],
                     )?;
 
@@ -134,7 +130,7 @@ impl PipelineBuilder {
                         compute.stage_info(),
                         &[
                             descriptors.get_layout(DescLayout::Global).inner,
-                            descriptors.get_layout(DescLayout::Compute).inner,
+                            descriptors.get_layout(DescLayout::Images).inner,
                         ],
                     )?;
 

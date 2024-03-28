@@ -4,7 +4,9 @@ use crate::vulkan::{
     SWAPCHAIN_EXTENSION,
 };
 use ash::vk;
-use ash::vk::{ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
+use ash::vk::{
+    ExtensionProperties, ObjectType, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+};
 use ash::Device as RawDevice;
 use log::info;
 use std::collections::HashSet;
@@ -357,6 +359,30 @@ impl Device {
                 .as_ref()
                 .unwrap()
                 .cmd_begin_debug_utils_label(command_buffer.inner, &label_info);
+        }
+    }
+
+    pub fn name_object(&self, name: &str, object: u64, object_type: ObjectType) -> Result<(), VulkanError> {
+        if !self.instance.markers_active() {
+            return Ok(());
+        }
+
+        let label = CString::new(name).expect("Invalid object name");
+
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            p_object_name: label.as_ptr(),
+            object_handle: object,
+            object_type,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.instance
+                .debug_utils
+                .as_ref()
+                .unwrap()
+                .set_debug_utils_object_name(self.inner.handle(), &name_info)
+                .map_to_err("cannot name object")
         }
     }
 

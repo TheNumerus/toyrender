@@ -1,25 +1,17 @@
-use crate::renderer::render_target::{MultipleRenderTarget, RenderTarget};
 use crate::renderer::{Globals, ViewProj};
 use crate::scene::Environment;
 use crate::vulkan::{
     AccelerationStructure, Buffer, DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, VulkanError,
 };
 use ash::vk;
-use std::cell::RefCell;
+use ash::vk::{ImageView, Sampler};
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::rc::Rc;
 
 pub struct RendererDescriptors {
     pub global_sets: Vec<GlobalSet>,
-    pub taa_set: ComputeSet,
-    pub denoise_direct_temporal_set: ComputeSet,
-    pub denoise_indirect_temporal_set: ComputeSet,
-    pub atrous_direct_set: ComputeSet,
-    pub atrous_indirect_set: ComputeSet,
-    pub rt_set: ComputeSet,
-    pub light_set: ImageSet,
-    pub post_process_set: ImageSet,
+    pub image_sets: Vec<ImageSet>,
     pub layouts: HashMap<DescLayout, DescriptorSetLayout>,
 }
 
@@ -27,7 +19,7 @@ impl RendererDescriptors {
     pub fn build(device: Rc<Device>, pool: &DescriptorPool, frames_in_flight: u32) -> Result<Self, VulkanError> {
         let mut layouts = HashMap::new();
 
-        for layout in [DescLayout::Global, DescLayout::Compute, DescLayout::Image] {
+        for layout in [DescLayout::Global, DescLayout::Images] {
             let l = DescriptorSetLayout::new(device.clone(), &layout.get_bindings())?;
 
             layouts.insert(layout, l);
@@ -39,39 +31,16 @@ impl RendererDescriptors {
             .map(|inner| GlobalSet { inner })
             .collect();
 
-        let mut compute_sets = pool
-            .allocate_sets(6, layouts.get(&DescLayout::Compute).unwrap().inner)?
-            .into_iter()
-            .map(|inner| ComputeSet { inner })
-            .collect::<Vec<_>>();
-
-        let taa_set = compute_sets.pop().unwrap();
-        let denoise_direct_temporal_set = compute_sets.pop().unwrap();
-        let denoise_indirect_temporal_set = compute_sets.pop().unwrap();
-        let atrous_direct_set = compute_sets.pop().unwrap();
-        let atrous_indirect_set = compute_sets.pop().unwrap();
-        let rt_set = compute_sets.pop().unwrap();
-
-        let mut image_sets = pool
-            .allocate_sets(2, layouts.get(&DescLayout::Image).unwrap().inner)?
+        let image_sets = pool
+            .allocate_sets(frames_in_flight, layouts.get(&DescLayout::Images).unwrap().inner)?
             .into_iter()
             .map(|inner| ImageSet { inner })
             .collect::<Vec<_>>();
 
-        let light_set = image_sets.pop().unwrap();
-        let post_process_set = image_sets.pop().unwrap();
-
         Ok(Self {
             layouts,
             global_sets,
-            taa_set,
-            denoise_direct_temporal_set,
-            denoise_indirect_temporal_set,
-            atrous_direct_set,
-            atrous_indirect_set,
-            rt_set,
-            light_set,
-            post_process_set,
+            image_sets,
         })
     }
 
@@ -83,8 +52,7 @@ impl RendererDescriptors {
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
 pub enum DescLayout {
     Global,
-    Image,
-    Compute,
+    Images,
 }
 
 impl DescLayout {
@@ -118,27 +86,20 @@ impl DescLayout {
                     uniform(3),
                 ]
             }
-            DescLayout::Image => {
-                vec![vk::DescriptorSetLayoutBinding {
-                    binding: 0,
-                    descriptor_count: 8,
-                    stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::RAYGEN_KHR,
-                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                    ..Default::default()
-                }]
-            }
-            DescLayout::Compute => {
+            DescLayout::Images => {
                 vec![
                     vk::DescriptorSetLayoutBinding {
                         binding: 0,
-                        descriptor_count: 6,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
+                        descriptor_count: 16,
+                        stage_flags: vk::ShaderStageFlags::COMPUTE
+                            | vk::ShaderStageFlags::FRAGMENT
+                            | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                         ..Default::default()
                     },
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
-                        descriptor_count: 5,
+                        descriptor_count: 16,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()
@@ -247,194 +208,39 @@ impl GlobalSet {
     }
 }
 
-pub struct ComputeSet {
-    pub inner: DescriptorSet,
-}
-
-impl ComputeSet {
-    fn get_layout() -> DescLayout {
-        DescLayout::Compute
-    }
-
-    pub fn update_rt_src(&self, gbuffer: &Rc<RefCell<MultipleRenderTarget>>) -> DescriptorWrite {
-        let image_info = vec![
-            gbuffer
-                .borrow()
-                .descriptor_image_info(0, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(1, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(2, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-        ];
-
-        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
-            panic!("INVALID DESCRIPTOR COUNT")
-        }
-
-        let write = vk::WriteDescriptorSet {
-            dst_set: self.inner.inner,
-            dst_binding: 0,
-            dst_array_element: 0,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            ..Default::default()
-        };
-
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
-    }
-
-    pub fn update_target(&self, target: &RenderTarget) -> DescriptorWrite {
-        let image_info = vec![target.descriptor_image_info(vk::ImageLayout::GENERAL)];
-
-        if image_info.len() > Self::get_layout().get_bindings()[1].descriptor_count as usize {
-            panic!("INVALID DESCRIPTOR COUNT")
-        }
-
-        let write = vk::WriteDescriptorSet {
-            dst_set: self.inner.inner,
-            dst_binding: 1,
-            dst_array_element: 0,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            ..Default::default()
-        };
-
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
-    }
-
-    pub fn update_targets(&self, target_1: &RenderTarget, target_2: &RenderTarget) -> DescriptorWrite {
-        let image_info = vec![
-            target_1.descriptor_image_info(vk::ImageLayout::GENERAL),
-            target_2.descriptor_image_info(vk::ImageLayout::GENERAL),
-        ];
-
-        if image_info.len() > Self::get_layout().get_bindings()[1].descriptor_count as usize {
-            panic!("INVALID DESCRIPTOR COUNT")
-        }
-
-        let write = vk::WriteDescriptorSet {
-            dst_set: self.inner.inner,
-            dst_binding: 1,
-            dst_array_element: 0,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            ..Default::default()
-        };
-
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
-    }
-
-    pub fn update_taa_src(
-        &self,
-        src: &RenderTarget,
-        hist: &RenderTarget,
-        gbuffer: &Rc<RefCell<MultipleRenderTarget>>,
-        last_depth: &RenderTarget,
-    ) -> DescriptorWrite {
-        let image_info = vec![
-            src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            hist.descriptor_image_info(vk::ImageLayout::GENERAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(0, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(1, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(2, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            last_depth.descriptor_image_info(vk::ImageLayout::GENERAL),
-        ];
-
-        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
-            panic!("INVALID DESCRIPTOR COUNT")
-        }
-
-        let write = vk::WriteDescriptorSet {
-            dst_set: self.inner.inner,
-            dst_binding: 0,
-            dst_array_element: 0,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-            ..Default::default()
-        };
-
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
-    }
-
-    pub fn update_atrous(&self, src: &RenderTarget, dst: &RenderTarget) -> DescriptorWrite {
-        let image_info = vec![
-            src.descriptor_image_info(vk::ImageLayout::GENERAL),
-            dst.descriptor_image_info(vk::ImageLayout::GENERAL),
-        ];
-
-        if image_info.len() > Self::get_layout().get_bindings()[1].descriptor_count as usize {
-            panic!("INVALID DESCRIPTOR COUNT")
-        }
-
-        let write = vk::WriteDescriptorSet {
-            dst_set: self.inner.inner,
-            dst_binding: 1,
-            dst_array_element: 0,
-            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-            ..Default::default()
-        };
-
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
-    }
-}
-
-pub struct NewImageSet {
-    pub inner: DescriptorSet,
-    targets: Vec<Rc<RefCell<RenderTarget>>>,
-}
-
-impl NewImageSet {
-    pub fn build(inner: DescriptorSet, targets: Vec<Rc<RefCell<RenderTarget>>>) -> Result<Self, ()> {
-        Err(())
-    }
-}
-
 pub struct ImageSet {
     pub inner: DescriptorSet,
 }
 
 impl ImageSet {
-    fn get_layout() -> DescLayout {
-        DescLayout::Image
-    }
+    pub fn update(&self, textures: Vec<(Sampler, ImageView)>, storage: Vec<ImageView>) -> Vec<DescriptorWrite> {
+        let storage_infos = storage
+            .iter()
+            .map(|view| vk::DescriptorImageInfo {
+                sampler: vk::Sampler::null(),
+                image_view: *view,
+                image_layout: vk::ImageLayout::GENERAL,
+            })
+            .collect::<Vec<_>>();
 
-    pub fn update_pp(&self, src: &RenderTarget) -> DescriptorWrite {
-        let image_info = vec![src.descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+        let texture_infos = textures
+            .into_iter()
+            .map(|(sampler, view)| vk::DescriptorImageInfo {
+                sampler,
+                image_view: view,
+                image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            })
+            .collect::<Vec<_>>();
 
-        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
+        if texture_infos.len() > DescLayout::Images.get_bindings()[0].descriptor_count as usize {
             panic!("INVALID DESCRIPTOR COUNT")
         }
 
-        let write = vk::WriteDescriptorSet {
+        if storage_infos.len() > DescLayout::Images.get_bindings()[1].descriptor_count as usize {
+            panic!("INVALID DESCRIPTOR COUNT")
+        }
+
+        let texture_write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
             dst_binding: 0,
             dst_array_element: 0,
@@ -442,52 +248,28 @@ impl ImageSet {
             ..Default::default()
         };
 
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
-    }
-
-    pub fn update_light(
-        &self,
-        gbuffer: &Rc<RefCell<MultipleRenderTarget>>,
-        rt_direct: &RenderTarget,
-        rt_indirect: &RenderTarget,
-    ) -> DescriptorWrite {
-        let image_info = vec![
-            gbuffer
-                .borrow()
-                .descriptor_image_info(0, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(1, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            gbuffer
-                .borrow()
-                .descriptor_image_info(2, vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-            rt_direct.descriptor_image_info(vk::ImageLayout::GENERAL),
-            rt_indirect.descriptor_image_info(vk::ImageLayout::GENERAL),
-        ];
-
-        if image_info.len() > Self::get_layout().get_bindings()[0].descriptor_count as usize {
-            panic!("INVALID DESCRIPTOR COUNT")
-        }
-
-        let write = vk::WriteDescriptorSet {
+        let storage_write = vk::WriteDescriptorSet {
             dst_set: self.inner.inner,
-            dst_binding: 0,
+            dst_binding: 1,
             dst_array_element: 0,
-            descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+            descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
             ..Default::default()
         };
 
-        DescriptorWrite {
-            write,
-            buffer_info: None,
-            image_info: Some(image_info),
-            tlases: None,
-        }
+        vec![
+            DescriptorWrite {
+                write: texture_write,
+                buffer_info: None,
+                image_info: Some(texture_infos),
+                tlases: None,
+            },
+            DescriptorWrite {
+                write: storage_write,
+                buffer_info: None,
+                image_info: Some(storage_infos),
+                tlases: None,
+            },
+        ]
     }
 }
 

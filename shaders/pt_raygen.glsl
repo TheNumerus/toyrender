@@ -21,9 +21,8 @@ layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) ENV;
 
-layout(set = 1, binding = 0) uniform sampler2D[] gb;
-
-layout(set = 1, binding = 1, rgb10_a2) uniform image2D rt_out[];
+layout(set = 1, binding = 0) uniform sampler2D[] textures;
+layout(set = 1, binding = 1, rgba16) uniform image2D images[];
 
 layout( push_constant ) uniform constants {
     int samples;
@@ -101,22 +100,22 @@ void main () {
         uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x/2, globals.res_y/2);
     }
 
-    float depth = texture(gb[2], uv).x;
+    float depth = texture(textures[2], uv).x;
 
     if (depth == 0.0) {
         imageStore(
-            rt_out[0],
+            images[0],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(0.0)
         );
         imageStore(
-            rt_out[1],
+            images[1],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(0.0)
         );
     }
 
-    vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0);
+    vec3 normal = normalize((texture(textures[1], uv).xyz - 0.5) * 2.0);
 
     vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
@@ -210,7 +209,7 @@ void main () {
     if (globals.debug == DEBUG_TIME) {
         float time = float(time_diff(start, end)) / 1024 / 256;
         imageStore(
-            rt_out[0],
+            images[0],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
                 (2.0 * time) - 1.0,
@@ -221,7 +220,7 @@ void main () {
         );
     } else {
         imageStore(
-            rt_out[0],
+            images[0],
             ivec2(gl_LaunchIDEXT.xy),
                 vec4(
                 direct * pow(2.0, globals.exposure),
@@ -229,7 +228,7 @@ void main () {
             )
         );
         imageStore(
-            rt_out[1],
+            images[1],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
                 indirect * pow(2.0, globals.exposure),

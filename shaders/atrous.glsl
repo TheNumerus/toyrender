@@ -9,10 +9,10 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 2) VIEW_PROJ;
 
-layout(set = 1, binding = 0) uniform sampler2D[] gb;
-layout(set = 1, binding = 1, rgba16) uniform image2D atrous[];
+layout(set = 1, binding = 0) uniform sampler2D[] textures;
+layout(set = 1, binding = 1, rgba16) uniform image2D images[];
 
-layout( push_constant ) uniform constants {
+layout(push_constant) uniform constants {
     int level;
 } push_consts;
 
@@ -46,7 +46,7 @@ float get_linear_depth(sampler2D depth, vec2 uv) {
 }
 
 float get_depth_gradient(uint x, uint y, sampler2D depth) {
-    ivec2 size = imageSize(atrous[0]);
+    ivec2 size = imageSize(images[0]);
 
     vec2 uv = vec2((x + 0.5) / size.x, (y + 0.5) / size.y);
     float x_offset = 1.0 / size.x;
@@ -58,7 +58,7 @@ float get_depth_gradient(uint x, uint y, sampler2D depth) {
     float l = get_linear_depth(depth, uv + vec2(-x_offset, 0.0));
     float r = get_linear_depth(depth, uv + vec2(x_offset, 0.0));
 
-    return max(max(abs(t-m), abs(m-b)),  max(abs(l-m), abs(m-r)));
+    return max(max(abs(t-m), abs(m-b)), max(abs(l-m), abs(m-r)));
 }
 
 float get_depth_weight(float base, float sample_depth, float gradient, float dist) {
@@ -75,13 +75,13 @@ float get_luma_weight(float base, float sample_luma, float variance) {
 }
 
 float get_blurred_variance(ivec2 uv) {
-    ivec2 size = imageSize(atrous[0]);
+    ivec2 size = imageSize(images[0]);
     float sum = 0.0;
     float weight = 0.0;
 
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-            float val = imageLoad(atrous[0], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
+            float val = imageLoad(images[0], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
             float weight_sample = get_gauss_3x3_weight(x) * get_gauss_3x3_weight(y);
             sum += val * weight_sample;
             weight += weight_sample;
@@ -92,13 +92,13 @@ float get_blurred_variance(ivec2 uv) {
 }
 
 float get_blurred_variance_1(ivec2 uv) {
-    ivec2 size = imageSize(atrous[1]);
+    ivec2 size = imageSize(images[1]);
     float sum = 0.0;
     float weight = 0.0;
 
     for (int x = -1; x <= 1; x++) {
         for (int y = -1; y <= 1; y++) {
-            float val = imageLoad(atrous[1], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
+            float val = imageLoad(images[1], ivec2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
             float weight_sample = get_gauss_3x3_weight(x) * get_gauss_3x3_weight(y);
             sum += val * weight_sample;
             weight += weight_sample;
@@ -112,21 +112,21 @@ void main() {
     uint x_base = gl_GlobalInvocationID.x;
     uint y_base = gl_GlobalInvocationID.y;
 
-    ivec2 size = imageSize(atrous[0]);
+    ivec2 size = imageSize(images[0]);
 
     if (globals.debug == DEBUG_INDIRECT || globals.debug == DEBUG_DIRECT) {
-        vec4 raw = imageLoad(atrous[1], ivec2(x_base, y_base));
-        imageStore(atrous[0], ivec2(x_base, y_base), raw);
+        vec4 raw = imageLoad(images[1], ivec2(x_base, y_base));
+        imageStore(images[0], ivec2(x_base, y_base), raw);
         return;
     } else if (globals.debug == DEBUG_DIRECT_VARIANCE || globals.debug == DEBUG_INDIRECT_VARIANCE) {
-        vec4 raw = imageLoad(atrous[1], ivec2(x_base, y_base));
-        imageStore(atrous[0], ivec2(x_base, y_base), raw);
+        vec4 raw = imageLoad(images[1], ivec2(x_base, y_base));
+        imageStore(images[0], ivec2(x_base, y_base), raw);
         return;
     }
 
     if (x_base <= size.x && y_base <= size.y) {
-        vec4 result = imageLoad(atrous[0], ivec2(x_base, y_base));
-        vec4 raw = imageLoad(atrous[1], ivec2(x_base, y_base));
+        vec4 result = imageLoad(images[0], ivec2(x_base, y_base));
+        vec4 raw = imageLoad(images[1], ivec2(x_base, y_base));
 
         vec4 sum = vec4(0.0);
         float weight_sum = 0.0;
@@ -137,9 +137,9 @@ void main() {
         vec2 uv = vec2((x_base + 0.5) / size.x, (y_base + 0.5) / size.y);
 
         float luma_base = luminance(raw.xyz);
-        vec3 normal_base = normalize(texture(gb[1], uv).xyz * 2.0 - 1.0);
-        float depth_base = get_linear_depth(gb[2], uv);
-        float gradient = get_depth_gradient(x_base, y_base, gb[2]);
+        vec3 normal_base = normalize(texture(textures[1], uv).xyz * 2.0 - 1.0);
+        float depth_base = get_linear_depth(textures[2], uv);
+        float gradient = get_depth_gradient(x_base, y_base, textures[2]);
         float blurred_variance = get_blurred_variance(ivec2(x_base, y_base));
 
         for (int y = -2; y <= 2; y++) {
@@ -152,15 +152,15 @@ void main() {
                 }
 
                 vec2 sample_uv = vec2((x_final + 0.5) / size.x, (y_final + 0.5) / size.y);
-                vec3 sample_normal = normalize(texture(gb[1], sample_uv).xyz * 2.0 - 1.0);
-                float sample_depth = get_linear_depth(gb[2], sample_uv);
+                vec3 sample_normal = normalize(texture(textures[1], sample_uv).xyz * 2.0 - 1.0);
+                float sample_depth = get_linear_depth(textures[2], sample_uv);
                 float sample_dist = distance(sample_uv, uv);
 
                 vec4 img_in;
                 if (push_consts.level == 0) {
-                    img_in = imageLoad(atrous[1], ivec2(x_final, y_final));
+                    img_in = imageLoad(images[1], ivec2(x_final, y_final));
                 } else {
-                    img_in = imageLoad(atrous[0], ivec2(x_final, y_final));
+                    img_in = imageLoad(images[0], ivec2(x_final, y_final));
                 }
                 float variance = img_in.a;
 
@@ -181,9 +181,9 @@ void main() {
         vec4 total = vec4((sum / weight_sum).xyz, max(new_variance_sum / new_variance_weight_sum, 0.0));
 
         if (push_consts.level == 0) {
-            imageStore(atrous[1], ivec2(x_base, y_base), total);
+            imageStore(images[1], ivec2(x_base, y_base), total);
         }
 
-        imageStore(atrous[0], ivec2(x_base, y_base), total);
+        imageStore(images[0], ivec2(x_base, y_base), total);
     }
 }
