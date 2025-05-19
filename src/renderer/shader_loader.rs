@@ -131,7 +131,7 @@ pub enum PipelineStub {
     Graphics {
         vertex: String,
         fragment: String,
-        render_pass: String,
+        render_pass: Option<String>,
     },
     #[serde(rename = "rt")]
     Rt {

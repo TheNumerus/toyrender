@@ -222,6 +222,7 @@ impl App {
 
             if debug_mode_flip {
                 self.renderer.debug_mode = self.renderer.debug_mode.next();
+                eprintln!("debug mode: {:?}", self.renderer.debug_mode);
             }
 
             if resized || flip_half_res {

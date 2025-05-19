@@ -14,7 +14,6 @@ render_pass = "gb"
 kind = "graphics"
 vertex = "light_vert"
 fragment = "light_frag"
-render_pass = "light"
 
 [tonemap]
 kind = "graphics"

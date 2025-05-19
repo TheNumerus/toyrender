@@ -17,7 +17,7 @@ layout(set = 0, binding = 3) ENV;
 
 layout(set = 1, binding = 0) uniform sampler2D[] gb;
 
-layout( push_constant ) uniform constants {
+layout(push_constant) uniform constants {
     mat4 model;
 } push_consts;
 
@@ -35,7 +35,7 @@ float spec(vec3 loc, vec3 normal, vec3 pos, vec3 lightPos, float shadow, float p
     vec3 view_dir = normalize(pos - loc);
     vec3 ref_dir = view_dir - 2.0 * normal * dot(normal, view_dir);
 
-    return pow( max(dot(ref_dir, normalize(lightPos - pos)), 0.0), power) * shadow;
+    return pow(max(dot(ref_dir, normalize(lightPos - pos)), 0.0), power) * shadow;
 }
 
 float schlick(float f0, vec3 l, vec3 n) {
@@ -56,43 +56,43 @@ vec3 sky_color(vec3 view_dir) {
 vec4 get_debug_color() {
     if (globals.debug == DEBUG_DIRECT) {
         return vec4(
-            texture(gb[3], uv).xyz,
-            1.0
+        texture(gb[3], uv).xyz,
+        1.0
         );
     } else if (globals.debug == DEBUG_INDIRECT) {
         return vec4(
-            texture(gb[4], uv).xyz,
-            1.0
+        texture(gb[4], uv).xyz,
+        1.0
         );
     } else if (globals.debug == DEBUG_TIME) {
         return vec4(
-            texture(gb[3], uv).xyz,
-            1.0
+        texture(gb[3], uv).xyz,
+        1.0
         );
     } else if (globals.debug == DEBUG_BASE_COLOR) {
-        return vec4(
+        /*return vec4(
             texture(gb[0], uv).xyz,
             1.0
-        );
+        );*/
     } else if (globals.debug == DEBUG_NORMAL) {
-        return vec4(
+        /*return vec4(
             texture(gb[1], uv).xyz,
             1.0
-        );
+        );*/
     } else if (globals.debug == DEBUG_DEPTH) {
         return vec4(
-            vec3(fract(texture(gb[2], uv).x * 500.0)),
-            1.0
+        vec3(fract(texture(gb[2], uv).x * 500.0)),
+        1.0
         );
     } else if (globals.debug == DEBUG_DIRECT_VARIANCE) {
         return vec4(
-            vec3(texture(gb[3], uv).x),
-            1.0
+        vec3(texture(gb[3], uv).x),
+        1.0
         );
     } else if (globals.debug == DEBUG_INDIRECT_VARIANCE) {
         return vec4(
-            vec3(texture(gb[4], uv).x),
-            1.0
+        vec3(texture(gb[4], uv).x),
+        1.0
         );
     }
 
@@ -102,7 +102,7 @@ vec4 get_debug_color() {
 void main() {
     if (!(globals.debug == DEBUG_NONE || globals.debug == DEBUG_DISOCCLUSION)) {
         outColor = get_debug_color();
-        return;
+        //return;
     }
 
     vec3 light_dir = normalize(vec3(0.2, -0.5, 1.0));
@@ -129,7 +129,7 @@ void main() {
     vec3 sky_col = sky_color(view_dir) * pow(2.0, globals.exposure);
 
     outColor = vec4(
-        mix(sky_col, lighted, color.a),
-        1.0
+    mix(sky_col, lighted, color.a),
+    1.0
     );
 }

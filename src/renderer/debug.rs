@@ -1,5 +1,5 @@
 #[repr(i32)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum DebugMode {
     None = 0,
     Direct = 1,

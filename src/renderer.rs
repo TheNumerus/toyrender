@@ -7,7 +7,7 @@ use crate::vulkan::{
     Framebuffer, ImageView, Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, RenderPass, Semaphore,
     ShaderBindingTable, Surface, SwapChain, Vertex, VulkanError, VulkanMesh,
 };
-use ash::vk::{Extent3D, Handle};
+use ash::vk::Handle;
 use ash::{vk, Entry};
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use gpu_allocator::MemoryLocation;
@@ -27,6 +27,7 @@ mod descriptors;
 use descriptors::{DescriptorWriter, RendererDescriptors};
 
 mod passes;
+use passes::TonemapPass;
 
 mod pipeline_builder;
 use pipeline_builder::PipelineBuilder;
@@ -44,6 +45,7 @@ mod debug;
 use debug::DebugMode;
 
 mod shader_loader;
+
 use shader_loader::ShaderLoader;
 pub use shader_loader::ShaderLoaderError;
 
@@ -61,6 +63,7 @@ pub struct VulkanRenderer {
     pub swap_chain_fbs: Vec<Framebuffer>,
     pub render_targets: RenderTargets,
     pub postprocess_render_target: RenderTarget,
+    pub postprocess_render_target_2: RenderTarget,
     pub rt_direct_render_target: RenderTarget,
     pub rt_indirect_render_target: RenderTarget,
     pub denoise_render_targets: DenoiseRenderTargets,
@@ -89,6 +92,7 @@ pub struct VulkanRenderer {
     last_view_proj: ViewProj,
     prev_jitter: (f32, f32),
     frames_in_flight: usize,
+    tonemap_pass: TonemapPass,
 }
 
 impl VulkanRenderer {
@@ -154,7 +158,7 @@ impl VulkanRenderer {
             &render_passes,
         )?;
 
-        let extent_3d = Extent3D {
+        let extent_3d = vk::Extent3D {
             width: swap_chain.extent.width,
             height: swap_chain.extent.height,
             depth: 1,
@@ -178,12 +182,16 @@ impl VulkanRenderer {
             MultipleRenderTargetBuilder::new("gbuffer", render_passes.passes.get("gb").unwrap().clone())
                 .add_target(
                     vk::Format::A2B10G10R10_UNORM_PACK32,
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
                     vk::ImageAspectFlags::COLOR,
                 )
                 .add_target(
                     vk::Format::A2B10G10R10_UNORM_PACK32,
-                    vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
+                    vk::ImageUsageFlags::COLOR_ATTACHMENT
+                        | vk::ImageUsageFlags::SAMPLED
+                        | vk::ImageUsageFlags::TRANSFER_SRC,
                     vk::ImageAspectFlags::COLOR,
                 )
                 .add_target(
@@ -195,28 +203,47 @@ impl VulkanRenderer {
                 ),
         )?;
 
-        let postprocess_render_target = RenderTarget::new(
-            device.clone(),
-            extent_3d,
-            render_passes.passes.get("light").unwrap(),
-            vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED,
-            vk::ImageAspectFlags::COLOR,
-        )?;
-        let rt_direct_render_target = RenderTarget::new_compute(
+        let mut postprocess_render_target = RenderTarget::new(
             device.clone(),
             extent_3d,
             vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
             vk::ImageAspectFlags::COLOR,
         )?;
-        let rt_indirect_render_target = RenderTarget::new_compute(
+        postprocess_render_target.set_names("tonemap")?;
+
+        let mut postprocess_render_target_2 = RenderTarget::new(
             device.clone(),
             extent_3d,
             vk::Format::R16G16B16A16_SFLOAT,
-            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::STORAGE,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC,
             vk::ImageAspectFlags::COLOR,
         )?;
+        postprocess_render_target_2.set_names("tonemap_2")?;
+
+        let mut rt_direct_render_target = RenderTarget::new(
+            device.clone(),
+            extent_3d,
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+        rt_direct_render_target.set_names("rt_direct")?;
+
+        let mut rt_indirect_render_target = RenderTarget::new(
+            device.clone(),
+            extent_3d,
+            vk::Format::R16G16B16A16_SFLOAT,
+            vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED
+                | vk::ImageUsageFlags::STORAGE
+                | vk::ImageUsageFlags::TRANSFER_SRC,
+            vk::ImageAspectFlags::COLOR,
+        )?;
+        rt_indirect_render_target.set_names("rt_indirect")?;
 
         let taa_builder = RenderTargetBuilder::new("taa_target")
             .with_transfer()
@@ -467,7 +494,7 @@ impl VulkanRenderer {
 
         Ok(Self {
             instance,
-            device,
+            device: device.clone(),
             allocator,
             surface,
             rt_pipeline_ext,
@@ -477,6 +504,7 @@ impl VulkanRenderer {
             swap_chain_fbs,
             render_targets,
             postprocess_render_target,
+            postprocess_render_target_2,
             rt_direct_render_target,
             rt_indirect_render_target,
             denoise_render_targets,
@@ -505,6 +533,7 @@ impl VulkanRenderer {
             current_frame: 0,
             prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
+            tonemap_pass: TonemapPass { device: device.clone() },
         })
     }
 
@@ -628,7 +657,13 @@ impl VulkanRenderer {
 
         let start = Instant::now();
 
-        self.record_command_buffer(command_buffer, framebuffer, scene, context)?;
+        self.record_command_buffer(
+            command_buffer,
+            framebuffer,
+            &self.swap_chain.images[image_index as usize],
+            scene,
+            context,
+        )?;
 
         let end = Instant::now();
 
@@ -717,16 +752,16 @@ impl VulkanRenderer {
             extent_3d
         };
 
-        self.postprocess_render_target
-            .resize(extent_3d, Some(self.render_passes.passes.get("light").unwrap().clone()))?;
-        self.rt_direct_render_target.resize(rtao_extent, None)?;
-        self.rt_indirect_render_target.resize(rtao_extent, None)?;
-        self.denoise_render_targets.direct_out.resize(rtao_extent, None)?;
-        self.denoise_render_targets.indirect_out.resize(rtao_extent, None)?;
-        self.denoise_render_targets.direct_acc.resize(rtao_extent, None)?;
-        self.denoise_render_targets.indirect_acc.resize(rtao_extent, None)?;
-        self.denoise_render_targets.direct_history.resize(rtao_extent, None)?;
-        self.denoise_render_targets.indirect_history.resize(rtao_extent, None)?;
+        self.postprocess_render_target.resize(extent_3d)?;
+        self.postprocess_render_target_2.resize(extent_3d)?;
+        self.rt_direct_render_target.resize(rtao_extent)?;
+        self.rt_indirect_render_target.resize(rtao_extent)?;
+        self.denoise_render_targets.direct_out.resize(rtao_extent)?;
+        self.denoise_render_targets.indirect_out.resize(rtao_extent)?;
+        self.denoise_render_targets.direct_acc.resize(rtao_extent)?;
+        self.denoise_render_targets.indirect_acc.resize(rtao_extent)?;
+        self.denoise_render_targets.direct_history.resize(rtao_extent)?;
+        self.denoise_render_targets.indirect_history.resize(rtao_extent)?;
 
         unsafe {
             let cmd_buf = self.graphics_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
@@ -896,6 +931,7 @@ impl VulkanRenderer {
         &self,
         command_buffer: &CommandBuffer,
         framebuffer: &Framebuffer,
+        target: &vk::Image,
         scene: &Scene,
         context: &FrameContext,
     ) -> Result<(), VulkanError> {
@@ -907,7 +943,11 @@ impl VulkanRenderer {
         self.record_denoise_pass(command_buffer);
         self.record_light_pass(command_buffer);
         self.record_taa_pass(command_buffer, context.clear_taa);
-        self.record_postprocess_pass(command_buffer, framebuffer);
+        //self.record_postprocess_pass(command_buffer, framebuffer);
+
+        self.tonemap_pass.record(command_buffer, self)?;
+
+        self.record_end_copy(command_buffer, target)?;
 
         command_buffer.end()
     }
@@ -1308,20 +1348,54 @@ impl VulkanRenderer {
     fn record_light_pass(&self, command_buffer: &CommandBuffer) {
         self.device.begin_label("Lighting", command_buffer);
 
-        let render_pass_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_passes.passes.get("light").unwrap().inner,
-            framebuffer: self.postprocess_render_target.framebuffer.as_ref().unwrap().inner,
+        let attachments = [vk::RenderingAttachmentInfo {
+            image_view: self.postprocess_render_target.view.inner,
+            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: vk::AttachmentLoadOp::DONT_CARE,
+            store_op: vk::AttachmentStoreOp::STORE,
+            ..Default::default()
+        }];
+
+        let rendering_info = vk::RenderingInfo {
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
                 extent: self.swap_chain.extent,
             },
-            clear_value_count: 0,
+            layer_count: 1,
+            color_attachment_count: attachments.len() as u32,
+            p_color_attachments: attachments.as_ptr(),
             ..Default::default()
         };
 
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    image: self.postprocess_render_target.image.inner,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                }],
+            );
+        }
+
         let pipeline = self.pipeline_builder.get_graphics("light").unwrap();
 
-        command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
+        command_buffer.begin_rendering(&rendering_info);
 
         command_buffer.bind_graphics_pipeline(pipeline);
 
@@ -1349,7 +1423,33 @@ impl VulkanRenderer {
                 .cmd_draw_indexed(command_buffer.inner, self.fs_quad.index_count as u32, 1, 0, 0, 0);
         }
 
-        command_buffer.end_render_pass();
+        command_buffer.end_rendering();
+
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    image: self.postprocess_render_target.image.inner,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                }],
+            );
+        }
 
         self.device.end_label(command_buffer);
     }
@@ -1533,53 +1633,54 @@ impl VulkanRenderer {
         self.device.end_label(command_buffer);
     }
 
-    fn record_postprocess_pass(&self, command_buffer: &CommandBuffer, framebuffer: &Framebuffer) {
-        self.device.begin_label("Post-processing", command_buffer);
-
-        let render_pass_info = vk::RenderPassBeginInfo {
-            render_pass: self.render_passes.passes.get("tonemap").unwrap().inner,
-            framebuffer: framebuffer.inner,
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D::default(),
-                extent: self.swap_chain.extent,
-            },
-            clear_value_count: 0,
-            ..Default::default()
+    fn record_end_copy(&self, command_buffer: &CommandBuffer, target: &vk::Image) -> Result<(), VulkanError> {
+        let src_image = match self.debug_mode {
+            DebugMode::None => self.postprocess_render_target.image.inner,
+            DebugMode::Direct => self.rt_direct_render_target.image.inner,
+            DebugMode::Indirect => self.rt_indirect_render_target.image.inner,
+            DebugMode::Time => self.postprocess_render_target.image.inner,
+            DebugMode::BaseColor => self.render_targets.get_mrt("gbuffer").unwrap().borrow().images[0].inner,
+            DebugMode::Normal => self.render_targets.get_mrt("gbuffer").unwrap().borrow().images[1].inner,
+            DebugMode::Depth => self.render_targets.get_mrt("gbuffer").unwrap().borrow().images[0].inner,
+            DebugMode::DisOcclusion => self.postprocess_render_target.image.inner,
+            DebugMode::VarianceDirect => self.denoise_render_targets.direct_out.image.inner,
+            DebugMode::VarianceIndirect => self.denoise_render_targets.indirect_out.image.inner,
         };
 
-        let pipeline = self.pipeline_builder.get_graphics("tonemap").unwrap();
-
-        command_buffer.begin_render_pass(&render_pass_info, vk::SubpassContents::INLINE);
-
-        command_buffer.bind_graphics_pipeline(pipeline);
-
-        command_buffer.bind_vertex_buffers(&[&self.fs_quad.buf], &[0]);
-
         unsafe {
-            self.device.inner.cmd_bind_index_buffer(
-                command_buffer.inner,
-                self.fs_quad.buf.inner.inner,
-                self.fs_quad.indices_offset,
-                vk::IndexType::UINT32,
-            );
+            let offset_min = vk::Offset3D { x: 0, y: 0, z: 1 };
+            let offset_max = vk::Offset3D {
+                x: self.swap_chain.extent.width as i32,
+                y: self.swap_chain.extent.height as i32,
+                z: 1,
+            };
 
-            self.device.inner.cmd_bind_descriptor_sets(
+            self.device.inner.cmd_blit_image(
                 command_buffer.inner,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                1,
-                &[self.descriptors.post_process_set.inner.inner],
-                &[],
+                src_image,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                *target,
+                vk::ImageLayout::PRESENT_SRC_KHR,
+                &[vk::ImageBlit {
+                    src_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    src_offsets: [offset_min, offset_max],
+                    dst_subresource: vk::ImageSubresourceLayers {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        mip_level: 0,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    dst_offsets: [offset_min, offset_max],
+                }],
+                vk::Filter::LINEAR,
             );
-
-            self.device
-                .inner
-                .cmd_draw_indexed(command_buffer.inner, self.fs_quad.index_count as u32, 1, 0, 0, 0);
+            Ok(())
         }
-
-        command_buffer.end_render_pass();
-
-        self.device.end_label(command_buffer);
     }
 
     fn prepare_meshes(&mut self, scene: &Scene) -> Result<(), AppError> {
@@ -1731,13 +1832,11 @@ pub struct RenderPasses {
 impl RenderPasses {
     pub fn new(device: Rc<Device>) -> Result<Self, VulkanError> {
         let pass_gb = RenderPass::new_gbuffer(device.clone())?;
-        let pass_light = RenderPass::new_light(device.clone())?;
         let pass_tonemap = RenderPass::new_post_process(device.clone())?;
 
         Ok(Self {
             passes: HashMap::from([
                 ("gb".to_owned(), Rc::new(pass_gb)),
-                ("light".to_owned(), Rc::new(pass_light)),
                 ("tonemap".to_owned(), Rc::new(pass_tonemap)),
             ]),
         })

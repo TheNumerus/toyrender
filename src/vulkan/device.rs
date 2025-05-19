@@ -64,7 +64,7 @@ impl Device {
 
             let queue_families = Self::find_device_queue_families(device, instance, surface)?;
             let swapchain_support = Self::query_swapchain_support(device, surface)?;
-            let (properties, _rt_properties) = Self::get_device_properties(&instance, device);
+            let (properties, _rt_properties, _bvh_properties) = Self::get_device_properties(instance, device);
 
             let name = unsafe {
                 CStr::from_ptr(properties.properties.device_name.as_ptr())
@@ -158,13 +158,19 @@ impl Device {
             ..Default::default()
         };
 
+        let dyn_create_info = vk::PhysicalDeviceDynamicRenderingFeatures {
+            dynamic_rendering: 1,
+            p_next: std::ptr::addr_of!(rt_create_info) as *mut c_void,
+            ..Default::default()
+        };
+
         let create_info = vk::DeviceCreateInfo {
             p_queue_create_infos: queue_create_infos.as_ptr(),
             queue_create_info_count: queue_create_infos.len() as u32,
             pp_enabled_extension_names: device_extensions_ptr.as_ptr(),
             enabled_extension_count: device_extensions.len() as u32,
             p_enabled_features: &vk::PhysicalDeviceFeatures::default(),
-            p_next: std::ptr::addr_of!(rt_create_info) as *const c_void,
+            p_next: std::ptr::addr_of!(dyn_create_info) as *const c_void,
             ..Default::default()
         };
 
@@ -179,13 +185,14 @@ impl Device {
         let present_queue = unsafe { inner.get_device_queue(queue_families.present.unwrap() as u32, 0) };
         let compute_queue = unsafe { inner.get_device_queue(queue_families.compute.unwrap() as u32, 0) };
 
-        let (properties, rt_properties) = Self::get_device_properties(&instance, device.device);
+        let (properties, rt_properties, bvh_properties) = Self::get_device_properties(&instance, device.device);
 
         let rt_properties = RtProperties {
             shader_group_base_alignment: rt_properties.shader_group_base_alignment,
             shader_group_handle_alignment: rt_properties.shader_group_handle_alignment,
             shader_group_handle_size: rt_properties.shader_group_handle_size,
             max_recursion: rt_properties.max_ray_recursion_depth,
+            min_bvh_scratch_alignment: bvh_properties.min_acceleration_structure_scratch_offset_alignment,
         };
 
         info!(
@@ -276,9 +283,14 @@ impl Device {
     ) -> (
         vk::PhysicalDeviceProperties2,
         vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
+        vk::PhysicalDeviceAccelerationStructurePropertiesKHR,
     ) {
         unsafe {
-            let mut next = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR::default();
+            let mut next_2 = vk::PhysicalDeviceAccelerationStructurePropertiesKHR::default();
+            let mut next = vk::PhysicalDeviceRayTracingPipelinePropertiesKHR {
+                p_next: std::ptr::addr_of_mut!(next_2) as *mut c_void,
+                ..Default::default()
+            };
             let mut props = vk::PhysicalDeviceProperties2 {
                 p_next: std::ptr::addr_of_mut!(next) as *mut c_void,
                 ..Default::default()
@@ -286,7 +298,7 @@ impl Device {
             instance
                 .inner
                 .get_physical_device_properties2(physical_device, &mut props);
-            (props, next)
+            (props, next, next_2)
         }
     }
 
@@ -439,4 +451,5 @@ pub struct RtProperties {
     pub shader_group_handle_alignment: u32,
     pub shader_group_base_alignment: u32,
     pub max_recursion: u32,
+    pub min_bvh_scratch_alignment: u32,
 }

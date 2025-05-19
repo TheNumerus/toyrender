@@ -35,18 +35,22 @@ impl PipelineBuilder {
                     fragment,
                     render_pass,
                 } => {
-                    let render_pass_handle = render_passes.passes.get(&render_pass).ok_or(AppError::Other(format!(
-                        "No render pass with name '{render_pass}' found"
-                    )))?;
+                    let render_pass_handle = match &render_pass {
+                        None => None,
+                        Some(key) => render_passes.passes.get(key),
+                    };
 
-                    let attachments = if render_pass == "gb" { 2 } else { 1 };
-                    let descriptor_layouts = if render_pass == "gb" {
-                        vec![descriptors.get_layout(DescLayout::Global).inner]
-                    } else {
-                        vec![
+                    let attachments = match &render_pass {
+                        Some(s) if s == "gb" => 2,
+                        _ => 1,
+                    };
+
+                    let descriptor_layouts = match &render_pass {
+                        Some(s) if s == "gb" => vec![descriptors.get_layout(DescLayout::Global).inner],
+                        _ => vec![
                             descriptors.get_layout(DescLayout::Global).inner,
                             descriptors.get_layout(DescLayout::Image).inner,
-                        ]
+                        ],
                     };
 
                     let vertex_module = Self::get_or_compile(
@@ -69,7 +73,7 @@ impl PipelineBuilder {
 
                     let pipeline = Pipeline::new_graphics(
                         device.clone(),
-                        render_pass_handle,
+                        render_pass_handle.map(|a| a.as_ref()),
                         &stages,
                         &descriptor_layouts,
                         attachments,
@@ -160,7 +164,8 @@ impl PipelineBuilder {
         if modules.contains_key(&key) {
             Ok(modules.get(&key).unwrap().clone())
         } else {
-            let module = ShaderModule::new(shaders.get(&key).unwrap().as_ref(), device, stage, Some(key.to_owned()))?;
+            let module = ShaderModule::new(shaders.get(&key).unwrap().as_ref(), device, stage)?;
+            module.set_name(key.to_owned())?;
 
             modules.insert(key.clone(), Rc::new(module));
 

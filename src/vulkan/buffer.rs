@@ -64,6 +64,57 @@ impl Buffer {
         })
     }
 
+    pub fn new_with_alignment(
+        device: Rc<Device>,
+        allocator: Rc<RefCell<Allocator>>,
+        location: MemoryLocation,
+        usage: vk::BufferUsageFlags,
+        size: u64,
+        alignment: u64,
+    ) -> Result<Self, AppError> {
+        let info = vk::BufferCreateInfo {
+            size,
+            usage,
+            sharing_mode: vk::SharingMode::EXCLUSIVE,
+            ..Default::default()
+        };
+
+        let inner = unsafe {
+            device
+                .inner
+                .create_buffer(&info, None)
+                .map_to_err("Cannot create vertex buffer")?
+        };
+
+        let mut requirements = unsafe { device.inner.get_buffer_memory_requirements(inner) };
+        requirements.alignment = alignment;
+
+        let allocation = allocator
+            .borrow_mut()
+            .allocate(&AllocationCreateDesc {
+                name: "TEST",
+                requirements,
+                location,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(VulkanAllocatorError)?;
+
+        unsafe {
+            device
+                .inner
+                .bind_buffer_memory(inner, allocation.memory(), allocation.offset())
+                .map_to_err("Cannot bind memory to buffer")
+        }?;
+
+        Ok(Self {
+            inner,
+            device,
+            allocation: Some(allocation),
+            allocator,
+        })
+    }
+
     pub fn fill_host(&mut self, data: &[u8]) -> Result<(), VulkanError> {
         let slice = self.allocation.as_mut().unwrap().mapped_slice_mut().unwrap();
 

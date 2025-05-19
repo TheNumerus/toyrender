@@ -18,7 +18,7 @@ pub struct Pipeline<T> {
 impl Pipeline<Graphics> {
     pub fn new_graphics(
         device: Rc<Device>,
-        render_pass: &RenderPass,
+        render_pass: Option<&RenderPass>,
         stages: &[PipelineShaderStageCreateInfo],
         descriptor_layouts: &[vk::DescriptorSetLayout],
         color_attachments: u32,
@@ -106,7 +106,7 @@ impl Pipeline<Graphics> {
             ..Default::default()
         };
 
-        let pipeline_info = vk::GraphicsPipelineCreateInfo {
+        let mut pipeline_info = vk::GraphicsPipelineCreateInfo {
             stage_count: stages.len() as u32,
             p_stages: stages.as_ptr(),
             p_vertex_input_state: &vertex_input_info,
@@ -118,10 +118,22 @@ impl Pipeline<Graphics> {
             p_dynamic_state: &dynamic_state,
             p_depth_stencil_state: &depth_stencil,
             layout,
-            render_pass: render_pass.inner,
+            render_pass: render_pass.map(|a| a.inner).unwrap_or(vk::RenderPass::null()),
             subpass: 0,
             ..Default::default()
         };
+
+        let formats = [vk::Format::R16G16B16A16_SFLOAT];
+
+        let rendering_info = vk::PipelineRenderingCreateInfo {
+            color_attachment_count: color_attachments.len() as u32,
+            p_color_attachment_formats: formats.as_ptr(),
+            ..Default::default()
+        };
+
+        if render_pass.is_none() {
+            pipeline_info.p_next = std::ptr::addr_of!(rendering_info) as *const _;
+        }
 
         let pipeline = unsafe {
             device

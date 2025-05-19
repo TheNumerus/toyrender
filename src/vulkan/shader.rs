@@ -12,12 +12,7 @@ pub struct ShaderModule {
 }
 
 impl ShaderModule {
-    pub fn new(
-        bytecode: &[u8],
-        device: Rc<Device>,
-        shader_stage: ShaderStage,
-        name: Option<String>,
-    ) -> Result<Self, VulkanError> {
+    pub fn new(bytecode: &[u8], device: Rc<Device>, shader_stage: ShaderStage) -> Result<Self, VulkanError> {
         let create_info = vk::ShaderModuleCreateInfo {
             code_size: bytecode.len(),
             p_code: bytecode.as_ptr() as *const u32,
@@ -31,18 +26,6 @@ impl ShaderModule {
                 .map_to_err("cannot create shader module")?
         };
 
-        if let Some(name) = name {
-            let name_ptr = CString::new(name).unwrap();
-            let name_info = vk::DebugUtilsObjectNameInfoEXT {
-                object_type: vk::ObjectType::SHADER_MODULE,
-                object_handle: inner.as_raw(),
-                p_object_name: name_ptr.as_ptr(),
-                ..Default::default()
-            };
-
-            device.name_object(name_info)?;
-        }
-
         let entry = CString::new("main").unwrap();
 
         Ok(Self {
@@ -51,6 +34,18 @@ impl ShaderModule {
             device,
             entry,
         })
+    }
+
+    pub fn set_name(&self, name: String) -> Result<(), VulkanError> {
+        let name_ptr = CString::new(name).unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: vk::ObjectType::SHADER_MODULE,
+            object_handle: self.inner.as_raw(),
+            p_object_name: name_ptr.as_ptr(),
+            ..Default::default()
+        };
+
+        self.device.name_object(name_info)
     }
 
     pub fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo {

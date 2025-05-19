@@ -13,7 +13,7 @@ layout(set = 0, binding = 2) VIEW_PROJ;
 
 layout(set = 1, binding = 0) uniform sampler2D colorBuf;
 
-layout( push_constant ) uniform constants {
+layout(push_constant) uniform constants {
     mat4 model;
 } push_consts;
 
@@ -37,20 +37,20 @@ vec3 abberation(int i) {
     float scale = (float(i) - 3.0) * 0.5;
 
     return vec3(
-        1.0 - min(abs(scale + 1.0), 1.0),
-        1.0 - min(abs(scale + 0.0), 1.0),
-        1.0 - min(abs(scale - 1.0), 1.0)
+    1.0 - min(abs(scale + 1.0), 1.0),
+    1.0 - min(abs(scale + 0.0), 1.0),
+    1.0 - min(abs(scale - 1.0), 1.0)
     );
 }
 
 void main() {
-    if (globals.debug != DEBUG_NONE) {
+    /*if (globals.debug != DEBUG_NONE) {
         outColor = vec4(
             texture(colorBuf, uv).rgb,
             1.0
         );
         return;
-    }
+    }*/
 
     float ratio = globals.res_x / globals.res_y;
 
@@ -68,13 +68,13 @@ void main() {
 
     vec3 tonemapped = reinhard_extended_luminance(sum, 2.5);
     vec3 color_correction = vec3(
-        smoothstep(0.0, 1.0, tonemapped.r),
-        smoothstep(0.0, 1.0, tonemapped.g),
-        pow(tonemapped.b, 0.9)
+    smoothstep(0.0, 1.0, tonemapped.r),
+    smoothstep(0.0, 1.0, tonemapped.g),
+    pow(tonemapped.b, 0.9)
     );
 
     outColor = vec4(
-        mix(color_correction, tonemapped, vec3(0.5, 0.6, 0.4)),
-        1.0
+    mix(color_correction, tonemapped, vec3(0.5, 0.6, 0.4)),
+    1.0
     );
 }

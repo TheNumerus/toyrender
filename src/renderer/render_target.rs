@@ -1,13 +1,13 @@
 use crate::err::AppError;
 use crate::vulkan::{Device, Framebuffer, Image, ImageView, RenderPass, Sampler, VulkanError};
 use ash::vk;
-use ash::vk::{Extent2D, Extent3D};
+use ash::vk::{Extent2D, Extent3D, Handle};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::rc::Rc;
 
 pub struct RenderTarget {
-    pub framebuffer: Option<Framebuffer>,
     pub image: Image,
     pub view: ImageView,
     pub sampler: Sampler,
@@ -15,85 +15,73 @@ pub struct RenderTarget {
     usage: vk::ImageUsageFlags,
     aspect: vk::ImageAspectFlags,
     device: Rc<Device>,
+    name: Option<String>,
 }
 
 impl RenderTarget {
     pub fn new(
         device: Rc<Device>,
         extent: Extent3D,
-        render_pass: &RenderPass,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
     ) -> Result<Self, VulkanError> {
         let image = Image::new(device.clone(), format, extent, usage)?;
-
         let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
-
-        let framebuffer = Some(Framebuffer::new(
-            device.clone(),
-            render_pass,
-            Extent2D {
-                width: extent.width,
-                height: extent.height,
-            },
-            &[&view],
-        )?);
-
         let sampler = Sampler::new(device.clone())?;
 
         Ok(Self {
             image,
             view,
-            framebuffer,
             sampler,
             device,
             format,
             usage,
             aspect,
+            name: None,
         })
     }
 
-    pub fn new_compute(
-        device: Rc<Device>,
-        extent: Extent3D,
-        format: vk::Format,
-        usage: vk::ImageUsageFlags,
-        aspect: vk::ImageAspectFlags,
-    ) -> Result<Self, VulkanError> {
-        let image = Image::new(device.clone(), format, extent, usage)?;
+    pub fn set_names<S: AsRef<str>>(&mut self, name: S) -> Result<(), VulkanError> {
+        let name = name.as_ref().to_owned();
 
-        let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
+        self.name = Some(name.clone());
+        let name_ptr = CString::new(name.clone() + "_image").unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: vk::ObjectType::IMAGE,
+            object_handle: self.image.inner.as_raw(),
+            p_object_name: name_ptr.as_ptr(),
+            ..Default::default()
+        };
 
-        let sampler = Sampler::new(device.clone())?;
+        self.device.name_object(name_info)?;
 
-        Ok(Self {
-            image,
-            view,
-            framebuffer: None,
-            sampler,
-            device,
-            format,
-            usage,
-            aspect,
-        })
+        let name_ptr = CString::new(name.clone() + "_imageview").unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: vk::ObjectType::IMAGE_VIEW,
+            object_handle: self.view.inner.as_raw(),
+            p_object_name: name_ptr.as_ptr(),
+            ..Default::default()
+        };
+
+        self.device.name_object(name_info)?;
+        let name_ptr = CString::new(name + "_sampler").unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: vk::ObjectType::SAMPLER,
+            object_handle: self.sampler.inner.as_raw(),
+            p_object_name: name_ptr.as_ptr(),
+            ..Default::default()
+        };
+
+        self.device.name_object(name_info)
     }
 
-    pub fn resize(&mut self, extent: Extent3D, render_pass: Option<Rc<RenderPass>>) -> Result<(), VulkanError> {
+    pub fn resize(&mut self, extent: Extent3D) -> Result<(), VulkanError> {
         self.image = Image::new(self.device.clone(), self.format, extent, self.usage)?;
-
         self.view = ImageView::new(self.device.clone(), self.image.inner, self.format, self.aspect)?;
 
-        if let Some(render_pass) = render_pass {
-            self.framebuffer = Some(Framebuffer::new(
-                self.device.clone(),
-                &render_pass,
-                Extent2D {
-                    width: extent.width,
-                    height: extent.height,
-                },
-                &[&self.view],
-            )?)
+        if let Some(name) = &self.name {
+            self.set_names(name.to_owned())?
         }
 
         Ok(())
@@ -238,7 +226,7 @@ pub struct DenoiseRenderTargets {
 impl DenoiseRenderTargets {
     pub fn new(device: Rc<Device>, extent: Extent3D) -> Result<Self, VulkanError> {
         let get_rt = || {
-            RenderTarget::new_compute(
+            RenderTarget::new(
                 device.clone(),
                 extent,
                 vk::Format::R16G16B16A16_SFLOAT,
@@ -275,7 +263,6 @@ pub struct RenderTargetBuilder {
     format: vk::Format,
     aspect: vk::ImageAspectFlags,
     usage: vk::ImageUsageFlags,
-    render_pass: Option<Rc<RenderPass>>,
 }
 
 impl RenderTargetBuilder {
@@ -286,7 +273,6 @@ impl RenderTargetBuilder {
             format: vk::Format::R16G16B16A16_SFLOAT,
             aspect: vk::ImageAspectFlags::COLOR,
             usage: vk::ImageUsageFlags::SAMPLED,
-            render_pass: None,
         }
     }
 
@@ -297,14 +283,12 @@ impl RenderTargetBuilder {
             format: vk::Format::D32_SFLOAT,
             aspect: vk::ImageAspectFlags::DEPTH,
             usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-            render_pass: None,
         }
     }
 
     pub fn duplicate(&self, name: impl Into<String>) -> Self {
         Self {
             name: name.into(),
-            render_pass: self.render_pass.clone(),
             ..*self
         }
     }
@@ -338,16 +322,10 @@ impl RenderTargetBuilder {
         self.usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
         self
     }
-
-    pub fn with_render_pass(mut self, render_pass: Rc<RenderPass>) -> Self {
-        self.render_pass = Some(render_pass);
-        self
-    }
 }
 
 struct RenderTargetItem {
     value: Rc<RefCell<RenderTarget>>,
-    render_pass: Option<Rc<RenderPass>>,
     size: RenderTargetSize,
 }
 
@@ -382,7 +360,6 @@ impl RenderTargets {
 
         let key = builder.name.clone();
         let size = builder.size;
-        let render_pass = builder.render_pass.clone();
         let rt = self.build(builder)?;
         let rt_ptr = Rc::new(RefCell::new(rt));
 
@@ -390,7 +367,6 @@ impl RenderTargets {
             key,
             RenderTargetItem {
                 value: rt_ptr.clone(),
-                render_pass,
                 size,
             },
         );
@@ -443,7 +419,7 @@ impl RenderTargets {
                 _ => continue,
             };
 
-            target.value.borrow_mut().resize(extent, target.render_pass.clone())?;
+            target.value.borrow_mut().resize(extent)?;
         }
 
         for (_name, target) in &mut self.mr_targets {
@@ -475,23 +451,13 @@ impl RenderTargets {
             },
         };
 
-        match builder.render_pass {
-            None => RenderTarget::new_compute(
-                self.device.clone(),
-                extent,
-                builder.format,
-                builder.usage,
-                builder.aspect,
-            ),
-            Some(pass) => RenderTarget::new(
-                self.device.clone(),
-                extent,
-                &pass,
-                builder.format,
-                builder.usage,
-                builder.aspect,
-            ),
-        }
+        RenderTarget::new(
+            self.device.clone(),
+            extent,
+            builder.format,
+            builder.usage,
+            builder.aspect,
+        )
         .map_err(AppError::VulkanError)
     }
 }
