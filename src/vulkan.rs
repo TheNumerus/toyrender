@@ -52,6 +52,7 @@ pub const RT_PIPELINE_EXTENSION: &CStr = ash::extensions::khr::RayTracingPipelin
 pub const DEFERRED_HOST_OPS_EXTENSION: &CStr = ash::extensions::khr::DeferredHostOperations::name();
 pub const RT_POSITION_FETCH_EXTENSION: &CStr =
     unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_KHR_ray_tracing_position_fetch\0") };
+pub const DYN_RENDER_EXTENSION: &CStr = ash::extensions::khr::DynamicRendering::name();
 
 #[derive(Error, Debug)]
 #[error("{msg}: {code}")]

@@ -40,6 +40,10 @@ impl CommandBuffer {
         }
     }
 
+    pub fn begin_rendering(&self, info: &vk::RenderingInfo) {
+        unsafe { self.device.inner.cmd_begin_rendering(self.inner, info) }
+    }
+
     pub fn bind_graphics_pipeline(&self, pipeline: &Pipeline<Graphics>) {
         unsafe {
             self.device
@@ -74,6 +78,10 @@ impl CommandBuffer {
 
     pub fn end_render_pass(&self) {
         unsafe { self.device.inner.cmd_end_render_pass(self.inner) }
+    }
+
+    pub fn end_rendering(&self) {
+        unsafe { self.device.inner.cmd_end_rendering(self.inner) }
     }
 
     pub fn begin(&self) -> Result<(), VulkanError> {

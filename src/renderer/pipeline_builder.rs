@@ -160,7 +160,7 @@ impl PipelineBuilder {
         if modules.contains_key(&key) {
             Ok(modules.get(&key).unwrap().clone())
         } else {
-            let module = ShaderModule::new(shaders.get(&key).unwrap().as_ref(), device, stage)?;
+            let module = ShaderModule::new(shaders.get(&key).unwrap().as_ref(), device, stage, Some(key.to_owned()))?;
 
             modules.insert(key.clone(), Rc::new(module));
 

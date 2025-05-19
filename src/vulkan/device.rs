@@ -1,5 +1,5 @@
 use crate::vulkan::{
-    CommandBuffer, Instance, IntoVulkanError, Surface, VulkanError, DEFERRED_HOST_OPS_EXTENSION,
+    CommandBuffer, Instance, IntoVulkanError, Surface, VulkanError, DEFERRED_HOST_OPS_EXTENSION, DYN_RENDER_EXTENSION,
     RT_ACCELERATION_EXTENSION, RT_PIPELINE_EXTENSION, RT_POSITION_FETCH_EXTENSION, SHADER_CLOCK_EXTENSION,
     SWAPCHAIN_EXTENSION,
 };
@@ -41,6 +41,7 @@ impl Device {
             RT_ACCELERATION_EXTENSION,
             RT_POSITION_FETCH_EXTENSION,
             SHADER_CLOCK_EXTENSION,
+            DYN_RENDER_EXTENSION,
         ];
 
         let mut res_devices = Vec::new();
@@ -117,6 +118,7 @@ impl Device {
             DEFERRED_HOST_OPS_EXTENSION,
             RT_POSITION_FETCH_EXTENSION,
             SHADER_CLOCK_EXTENSION,
+            DYN_RENDER_EXTENSION,
         ];
 
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
@@ -336,6 +338,21 @@ impl Device {
             let ext_name = unsafe { CStr::from_ptr(ext.extension_name.as_ptr()) };
             name == ext_name
         })
+    }
+
+    pub fn name_object(&self, name_info: vk::DebugUtilsObjectNameInfoEXT) -> Result<(), VulkanError> {
+        if !self.instance.markers_active() {
+            return Ok(());
+        }
+
+        unsafe {
+            self.instance
+                .debug_utils
+                .as_ref()
+                .unwrap()
+                .set_debug_utils_object_name(self.inner.handle(), &name_info)
+                .map_to_err("Cannot name object")
+        }
     }
 
     pub fn begin_label(&self, label: &str, command_buffer: &CommandBuffer) {
