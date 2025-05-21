@@ -7,7 +7,7 @@ use vk::PresentModeKHR;
 use super::{Instance, VulkanError};
 use crate::vulkan::{Device, ImageView, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
-pub struct SwapChain {
+pub struct Swapchain {
     pub swapchain: SwapchainKHR,
     pub format: SurfaceFormatKHR,
     pub extent: Extent2D,
@@ -16,7 +16,7 @@ pub struct SwapChain {
     device: Rc<Device>,
 }
 
-impl SwapChain {
+impl Swapchain {
     pub fn new(
         device: Rc<Device>,
         instance: &Instance,
@@ -205,7 +205,7 @@ impl SwapChain {
     }
 }
 
-impl Drop for SwapChain {
+impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe { self.loader.destroy_swapchain(self.swapchain, None) };
     }

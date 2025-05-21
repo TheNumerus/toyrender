@@ -8,18 +8,19 @@ miss = "ao_raymiss"
 kind = "graphics"
 vertex = "deferred_vert"
 fragment = "deferred_frag"
-render_pass = "gb"
+use_depth = true
 
 [light]
 kind = "graphics"
 vertex = "light_vert"
 fragment = "light_frag"
+use_depth = false
 
 [tonemap]
 kind = "graphics"
 vertex = "light_vert"
 fragment = "tonemap_frag"
-render_pass = "tonemap"
+use_depth = false
 
 [taa]
 kind = "compute"

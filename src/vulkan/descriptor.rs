@@ -1,6 +1,7 @@
 use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use std::ffi::c_void;
+use ash::vk::Handle;
+use std::ffi::{c_void, CString};
 use std::rc::Rc;
 
 pub struct DescriptorPool {
@@ -75,7 +76,11 @@ pub struct DescriptorSetLayout {
 }
 
 impl DescriptorSetLayout {
-    pub fn new(device: Rc<Device>, bindings: &[vk::DescriptorSetLayoutBinding]) -> Result<Self, VulkanError> {
+    pub fn new(
+        device: Rc<Device>,
+        bindings: &[vk::DescriptorSetLayoutBinding],
+        name: String,
+    ) -> Result<Self, VulkanError> {
         let flags = vec![vk::DescriptorBindingFlags::PARTIALLY_BOUND; bindings.len()];
 
         let p_next = vk::DescriptorSetLayoutBindingFlagsCreateInfo {
@@ -97,6 +102,16 @@ impl DescriptorSetLayout {
                 .create_descriptor_set_layout(&create_info, None)
                 .map_to_err("Cannot create descriptor set layout")?
         };
+
+        let name_ptr = CString::new(name).unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: vk::ObjectType::DESCRIPTOR_SET_LAYOUT,
+            object_handle: inner.as_raw(),
+            p_object_name: name_ptr.as_ptr(),
+            ..Default::default()
+        };
+
+        device.name_object(name_info)?;
 
         Ok(Self { inner, device })
     }

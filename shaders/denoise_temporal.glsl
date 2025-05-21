@@ -1,5 +1,6 @@
 #version 450
 #pragma shader_stage(compute)
+#extension GL_EXT_nonuniform_qualifier : enable
 
 #include "common/debug_modes.glsl"
 #include "common/defs.glsl"
@@ -9,11 +10,17 @@ layout (local_size_x = 16, local_size_y = 16) in;
 layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 2) VIEW_PROJ;
 
-layout(set = 1, binding = 0) uniform sampler2D rt_in[];
-layout(set = 1, binding = 1, rgb10_a2) uniform image2D denoise_out;
+layout(set = 1, binding = 0) uniform sampler2D images[];
+layout(set = 1, binding = 1, rgb10_a2) uniform image2D storages[];
 
-layout( push_constant ) uniform constants {
+layout(push_constant) uniform constants {
     int clear;
+    int out_idx;
+    int curr_depth_idx;
+    int prev_depth_idx;
+    int curr_idx;
+    int prev_idx;
+    int normal_idx;
 } push_consts;
 
 float get_linear_depth(sampler2D depth, vec2 uv) {
@@ -28,9 +35,9 @@ float get_linear_depth(sampler2D depth, vec2 uv) {
 }
 
 bool reproject(vec2 uv_in, out vec2 uv_out) {
-    ivec2 size = imageSize(denoise_out);
+    ivec2 size = imageSize(storages[push_consts.out_idx]);
 
-    float curr_depth = texture(rt_in[4], uv_in).x;
+    float curr_depth = texture(images[push_consts.curr_depth_idx], uv_in).x;
 
     vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv_in * 2.0 - 1.0, curr_depth, 1.0);
     per_pos /= per_pos.w;
@@ -46,7 +53,7 @@ bool reproject(vec2 uv_in, out vec2 uv_out) {
     snapped_uv.x = (round((snapped_uv.x * size.x) - 0.5) + 0.5) / size.x;
     snapped_uv.y = (round((snapped_uv.y * size.y) - 0.5) + 0.5) / size.y;
 
-    float prev_lin_depth = get_linear_depth(rt_in[5], snapped_uv.xy);
+    float prev_lin_depth = get_linear_depth(images[push_consts.prev_depth_idx], snapped_uv.xy);
     uv_out = prev_uv.xy;
 
     if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0 || abs(lin_depth - prev_lin_depth) > 0.01) {
@@ -57,7 +64,7 @@ bool reproject(vec2 uv_in, out vec2 uv_out) {
 }
 
 float get_depth_gradient(uint x, uint y, sampler2D depth) {
-    ivec2 size = imageSize(denoise_out);
+    ivec2 size = imageSize(storages[push_consts.out_idx]);
 
     vec2 uv = vec2((x + 0.5) / size.x, (y + 0.5) / size.y);
     float x_offset = 1.0 / size.x;
@@ -69,7 +76,7 @@ float get_depth_gradient(uint x, uint y, sampler2D depth) {
     float l = get_linear_depth(depth, uv + vec2(-x_offset, 0.0));
     float r = get_linear_depth(depth, uv + vec2(x_offset, 0.0));
 
-    return max(max(abs(t-m), abs(m-b)),  max(abs(l-m), abs(m-r)));
+    return max(max(abs(t-m), abs(m-b)), max(abs(l-m), abs(m-r)));
 }
 
 float get_depth_weight(float base, float sample_depth, float gradient, float dist) {
@@ -91,12 +98,12 @@ float luminance(vec3 color) {
 
 float compute_spatial_variance(ivec2 uv_int) {
     vec2 uv = (vec2(uv_int) + 0.5) / vec2(globals.res_x, globals.res_y);
-    vec3 base_normal = normalize(texture(rt_in[3], uv).xyz * 2.0 - 1.0);
-    float base_depth = get_linear_depth(rt_in[4], uv);
-    float luma_base = luminance(texture(rt_in[0], uv).xyz);
-    float gradient = get_depth_gradient(uv_int.x, uv_int.y, rt_in[4]);
+    vec3 base_normal = normalize(texture(images[push_consts.normal_idx], uv).xyz * 2.0 - 1.0);
+    float base_depth = get_linear_depth(images[push_consts.curr_depth_idx], uv);
+    float luma_base = luminance(texture(images[push_consts.curr_idx], uv).xyz);
+    float gradient = get_depth_gradient(uv_int.x, uv_int.y, images[push_consts.curr_depth_idx]);
 
-    ivec2 size = imageSize(denoise_out);
+    ivec2 size = imageSize(storages[push_consts.out_idx]);
 
     float sum = 0.0;
     float sum_sq = 0.0;
@@ -107,10 +114,10 @@ float compute_spatial_variance(ivec2 uv_int) {
             if (uv.x >= 0 || uv.y >= 0 || uv.x < size.x || uv.y < size.y) {
                 vec2 texture_uv = (vec2(uv) + 0.5) / vec2(globals.res_x, globals.res_y);
 
-                vec4 current = texture(rt_in[0], texture_uv);
+                vec4 current = texture(images[push_consts.curr_idx], texture_uv);
                 float luma_sample = luminance(current.xyz);
-                vec3 normal_sample = normalize(texture(rt_in[3], texture_uv).xyz * 2.0 - 1.0);
-                float depth_sample = get_linear_depth(rt_in[4], texture_uv);
+                vec3 normal_sample = normalize(texture(images[push_consts.normal_idx], texture_uv).xyz * 2.0 - 1.0);
+                float depth_sample = get_linear_depth(images[push_consts.curr_depth_idx], texture_uv);
                 float sample_dist = distance(texture_uv, uv);
 
                 float normal_weight = pow(max(dot(base_normal, normal_sample), 0.0), 128.0);
@@ -136,7 +143,7 @@ void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
 
-    ivec2 size = imageSize(denoise_out);
+    ivec2 size = imageSize(storages[push_consts.out_idx]);
 
     float blend_factor = 0.2;
     if (push_consts.clear == 1) {
@@ -144,14 +151,14 @@ void main() {
     }
 
     if (x <= size.x && y <= size.y) {
-        vec2 uv = (vec2(x,y) + 0.5) / vec2(globals.res_x, globals.res_y);
+        vec2 uv = (vec2(x, y) + 0.5) / vec2(globals.res_x, globals.res_y);
 
-        vec4 current = texture(rt_in[0], uv);
+        vec4 current = texture(images[push_consts.curr_idx], uv);
 
-        float variance = compute_spatial_variance(ivec2(x,y));
+        float variance = compute_spatial_variance(ivec2(x, y));
 
         if (globals.debug == DEBUG_DIRECT_VARIANCE || globals.debug == DEBUG_INDIRECT_VARIANCE) {
-            imageStore(denoise_out, ivec2(x,y), vec4(vec3(variance * 5.0), 1.0));
+            imageStore(storages[push_consts.out_idx], ivec2(x, y), vec4(vec3(variance * 5.0), 1.0));
             return;
         }
 
@@ -160,7 +167,7 @@ void main() {
             blend_factor = 1.0;
         }
 
-        vec4 prev = max(texture(rt_in[1], uv_reprojected), vec4(0.000001));
-        imageStore(denoise_out, ivec2(x,y), mix(prev, vec4(current.xyz, variance), blend_factor));
+        vec4 prev = max(texture(images[push_consts.prev_idx], uv_reprojected), vec4(0.000001));
+        imageStore(storages[push_consts.out_idx], ivec2(x, y), mix(prev, vec4(current.xyz, variance), blend_factor));
     }
 }

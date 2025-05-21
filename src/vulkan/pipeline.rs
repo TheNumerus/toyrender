@@ -1,6 +1,7 @@
-use crate::vulkan::{Device, IntoVulkanError, RayTracingPipeline, RenderPass, Vertex, VulkanError};
+use crate::vulkan::{Device, IntoVulkanError, RayTracingPipeline, Vertex, VulkanError};
 use ash::vk;
-use ash::vk::{Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use ash::vk::{Handle, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
+use std::ffi::CString;
 use std::marker::PhantomData;
 use std::rc::Rc;
 
@@ -15,13 +16,28 @@ pub struct Pipeline<T> {
     _marker: PhantomData<T>,
 }
 
+impl<T> Pipeline<T> {
+    pub fn set_name(&self, name: String) -> Result<(), VulkanError> {
+        let name_ptr = CString::new(name).unwrap();
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: vk::ObjectType::PIPELINE,
+            object_handle: self.inner.as_raw(),
+            p_object_name: name_ptr.as_ptr(),
+            ..Default::default()
+        };
+
+        self.device.name_object(name_info)
+    }
+}
+
 impl Pipeline<Graphics> {
     pub fn new_graphics(
         device: Rc<Device>,
-        render_pass: Option<&RenderPass>,
         stages: &[PipelineShaderStageCreateInfo],
         descriptor_layouts: &[vk::DescriptorSetLayout],
-        color_attachments: u32,
+        attachment_formats: &[vk::Format],
+        use_depth: bool,
+        push_consts_size: u32,
     ) -> Result<Self, VulkanError> {
         let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
 
@@ -77,7 +93,7 @@ impl Pipeline<Graphics> {
             ..Default::default()
         };
 
-        let color_attachments = vec![color_blend_attachment; color_attachments as usize];
+        let color_attachments = vec![color_blend_attachment; attachment_formats.len()];
 
         let color_blending = vk::PipelineColorBlendStateCreateInfo {
             logic_op_enable: vk::FALSE,
@@ -89,7 +105,7 @@ impl Pipeline<Graphics> {
 
         let ranges = [vk::PushConstantRange {
             offset: 0,
-            size: (std::mem::size_of::<nalgebra_glm::Mat4>()) as u32,
+            size: push_consts_size,
             stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
         }];
 
@@ -106,7 +122,17 @@ impl Pipeline<Graphics> {
             ..Default::default()
         };
 
-        let mut pipeline_info = vk::GraphicsPipelineCreateInfo {
+        let mut rendering_info = vk::PipelineRenderingCreateInfo {
+            color_attachment_count: color_attachments.len() as u32,
+            p_color_attachment_formats: attachment_formats.as_ptr(),
+            ..Default::default()
+        };
+
+        if use_depth {
+            rendering_info.depth_attachment_format = vk::Format::D32_SFLOAT;
+        }
+
+        let pipeline_info = vk::GraphicsPipelineCreateInfo {
             stage_count: stages.len() as u32,
             p_stages: stages.as_ptr(),
             p_vertex_input_state: &vertex_input_info,
@@ -118,22 +144,11 @@ impl Pipeline<Graphics> {
             p_dynamic_state: &dynamic_state,
             p_depth_stencil_state: &depth_stencil,
             layout,
-            render_pass: render_pass.map(|a| a.inner).unwrap_or(vk::RenderPass::null()),
+            render_pass: vk::RenderPass::null(),
             subpass: 0,
+            p_next: std::ptr::addr_of!(rendering_info) as *const _,
             ..Default::default()
         };
-
-        let formats = [vk::Format::R16G16B16A16_SFLOAT];
-
-        let rendering_info = vk::PipelineRenderingCreateInfo {
-            color_attachment_count: color_attachments.len() as u32,
-            p_color_attachment_formats: formats.as_ptr(),
-            ..Default::default()
-        };
-
-        if render_pass.is_none() {
-            pipeline_info.p_next = std::ptr::addr_of!(rendering_info) as *const _;
-        }
 
         let pipeline = unsafe {
             device
@@ -160,6 +175,7 @@ impl Pipeline<Rt> {
         rtp: &RayTracingPipeline,
         stages: &[PipelineShaderStageCreateInfo],
         descriptor_layouts: &[vk::DescriptorSetLayout],
+        push_consts_size: u32,
     ) -> Result<Self, VulkanError> {
         let gen_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR {
             ty: vk::RayTracingShaderGroupTypeKHR::GENERAL,
@@ -196,7 +212,7 @@ impl Pipeline<Rt> {
 
         let ranges = [vk::PushConstantRange {
             offset: 0,
-            size: std::mem::size_of::<f32>() as u32,
+            size: push_consts_size,
             stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
         }];
 
@@ -243,10 +259,11 @@ impl Pipeline<Compute> {
         device: Rc<Device>,
         stage: PipelineShaderStageCreateInfo,
         descriptor_layouts: &[vk::DescriptorSetLayout],
+        push_consts_size: u32,
     ) -> Result<Self, VulkanError> {
         let ranges = [vk::PushConstantRange {
             offset: 0,
-            size: std::mem::size_of::<f32>() as u32,
+            size: push_consts_size,
             stage_flags: vk::ShaderStageFlags::COMPUTE,
         }];
 

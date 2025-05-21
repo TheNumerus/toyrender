@@ -1,5 +1,6 @@
 #version 450
 #pragma shader_stage(fragment)
+#extension GL_EXT_nonuniform_qualifier : enable
 
 #include "common/debug_modes.glsl"
 #include "common/defs.glsl"
@@ -15,10 +16,14 @@ layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) ENV;
 
-layout(set = 1, binding = 0) uniform sampler2D[] gb;
+layout(set = 1, binding = 0) uniform sampler2D images[];
 
 layout(push_constant) uniform constants {
-    mat4 model;
+    int color_idx;
+    int normal_idx;
+    int depth_idx;
+    int direct_idx;
+    int indirect_idx;
 } push_consts;
 
 uint pcg_hash(uint i) {
@@ -56,17 +61,17 @@ vec3 sky_color(vec3 view_dir) {
 vec4 get_debug_color() {
     if (globals.debug == DEBUG_DIRECT) {
         return vec4(
-        texture(gb[3], uv).xyz,
+        texture(images[3], uv).xyz,
         1.0
         );
     } else if (globals.debug == DEBUG_INDIRECT) {
         return vec4(
-        texture(gb[4], uv).xyz,
+        texture(images[4], uv).xyz,
         1.0
         );
     } else if (globals.debug == DEBUG_TIME) {
         return vec4(
-        texture(gb[3], uv).xyz,
+        texture(images[3], uv).xyz,
         1.0
         );
     } else if (globals.debug == DEBUG_BASE_COLOR) {
@@ -81,17 +86,17 @@ vec4 get_debug_color() {
         );*/
     } else if (globals.debug == DEBUG_DEPTH) {
         return vec4(
-        vec3(fract(texture(gb[2], uv).x * 500.0)),
+        vec3(fract(texture(images[2], uv).x * 500.0)),
         1.0
         );
     } else if (globals.debug == DEBUG_DIRECT_VARIANCE) {
         return vec4(
-        vec3(texture(gb[3], uv).x),
+        vec3(texture(images[3], uv).x),
         1.0
         );
     } else if (globals.debug == DEBUG_INDIRECT_VARIANCE) {
         return vec4(
-        vec3(texture(gb[4], uv).x),
+        vec3(texture(images[4], uv).x),
         1.0
         );
     }
@@ -109,9 +114,9 @@ void main() {
 
     float ratio = globals.res_x / globals.res_y;
 
-    vec4 color = texture(gb[0], uv);
-    vec3 normal = texture(gb[1], uv).xyz * 2.0 - 1.0;
-    float depth = 1.0 - texture(gb[2], uv).x;
+    vec4 color = texture(images[push_consts.color_idx], uv);
+    vec3 normal = texture(images[push_consts.normal_idx], uv).xyz * 2.0 - 1.0;
+    float depth = 1.0 - texture(images[push_consts.depth_idx], uv).x;
 
     vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
@@ -119,8 +124,8 @@ void main() {
     vec3 loc = inverse(view_proj.view[0])[3].xyz;
     vec3 view_dir = normalize(vertPos - loc);
 
-    vec3 direct = texture(gb[3], uv).xyz;
-    vec3 indirect = texture(gb[4], uv).xyz;
+    vec3 direct = texture(images[push_consts.direct_idx], uv).xyz;
+    vec3 indirect = texture(images[push_consts.indirect_idx], uv).xyz;
 
     vec3 diffuse_dir = light(normalize(normal), light_dir, direct) + indirect;
     vec3 specular = vec3(0.0);

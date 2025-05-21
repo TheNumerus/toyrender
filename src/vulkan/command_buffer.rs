@@ -32,14 +32,6 @@ impl CommandBuffer {
         }
     }
 
-    pub fn begin_render_pass(&self, render_pass_info: &vk::RenderPassBeginInfo, contents: vk::SubpassContents) {
-        unsafe {
-            self.device
-                .inner
-                .cmd_begin_render_pass(self.inner, render_pass_info, contents)
-        }
-    }
-
     pub fn begin_rendering(&self, info: &vk::RenderingInfo) {
         unsafe { self.device.inner.cmd_begin_rendering(self.inner, info) }
     }
@@ -74,10 +66,6 @@ impl CommandBuffer {
 
     pub fn set_scissor(&self, scissor: Rect2D) {
         unsafe { self.device.inner.cmd_set_scissor(self.inner, 0, &[scissor]) }
-    }
-
-    pub fn end_render_pass(&self) {
-        unsafe { self.device.inner.cmd_end_render_pass(self.inner) }
     }
 
     pub fn end_rendering(&self) {

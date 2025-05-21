@@ -1,8 +1,8 @@
 use crate::err::AppError;
-use crate::vulkan::{Device, Framebuffer, Image, ImageView, RenderPass, Sampler, VulkanError};
+use crate::vulkan::{Device, Image, ImageView, Sampler, VulkanError};
 use ash::vk;
-use ash::vk::{Extent2D, Extent3D, Handle};
-use std::cell::RefCell;
+use ash::vk::{Extent3D, Handle};
+use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::rc::Rc;
@@ -10,9 +10,9 @@ use std::rc::Rc;
 pub struct RenderTarget {
     pub image: Image,
     pub view: ImageView,
-    pub sampler: Sampler,
+    sampler: Rc<Sampler>,
     format: vk::Format,
-    usage: vk::ImageUsageFlags,
+    pub usage: vk::ImageUsageFlags,
     aspect: vk::ImageAspectFlags,
     device: Rc<Device>,
     name: Option<String>,
@@ -25,10 +25,10 @@ impl RenderTarget {
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
+        sampler: Rc<Sampler>,
     ) -> Result<Self, VulkanError> {
         let image = Image::new(device.clone(), format, extent, usage)?;
         let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
-        let sampler = Sampler::new(device.clone())?;
 
         Ok(Self {
             image,
@@ -93,160 +93,6 @@ impl RenderTarget {
             image_view: self.view.inner,
             image_layout,
         }
-    }
-}
-
-pub struct MultipleRenderTargetBuilder {
-    name: String,
-    render_pass: Rc<RenderPass>,
-    attributes: Vec<(vk::Format, vk::ImageUsageFlags, vk::ImageAspectFlags)>,
-}
-
-impl MultipleRenderTargetBuilder {
-    pub fn new(name: impl Into<String>, render_pass: Rc<RenderPass>) -> Self {
-        Self {
-            name: name.into(),
-            attributes: Vec::new(),
-            render_pass,
-        }
-    }
-
-    pub fn add_target(mut self, format: vk::Format, usage: vk::ImageUsageFlags, aspect: vk::ImageAspectFlags) -> Self {
-        self.attributes.push((format, usage, aspect));
-
-        self
-    }
-}
-
-pub struct MultipleRenderTarget {
-    pub framebuffer: Framebuffer,
-    pub images: Vec<Image>,
-    pub views: Vec<ImageView>,
-    pub sampler: Sampler,
-    attributes: Vec<(vk::Format, vk::ImageUsageFlags, vk::ImageAspectFlags)>,
-    device: Rc<Device>,
-    render_pass: Rc<RenderPass>,
-}
-
-impl MultipleRenderTarget {
-    fn new(
-        device: Rc<Device>,
-        extent: Extent3D,
-        render_pass: Rc<RenderPass>,
-        attributes: Vec<(vk::Format, vk::ImageUsageFlags, vk::ImageAspectFlags)>,
-    ) -> Result<Self, VulkanError> {
-        let images = attributes
-            .iter()
-            .map(|(format, usage, _)| Image::new(device.clone(), *format, extent, *usage))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let views = images
-            .iter()
-            .zip(attributes.iter())
-            .map(|(image, (format, _, aspect))| ImageView::new(device.clone(), image.inner, *format, *aspect))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let views_slice = views.iter().collect::<Vec<_>>();
-
-        let framebuffer = Framebuffer::new(
-            device.clone(),
-            &render_pass,
-            Extent2D {
-                width: extent.width,
-                height: extent.height,
-            },
-            &views_slice,
-        )?;
-
-        let sampler = Sampler::new(device.clone())?;
-
-        Ok(Self {
-            images,
-            views,
-            framebuffer,
-            sampler,
-            attributes,
-            device,
-            render_pass,
-        })
-    }
-
-    pub fn resize(&mut self, extent: Extent3D) -> Result<(), VulkanError> {
-        for (idx, image) in &mut self.images.iter_mut().enumerate() {
-            *image = Image::new(
-                self.device.clone(),
-                self.attributes[idx].0,
-                extent,
-                self.attributes[idx].1,
-            )?;
-        }
-
-        for (idx, image) in &mut self.views.iter_mut().enumerate() {
-            *image = ImageView::new(
-                self.device.clone(),
-                self.images[idx].inner,
-                self.attributes[idx].0,
-                self.attributes[idx].2,
-            )?;
-        }
-
-        let views_slice = self.views.iter().collect::<Vec<_>>();
-
-        self.framebuffer = Framebuffer::new(
-            self.device.clone(),
-            &self.render_pass,
-            Extent2D {
-                width: extent.width,
-                height: extent.height,
-            },
-            &views_slice,
-        )?;
-
-        Ok(())
-    }
-
-    pub fn descriptor_image_info(&self, index: usize, image_layout: vk::ImageLayout) -> vk::DescriptorImageInfo {
-        vk::DescriptorImageInfo {
-            sampler: self.sampler.inner,
-            image_view: self.views[index].inner,
-            image_layout,
-        }
-    }
-}
-
-pub struct DenoiseRenderTargets {
-    pub direct_out: RenderTarget,
-    pub indirect_out: RenderTarget,
-    pub direct_history: RenderTarget,
-    pub indirect_history: RenderTarget,
-    pub direct_acc: RenderTarget,
-    pub indirect_acc: RenderTarget,
-}
-
-impl DenoiseRenderTargets {
-    pub fn new(device: Rc<Device>, extent: Extent3D) -> Result<Self, VulkanError> {
-        let get_rt = || {
-            RenderTarget::new(
-                device.clone(),
-                extent,
-                vk::Format::R16G16B16A16_SFLOAT,
-                vk::ImageUsageFlags::COLOR_ATTACHMENT
-                    | vk::ImageUsageFlags::SAMPLED
-                    | vk::ImageUsageFlags::STORAGE
-                    | vk::ImageUsageFlags::TRANSFER_SRC
-                    | vk::ImageUsageFlags::TRANSFER_DST,
-                vk::ImageAspectFlags::COLOR,
-            )
-        };
-
-        Ok(Self {
-            direct_out: get_rt()?,
-            indirect_out: get_rt()?,
-            direct_acc: get_rt()?,
-            indirect_acc: get_rt()?,
-            direct_history: get_rt()?,
-            indirect_history: get_rt()?,
-        })
     }
 }
 
@@ -324,25 +170,25 @@ impl RenderTargetBuilder {
     }
 }
 
-struct RenderTargetItem {
-    value: Rc<RefCell<RenderTarget>>,
-    size: RenderTargetSize,
+pub(crate) struct RenderTargetItem {
+    pub value: Rc<RefCell<RenderTarget>>,
+    pub size: RenderTargetSize,
 }
 
 pub struct RenderTargets {
-    targets: HashMap<String, RenderTargetItem>,
-    mr_targets: HashMap<String, Rc<RefCell<MultipleRenderTarget>>>,
+    pub targets: HashMap<String, RenderTargetItem>,
     device: Rc<Device>,
     default_extent: Extent3D,
+    default_sampler: Rc<Sampler>,
 }
 
 impl RenderTargets {
-    pub fn new(device: Rc<Device>, default_extent: Extent3D) -> Self {
+    pub fn new(device: Rc<Device>, default_extent: Extent3D, default_sampler: Rc<Sampler>) -> Self {
         Self {
             targets: HashMap::new(),
-            mr_targets: HashMap::new(),
             device,
             default_extent,
+            default_sampler,
         }
     }
 
@@ -374,37 +220,12 @@ impl RenderTargets {
         Ok(rt_ptr)
     }
 
-    pub fn add_mrt(
-        &mut self,
-        builder: MultipleRenderTargetBuilder,
-    ) -> Result<Rc<RefCell<MultipleRenderTarget>>, AppError> {
-        if self.mr_targets.contains_key(&builder.name) {
-            return Err(AppError::Other(format!(
-                "Multiple render target with name '{}' already exists.",
-                &builder.name
-            )));
-        }
-
-        let key = builder.name.clone();
-        let mrt = MultipleRenderTarget::new(
-            self.device.clone(),
-            self.default_extent,
-            builder.render_pass,
-            builder.attributes,
-        )?;
-        let mrt_ptr = Rc::new(RefCell::new(mrt));
-
-        self.mr_targets.insert(key, mrt_ptr.clone());
-
-        Ok(mrt_ptr)
-    }
-
     pub fn get(&self, key: &str) -> Option<Rc<RefCell<RenderTarget>>> {
         self.targets.get(key).map(|item| item.value.clone())
     }
 
-    pub fn get_mrt(&self, key: &str) -> Option<Rc<RefCell<MultipleRenderTarget>>> {
-        self.mr_targets.get(key).cloned()
+    pub fn get_ref(&self, key: &str) -> Option<Ref<RenderTarget>> {
+        self.targets.get(key).map(|item| item.value.borrow())
     }
 
     pub fn resize(&mut self) -> Result<(), VulkanError> {
@@ -420,10 +241,6 @@ impl RenderTargets {
             };
 
             target.value.borrow_mut().resize(extent)?;
-        }
-
-        for (_name, target) in &mut self.mr_targets {
-            target.borrow_mut().resize(self.default_extent)?;
         }
 
         Ok(())
@@ -457,6 +274,7 @@ impl RenderTargets {
             builder.format,
             builder.usage,
             builder.aspect,
+            self.default_sampler.clone(),
         )
         .map_err(AppError::VulkanError)
     }

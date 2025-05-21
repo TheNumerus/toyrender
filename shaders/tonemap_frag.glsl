@@ -1,5 +1,6 @@
 #version 450
 #pragma shader_stage(fragment)
+#extension GL_EXT_nonuniform_qualifier : enable
 
 #include "common/debug_modes.glsl"
 #include "common/defs.glsl"
@@ -11,10 +12,10 @@ layout(location = 0) out vec4 outColor;
 layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 2) VIEW_PROJ;
 
-layout(set = 1, binding = 0) uniform sampler2D colorBuf;
+layout(set = 1, binding = 0) uniform sampler2D images[];
 
 layout(push_constant) uniform constants {
-    mat4 model;
+    int src;
 } push_consts;
 
 float luminance(vec3 v) {
@@ -44,14 +45,6 @@ vec3 abberation(int i) {
 }
 
 void main() {
-    /*if (globals.debug != DEBUG_NONE) {
-        outColor = vec4(
-            texture(colorBuf, uv).rgb,
-            1.0
-        );
-        return;
-    }*/
-
     float ratio = globals.res_x / globals.res_y;
 
     vec3 sum = vec3(0.0);
@@ -61,7 +54,7 @@ void main() {
 
         vec2 uv_scaled = ((uv - 0.5) * scale) + 0.5;
 
-        vec3 color = texture(colorBuf, uv_scaled).rgb * abberation(i);
+        vec3 color = texture(images[push_consts.src], uv_scaled).rgb * abberation(i);
 
         sum += color * 0.5;
     }

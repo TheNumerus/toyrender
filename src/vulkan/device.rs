@@ -134,27 +134,15 @@ impl Device {
             ..Default::default()
         };
 
-        let partial_desc = vk::PhysicalDeviceDescriptorIndexingFeatures {
-            descriptor_binding_partially_bound: 1,
-            p_next: std::ptr::addr_of!(rt_fetch_info) as *mut c_void,
-            ..Default::default()
-        };
-
         let rt_acc_create_info = vk::PhysicalDeviceAccelerationStructureFeaturesKHR {
             acceleration_structure: 1,
-            p_next: std::ptr::addr_of!(partial_desc) as *mut c_void,
-            ..Default::default()
-        };
-
-        let addr_create_info = vk::PhysicalDeviceBufferDeviceAddressFeatures {
-            buffer_device_address: 1,
-            p_next: std::ptr::addr_of!(rt_acc_create_info) as *mut c_void,
+            p_next: std::ptr::addr_of!(rt_fetch_info) as *mut c_void,
             ..Default::default()
         };
 
         let rt_create_info = vk::PhysicalDeviceRayTracingPipelineFeaturesKHR {
             ray_tracing_pipeline: 1,
-            p_next: std::ptr::addr_of!(addr_create_info) as *mut c_void,
+            p_next: std::ptr::addr_of!(rt_acc_create_info) as *mut c_void,
             ..Default::default()
         };
 
@@ -164,13 +152,21 @@ impl Device {
             ..Default::default()
         };
 
+        let vk_12_info = vk::PhysicalDeviceVulkan12Features {
+            runtime_descriptor_array: 1,
+            buffer_device_address: 1,
+            descriptor_binding_partially_bound: 1,
+            p_next: std::ptr::addr_of!(dyn_create_info) as *mut c_void,
+            ..Default::default()
+        };
+
         let create_info = vk::DeviceCreateInfo {
             p_queue_create_infos: queue_create_infos.as_ptr(),
             queue_create_info_count: queue_create_infos.len() as u32,
             pp_enabled_extension_names: device_extensions_ptr.as_ptr(),
             enabled_extension_count: device_extensions.len() as u32,
             p_enabled_features: &vk::PhysicalDeviceFeatures::default(),
-            p_next: std::ptr::addr_of!(dyn_create_info) as *const c_void,
+            p_next: std::ptr::addr_of!(vk_12_info) as *const c_void,
             ..Default::default()
         };
 

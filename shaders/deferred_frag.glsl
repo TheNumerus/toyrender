@@ -1,5 +1,6 @@
 #version 450
 #pragma shader_stage(fragment)
+#extension GL_EXT_nonuniform_qualifier : enable
 
 #include "common/defs.glsl"
 

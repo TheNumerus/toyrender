@@ -1,6 +1,7 @@
 #version 460 core
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_shader_realtime_clock : enable
+#extension GL_EXT_nonuniform_qualifier : enable
 #pragma shader_stage(raygen)
 
 #include "common/sampling.glsl"
@@ -21,12 +22,16 @@ layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) ENV;
 
-layout(set = 1, binding = 0) uniform sampler2D[] gb;
-
-layout(set = 1, binding = 1, rgb10_a2) uniform image2D rt_out[];
+layout(set = 1, binding = 0) uniform sampler2D images[];
+layout(set = 1, binding = 1, rgba16) uniform image2D storages[];
 
 layout( push_constant ) uniform constants {
     int samples;
+    int depth_idx;
+    int normal_idx;
+    int direct_idx;
+    int indirect_idx;
+    float trace_distance;
 } push_consts;
 
 uint pcg_hash(uint i) {
@@ -54,7 +59,7 @@ void trace (vec3 pos, vec3 dir) {
         pos,
         0.0001,
         dir,
-        100.0,
+        push_consts.trace_distance,
         0
     );
 }
@@ -101,22 +106,22 @@ void main () {
         uv = (vec2(gl_LaunchIDEXT.xy) + 0.5) / vec2(globals.res_x/2, globals.res_y/2);
     }
 
-    float depth = texture(gb[2], uv).x;
+    float depth = texture(images[push_consts.depth_idx], uv).x;
 
     if (depth == 0.0) {
         imageStore(
-            rt_out[0],
+            storages[push_consts.direct_idx],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(0.0)
         );
         imageStore(
-            rt_out[1],
+            storages[push_consts.indirect_idx],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(0.0)
         );
     }
 
-    vec3 normal = normalize((texture(gb[1], uv).xyz - 0.5) * 2.0);
+    vec3 normal = normalize((texture(images[push_consts.normal_idx], uv).xyz - 0.5) * 2.0);
 
     vec4 per_pos = inverse(view_proj.proj[0]) * vec4(uv * 2.0 - 1.0, depth, 1.0);
     per_pos /= per_pos.w;
@@ -210,7 +215,7 @@ void main () {
     if (globals.debug == DEBUG_TIME) {
         float time = float(time_diff(start, end)) / 1024 / 256;
         imageStore(
-            rt_out[0],
+            storages[push_consts.direct_idx],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
                 (2.0 * time) - 1.0,
@@ -221,7 +226,7 @@ void main () {
         );
     } else {
         imageStore(
-            rt_out[0],
+            storages[push_consts.direct_idx],
             ivec2(gl_LaunchIDEXT.xy),
                 vec4(
                 direct * pow(2.0, globals.exposure),
@@ -229,7 +234,7 @@ void main () {
             )
         );
         imageStore(
-            rt_out[1],
+            storages[push_consts.indirect_idx],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
                 indirect * pow(2.0, globals.exposure),

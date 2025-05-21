@@ -112,6 +112,7 @@ impl App {
             let mut mouse_scroll = 0.0;
             let mut dragging;
             let mut sample_adjust = 0;
+            let mut dist_adjust = 0.0;
             let mut exposure_adjust = 0.0;
             let mut flip_half_res = false;
             let mut clear_taa = false;
@@ -162,6 +163,8 @@ impl App {
                     Event::KeyDown { keycode, .. } => match keycode {
                         Some(Keycode::LeftBracket) => sample_adjust = -1,
                         Some(Keycode::RightBracket) => sample_adjust = 1,
+                        Some(Keycode::O) => dist_adjust = -5.0,
+                        Some(Keycode::P) => dist_adjust = 5.0,
                         Some(Keycode::R) => {
                             debug_mode_flip = true;
                             clear_taa = true;
@@ -215,6 +218,7 @@ impl App {
             }
 
             self.scene.env.exposure = (self.scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
+            self.renderer.quality.rt_trace_disance += dist_adjust;
 
             if flip_half_res {
                 self.renderer.quality.half_res = !self.renderer.quality.half_res;
@@ -225,7 +229,7 @@ impl App {
                 eprintln!("debug mode: {:?}", self.renderer.debug_mode);
             }
 
-            if resized || flip_half_res {
+            if resized {
                 self.renderer.resize(self.window.drawable_size())?;
             }
 
