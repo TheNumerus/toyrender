@@ -5,7 +5,7 @@ use std::rc::Rc;
 use vk::PresentModeKHR;
 
 use super::{Instance, VulkanError};
-use crate::vulkan::{Device, ImageView, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
+use crate::vulkan::{Device, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
 pub struct Swapchain {
     pub swapchain: SwapchainKHR,
@@ -45,7 +45,7 @@ impl Swapchain {
             image_color_space: swap_format.color_space,
             image_extent: swap_extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_usage: vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode: sharing_mode,
             queue_family_index_count: index_count,
             p_queue_family_indices: indices_ptr,
@@ -113,7 +113,7 @@ impl Swapchain {
             image_color_space: self.format.color_space,
             image_extent: self.extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
+            image_usage: vk::ImageUsageFlags::TRANSFER_DST,
             image_sharing_mode: sharing_mode,
             queue_family_index_count: index_count,
             p_queue_family_indices: indices_ptr,
@@ -141,20 +141,6 @@ impl Swapchain {
         };
 
         Ok(())
-    }
-
-    pub fn create_image_views(&self) -> Result<Vec<ImageView>, VulkanError> {
-        self.images
-            .iter()
-            .map(|&image| {
-                ImageView::new(
-                    self.device.clone(),
-                    image,
-                    self.format.format,
-                    vk::ImageAspectFlags::COLOR,
-                )
-            })
-            .collect::<Result<Vec<_>, _>>()
     }
 
     pub fn acquire_next_image(&self, semaphore: &Semaphore) -> Result<(u32, bool), VulkanError> {

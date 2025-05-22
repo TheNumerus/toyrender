@@ -30,15 +30,18 @@ impl GBufferPass {
         [
             RenderTargetBuilder::new("gbuffer_color")
                 .with_color_attachment()
+                .with_sampled()
                 .with_storage()
                 .with_transfer()
                 .with_format(Self::TARGET_FORMATS[0]),
             RenderTargetBuilder::new("gbuffer_normal")
                 .with_color_attachment()
+                .with_sampled()
                 .with_storage()
                 .with_transfer()
                 .with_format(Self::TARGET_FORMATS[1]),
             RenderTargetBuilder::new_depth("gbuffer_depth")
+                .with_sampled()
                 .with_storage()
                 .with_transfer()
                 .with_format(Self::TARGET_FORMATS[2]),
@@ -110,7 +113,7 @@ impl GBufferPass {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
@@ -241,7 +244,7 @@ impl GBufferPass {
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
                 vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                 vk::DependencyFlags::empty(),
                 &[],

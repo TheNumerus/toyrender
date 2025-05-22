@@ -164,6 +164,11 @@ impl RenderTargetBuilder {
         self
     }
 
+    pub fn with_sampled(mut self) -> Self {
+        self.usage |= vk::ImageUsageFlags::SAMPLED;
+        self
+    }
+
     pub fn with_color_attachment(mut self) -> Self {
         self.usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
         self
@@ -268,7 +273,7 @@ impl RenderTargets {
             },
         };
 
-        RenderTarget::new(
+        let mut rt = RenderTarget::new(
             self.device.clone(),
             extent,
             builder.format,
@@ -276,6 +281,10 @@ impl RenderTargets {
             builder.aspect,
             self.default_sampler.clone(),
         )
-        .map_err(AppError::VulkanError)
+        .map_err(AppError::VulkanError)?;
+
+        rt.set_names(&builder.name)?;
+
+        Ok(rt)
     }
 }

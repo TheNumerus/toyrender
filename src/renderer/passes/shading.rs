@@ -132,7 +132,7 @@ impl ShadingPass {
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
                 pipeline.layout,
-                vk::ShaderStageFlags::FRAGMENT,
+                vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::VERTEX,
                 0,
                 &pc,
             );

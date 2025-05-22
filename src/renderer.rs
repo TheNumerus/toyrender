@@ -4,8 +4,8 @@ use crate::mesh::MeshResource;
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
     AccelerationStructure, Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence,
-    ImageView, Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, Sampler, Semaphore, ShaderBindingTable,
-    Surface, Swapchain, Vertex, VulkanError, VulkanMesh,
+    Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, Sampler, Semaphore, ShaderBindingTable, Surface,
+    Swapchain, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk::Handle;
 use ash::{vk, Entry};
@@ -24,10 +24,10 @@ use std::time::Instant;
 use zip::ZipArchive;
 
 mod descriptors;
-use descriptors::{DescLayout, DescriptorWriter, RendererDescriptors};
+use descriptors::{DescLayout, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
 mod passes;
-use passes::{GBufferPass, ShadingPass, TonemapPass};
+use passes::{GBufferPass, PathTracePass, ShadingPass, TonemapPass};
 
 mod pipeline_builder;
 use pipeline_builder::PipelineBuilder;
@@ -42,7 +42,6 @@ mod debug;
 use debug::DebugMode;
 
 mod shader_loader;
-use crate::renderer::descriptors::DescriptorWrite;
 use shader_loader::ShaderLoader;
 pub use shader_loader::ShaderLoaderError;
 
@@ -56,7 +55,6 @@ pub struct VulkanRenderer {
     pub surface: Surface,
     pub rt_pipeline_ext: Rc<RayTracingPipeline>,
     pub rt_acc_struct_ext: Rc<RayTracingAs>,
-    pub swap_chain_image_views: Vec<ImageView>,
     pub render_targets: RenderTargets,
     pub pipeline_builder: PipelineBuilder,
     pub shader_binding_table: ShaderBindingTable,
@@ -83,6 +81,7 @@ pub struct VulkanRenderer {
     prev_jitter: (f32, f32),
     frames_in_flight: usize,
     gbuffer_pass: GBufferPass,
+    pt_pass: PathTracePass,
     shading_pass: ShadingPass,
     tonemap_pass: TonemapPass,
 }
@@ -115,7 +114,6 @@ impl VulkanRenderer {
         let rt_acc_struct_ext = Rc::new(RayTracingAs::new(&instance, &device)?);
 
         let swap_chain = Swapchain::new(device.clone(), &instance, window.drawable_size(), &surface)?;
-        let swap_chain_image_views = swap_chain.create_image_views()?;
 
         let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
@@ -180,6 +178,16 @@ impl VulkanRenderer {
             render_target: render_targets.add(ShadingPass::render_target_def())?,
         };
 
+        let pt_pass_targets = PathTracePass::render_target_defs();
+        let mut pt_pass_targets = match pt_pass_targets {
+            [a, b] => [Some(render_targets.add(a)?), Some(render_targets.add(b)?)],
+        };
+        let pt_pass = PathTracePass {
+            device: device.clone(),
+            direct_render_target: pt_pass_targets[0].take().unwrap(),
+            indirect_render_target: pt_pass_targets[1].take().unwrap(),
+        };
+
         pipeline_builder.build_graphics(
             "tonemap",
             &TonemapPass::DESC_LAYOUTS
@@ -240,17 +248,6 @@ impl VulkanRenderer {
             ],
             (size_of::<i32>() * 6) as u32,
         )?;
-
-        let rt_direct_render_target = RenderTargetBuilder::new("rt_direct")
-            .with_format(vk::Format::R16G16B16A16_SFLOAT)
-            .with_transfer()
-            .with_storage()
-            .with_aspect(vk::ImageAspectFlags::COLOR);
-
-        let rt_indirect_render_target = rt_direct_render_target.duplicate("rt_indirect");
-
-        render_targets.add(rt_direct_render_target)?;
-        render_targets.add(rt_indirect_render_target)?;
 
         let taa_builder = RenderTargetBuilder::new("taa_target")
             .with_transfer()
@@ -377,6 +374,9 @@ impl VulkanRenderer {
 
         writes.extend(descriptors.borrow_mut().update_resources(&render_targets)?);
 
+        info!("Storage images: {:?}", descriptors.borrow().storages.len());
+        info!("Sampled images: {:?}", descriptors.borrow().samplers.len());
+
         DescriptorWriter::batch_write(&device, writes);
 
         Ok(Self {
@@ -387,7 +387,6 @@ impl VulkanRenderer {
             rt_pipeline_ext,
             rt_acc_struct_ext,
             swap_chain,
-            swap_chain_image_views,
             render_targets,
             pipeline_builder,
             shader_binding_table,
@@ -414,6 +413,7 @@ impl VulkanRenderer {
             prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
             gbuffer_pass,
+            pt_pass,
             shading_pass,
             tonemap_pass,
         })
@@ -724,13 +724,8 @@ impl VulkanRenderer {
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), AppError> {
         self.device.wait_idle()?;
 
-        // need to drop before creating new ones
-        self.swap_chain_image_views.clear();
-
         self.swap_chain
             .recreate(self.device.clone(), drawable_size, &self.surface)?;
-
-        self.swap_chain_image_views = self.swap_chain.create_image_views()?;
 
         let extent_3d = vk::Extent3D {
             width: self.swap_chain.extent.width,
@@ -784,127 +779,16 @@ impl VulkanRenderer {
         command_buffer.begin()?;
 
         self.gbuffer_pass.record(command_buffer, self, scene)?;
-        self.record_rtao(command_buffer);
+        self.pt_pass.record(command_buffer, self, scene)?;
         self.record_denoise_temporal(command_buffer, context.clear_taa);
         self.record_denoise_pass(command_buffer);
         self.shading_pass.record(command_buffer, self)?;
         self.record_taa_pass(command_buffer, context.clear_taa);
-
         self.tonemap_pass.record(command_buffer, self)?;
 
         self.record_end_copy(command_buffer, target)?;
 
         command_buffer.end()
-    }
-
-    fn record_rtao(&self, command_buffer: &CommandBuffer) {
-        self.device.begin_label("Path Tracing", command_buffer);
-
-        let pipeline = self.pipeline_builder.get_rt("pt").unwrap();
-
-        command_buffer.bind_rt_pipeline(pipeline);
-
-        unsafe {
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline.layout,
-                0,
-                &[
-                    self.descriptors.borrow().global_sets[self.current_frame].inner,
-                    self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let mut pc = [0_u8; 6 * size_of::<f32>()];
-            pc[0..4].copy_from_slice(&self.quality.rtao_samples.to_le_bytes());
-            pc[4..8].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes(),
-            );
-            pc[8..12].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32).to_le_bytes(),
-            );
-            pc[12..16]
-                .copy_from_slice(&(*self.descriptors.borrow().storages.get("rt_direct").unwrap() as u32).to_le_bytes());
-            pc[16..20].copy_from_slice(
-                &(*self.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32).to_le_bytes(),
-            );
-            pc[20..24].copy_from_slice(&self.quality.rt_trace_disance.to_le_bytes());
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::RAYGEN_KHR,
-                0,
-                &pc,
-            );
-
-            let (width, height) = if self.quality.half_res {
-                (self.swap_chain.extent.width / 2, self.swap_chain.extent.height / 2)
-            } else {
-                (self.swap_chain.extent.width, self.swap_chain.extent.height)
-            };
-
-            self.rt_pipeline_ext.loader.cmd_trace_rays(
-                command_buffer.inner,
-                &self.shader_binding_table.raygen_region,
-                &self.shader_binding_table.miss_region,
-                &self.shader_binding_table.hit_region,
-                &self.shader_binding_table.call_region,
-                width,
-                height,
-                1,
-            );
-
-            let barrier = vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.render_targets.get_ref("rt_direct").unwrap().image.inner,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-
-            let barrier_2 = vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.render_targets.get_ref("rt_indirect").unwrap().image.inner,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier, barrier_2],
-            );
-        }
-
-        self.device.end_label(command_buffer);
     }
 
     fn record_denoise_temporal(&self, command_buffer: &CommandBuffer, clear: bool) {
@@ -927,37 +811,24 @@ impl VulkanRenderer {
                 &[],
             );
 
-            let clear = if clear {
-                1_i32.to_le_bytes()
-            } else {
-                0_i32.to_le_bytes()
-            };
+            let clear = if clear { 1 } else { 0 };
 
-            let mut pc = [0_u8; 7 * size_of::<f32>()];
-            pc[0..4].copy_from_slice(&clear);
-            pc[4..8].copy_from_slice(
-                &(*self.descriptors.borrow().storages.get("denoise_direct_acc").unwrap() as u32).to_le_bytes(),
-            );
-            pc[8..12].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes(),
-            );
-            pc[12..16].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("last_depth").unwrap() as u32).to_le_bytes(),
-            );
-            pc[16..20]
-                .copy_from_slice(&(*self.descriptors.borrow().samplers.get("rt_direct").unwrap() as u32).to_le_bytes());
-            pc[20..24].copy_from_slice(
-                &(*self
-                    .descriptors
-                    .borrow()
-                    .samplers
-                    .get("denoise_direct_history")
-                    .unwrap() as u32)
-                    .to_le_bytes(),
-            );
-            pc[24..28].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32).to_le_bytes(),
-            );
+            let mut pc = PushConstBuilder::new()
+                .add_u32(clear as u32)
+                .add_u32(*self.descriptors.borrow().storages.get("denoise_direct_acc").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("last_depth").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("rt_direct").unwrap() as u32)
+                .add_u32(
+                    *self
+                        .descriptors
+                        .borrow()
+                        .samplers
+                        .get("denoise_direct_history")
+                        .unwrap() as u32,
+                )
+                .add_u32(*self.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
+                .build();
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
@@ -1189,36 +1060,16 @@ impl VulkanRenderer {
                 &[],
             );
 
-            let clear = if clear {
-                1_i32.to_le_bytes()
-            } else {
-                0_i32.to_le_bytes()
-            };
+            let clear = if clear { 1 } else { 0 };
 
-            let mut pc = [0_u8; 6 * size_of::<f32>()];
-            pc[0..4].copy_from_slice(&clear);
-            pc[4..8].copy_from_slice(
-                &(*self.descriptors.borrow().storages.get("taa_target").unwrap() as u32).to_le_bytes(),
-            );
-            pc[8..12]
-                .copy_from_slice(&(*self.descriptors.borrow().samplers.get("tonemap").unwrap() as u32).to_le_bytes());
-            pc[12..16].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("taa_history_target").unwrap() as u32).to_le_bytes(),
-            );
-            pc[16..20].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes(),
-            );
-            pc[20..24].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("last_depth").unwrap() as u32).to_le_bytes(),
-            );
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::FRAGMENT,
-                0,
-                &pc,
-            );
+            let pc = PushConstBuilder::new()
+                .add_u32(clear as u32)
+                .add_u32(*self.descriptors.borrow().storages.get("taa_target").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("tonemap").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("taa_history_target").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
+                .add_u32(*self.descriptors.borrow().samplers.get("last_depth").unwrap() as u32)
+                .build();
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
@@ -1606,5 +1457,39 @@ fn create_buffer_update(buffer: &vk::Buffer, range: u64, dst_set: &vk::Descripto
         buffer_info: Some(buffer_info),
         tlases: None,
         image_info: None,
+    }
+}
+
+pub struct PushConstBuilder {
+    storage: Vec<u8>,
+}
+
+impl PushConstBuilder {
+    pub fn new() -> Self {
+        Self { storage: Vec::new() }
+    }
+
+    pub fn add_u32(mut self, value: u32) -> Self {
+        self.storage.extend(value.to_le_bytes());
+        self
+    }
+
+    pub fn update_u32(mut self, value: u32, position: usize) -> Self {
+        self.storage.as_mut_slice()[position..position + 4].copy_from_slice(&value.to_le_bytes());
+        self
+    }
+
+    pub fn add_f32(mut self, value: f32) -> Self {
+        self.storage.extend(value.to_le_bytes());
+        self
+    }
+
+    pub fn update_f32(mut self, value: f32, position: usize) -> Self {
+        self.storage.as_mut_slice()[position..position + 4].copy_from_slice(&value.to_le_bytes());
+        self
+    }
+
+    pub fn build(self) -> Box<[u8]> {
+        self.storage.into_boxed_slice()
     }
 }
