@@ -31,12 +31,12 @@ impl RendererDescriptors {
             .collect();
 
         let compute_sets = pool
-            .allocate_sets(2, layouts.get(&DescLayout::Compute).unwrap().inner)?
+            .allocate_sets(frames_in_flight, layouts.get(&DescLayout::Compute).unwrap().inner)?
             .into_iter()
             .collect::<Vec<_>>();
 
         let image_sets = pool
-            .allocate_sets(2, layouts.get(&DescLayout::Image).unwrap().inner)?
+            .allocate_sets(frames_in_flight, layouts.get(&DescLayout::Image).unwrap().inner)?
             .into_iter()
             .collect::<Vec<_>>();
 
@@ -199,7 +199,7 @@ impl DescLayout {
             DescLayout::Image => {
                 vec![vk::DescriptorSetLayoutBinding {
                     binding: 0,
-                    descriptor_count: 16,
+                    descriptor_count: 24,
                     stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::RAYGEN_KHR,
                     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     ..Default::default()
@@ -209,14 +209,14 @@ impl DescLayout {
                 vec![
                     vk::DescriptorSetLayoutBinding {
                         binding: 0,
-                        descriptor_count: 16,
+                        descriptor_count: 24,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                         ..Default::default()
                     },
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
-                        descriptor_count: 16,
+                        descriptor_count: 24,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()

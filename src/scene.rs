@@ -22,6 +22,7 @@ pub struct Environment {
     pub sun_direction: Vec3,
     pub sun_color: Vec3,
     pub exposure: f32,
+    pub sky_only: bool,
 }
 
 impl Default for Environment {
@@ -30,6 +31,7 @@ impl Default for Environment {
             sun_direction: vec3(0.2, -0.5, 1.0).normalize(),
             sun_color: vec3(0.9, 0.8, 0.7),
             exposure: 0.0,
+            sky_only: false,
         }
     }
 }

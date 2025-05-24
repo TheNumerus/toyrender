@@ -118,7 +118,7 @@ impl RenderTargetBuilder {
             size: RenderTargetSize::Window,
             format: vk::Format::R16G16B16A16_SFLOAT,
             aspect: vk::ImageAspectFlags::COLOR,
-            usage: vk::ImageUsageFlags::SAMPLED,
+            usage: vk::ImageUsageFlags::empty(),
         }
     }
 

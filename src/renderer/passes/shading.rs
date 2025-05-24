@@ -21,7 +21,7 @@ impl ShadingPass {
             .with_storage()
             .with_transfer()
             .with_format(Self::TARGET_FORMATS[0])
-            .with_aspect(vk::ImageAspectFlags::COLOR)
+            .with_sampled()
     }
 
     pub fn record(&self, command_buffer: &CommandBuffer, renderer: &VulkanRenderer) -> Result<(), VulkanError> {

@@ -6,7 +6,6 @@
 #include "common/defs.glsl"
 
 layout(location = 0) in vec2 uv;
-
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 0) GLOBAL;
@@ -49,7 +48,7 @@ void main() {
 
     vec3 sum = vec3(0.0);
 
-    for (int i = 0; i < 7; i++) {
+    /*for (int i = 0; i < 1; i++) {
         float scale = (float(i) - 3.0) * 0.0006 + 1.0;
 
         vec2 uv_scaled = ((uv - 0.5) * scale) + 0.5;
@@ -57,9 +56,9 @@ void main() {
         vec3 color = texture(images[push_consts.src], uv_scaled).rgb * abberation(i);
 
         sum += color * 0.5;
-    }
+    }*/
 
-    vec3 tonemapped = reinhard_extended_luminance(sum, 2.5);
+    vec3 tonemapped = reinhard_extended_luminance(texture(images[push_consts.src], uv).rgb, 2.5);
     vec3 color_correction = vec3(
     smoothstep(0.0, 1.0, tonemapped.r),
     smoothstep(0.0, 1.0, tonemapped.g),
@@ -67,7 +66,8 @@ void main() {
     );
 
     outColor = vec4(
-    mix(color_correction, tonemapped, vec3(0.5, 0.6, 0.4)),
+    //mix(color_correction, tonemapped, vec3(0.5, 0.6, 0.4)),
+    tonemapped,
     1.0
     );
 }

@@ -32,6 +32,7 @@ layout( push_constant ) uniform constants {
     int direct_idx;
     int indirect_idx;
     float trace_distance;
+    int sky_only;
 } push_consts;
 
 uint pcg_hash(uint i) {
@@ -150,10 +151,13 @@ void main () {
     vec3 cone = rand_cone(rand, cos(0.02));
     vec3 ray_shadow_dir = cone.x * tangent + cone.y * bitangent + cone.z * env.sun_direction;
 
-    float intensity_indirect = 0.5;
+    float intensity_indirect = 1.0;
+    float total_intensity_indirect = 1.0;
     vec3 pos = vertPos;
     vec3 hitNormal = normal;
     vec3 dir = view_dir;
+
+    float bounce_energy = 0.95;
 
     for (int i = 0; i < samples; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
@@ -170,7 +174,9 @@ void main () {
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * 0.9 * sky_color(dir);
+            indirect += intensity_indirect * bounce_energy * sky_color(dir);
+            intensity_indirect *= bounce_energy;
+            total_intensity_indirect += intensity_indirect;
             break;
         } else {
             // try shadow on new position
@@ -183,7 +189,9 @@ void main () {
             }
 
             // ignore shadow rays from unreachable normals
-            if (dot(ray_shadow_dir, hitNormal) <= 0.0) {
+            if (dot(ray_shadow_dir, hitNormal) <= 0.0 || push_consts.sky_only == 1) {
+                intensity_indirect *= 0.9;
+                total_intensity_indirect += intensity_indirect;
                 continue;
             }
 
@@ -191,18 +199,21 @@ void main () {
 
             // sun boounce
             if (payload.isMiss) {
-                indirect += intensity_indirect * 0.9 * env.sun_color;
+                indirect += intensity_indirect * bounce_energy * env.sun_color;
             } else {
-                indirect += intensity_indirect * 0.9 * payload.color;
+                indirect += intensity_indirect * bounce_energy * payload.color;
             }
         }
 
-        intensity_indirect *= 0.5;
+        intensity_indirect *= bounce_energy;
+        total_intensity_indirect += intensity_indirect;
     }
+
+    indirect /= total_intensity_indirect;
 
     payload.isMiss = false;
 
-    if (dot(ray_shadow_dir, normal) > 0.0) {
+    if (dot(ray_shadow_dir, normal) > 0.0 && push_consts.sky_only != 1) {
         payload.isMiss = true;
         traceShadow(vertPos + bias, ray_shadow_dir);
     }
@@ -213,14 +224,14 @@ void main () {
     uint end = clockRealtime2x32EXT().x;
 
     if (globals.debug == DEBUG_TIME) {
-        float time = float(time_diff(start, end)) / 1024 / 256;
+        float time = float(time_diff(start, end)) / 1024 / 128;
         imageStore(
             storages[push_consts.direct_idx],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
-                (2.0 * time) - 1.0,
-                -(abs(4.0 * time - 2.0)) + 1.0,
-                -(2.0 * time) + 1.0,
+                time * time,
+                -(pow(2.0 * time - 1.0, 2.0)) + 1.0,
+                pow(1.0 - time, 2.0),
                 0.0
             )
         );

@@ -29,7 +29,7 @@ impl App {
         let video_subsystem = sdl_context.video().expect("cannot init video");
 
         let mut window = video_subsystem
-            .window("Vulkan Demo", 1600, 900)
+            .window("Vulkan Demo", 1920, 1080)
             .allow_highdpi()
             .resizable()
             .position_centered()
@@ -117,6 +117,7 @@ impl App {
             let mut flip_half_res = false;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
+            let mut toggle_sun = false;
 
             for event in self.event_pump.poll_iter() {
                 match event {
@@ -176,6 +177,9 @@ impl App {
                         Some(Keycode::T) => {
                             taa_enable = !taa_enable;
                         }
+                        Some(Keycode::I) => {
+                            toggle_sun = true;
+                        }
                         Some(Keycode::KpPlus) => {
                             exposure_adjust += 0.5;
                         }
@@ -231,6 +235,10 @@ impl App {
 
             if resized {
                 self.renderer.resize(self.window.drawable_size())?;
+            }
+
+            if toggle_sun {
+                self.scene.env.sky_only = !self.scene.env.sky_only;
             }
 
             let cpu_time = self

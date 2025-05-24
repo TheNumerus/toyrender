@@ -27,7 +27,7 @@ mod descriptors;
 use descriptors::{DescLayout, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
 mod passes;
-use passes::{GBufferPass, PathTracePass, ShadingPass, TonemapPass};
+use passes::{DenoisePass, GBufferPass, PathTracePass, ShadingPass, TaaPass, TonemapPass};
 
 mod pipeline_builder;
 use pipeline_builder::PipelineBuilder;
@@ -36,7 +36,7 @@ mod quality;
 use quality::QualitySettings;
 
 mod render_target;
-use render_target::{RenderTargetBuilder, RenderTargetSize, RenderTargets};
+use render_target::{RenderTargetBuilder, RenderTargets};
 
 mod debug;
 use debug::DebugMode;
@@ -82,7 +82,9 @@ pub struct VulkanRenderer {
     frames_in_flight: usize,
     gbuffer_pass: GBufferPass,
     pt_pass: PathTracePass,
+    denoise_pass: DenoisePass,
     shading_pass: ShadingPass,
+    taa_pass: TaaPass,
     tonemap_pass: TonemapPass,
 }
 
@@ -123,12 +125,16 @@ impl VulkanRenderer {
             device.clone(),
             &[
                 vk::DescriptorPoolSize {
-                    descriptor_count: 30 * MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 40 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
                 },
                 vk::DescriptorPoolSize {
-                    descriptor_count: 30 * MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 40 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                },
+                vk::DescriptorPoolSize {
+                    descriptor_count: 40 * MAX_FRAMES_IN_FLIGHT as u32,
+                    ty: vk::DescriptorType::STORAGE_IMAGE,
                 },
                 vk::DescriptorPoolSize {
                     descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
@@ -188,6 +194,27 @@ impl VulkanRenderer {
             indirect_render_target: pt_pass_targets[1].take().unwrap(),
         };
 
+        let mut denoise_pass_targets = DenoisePass::render_target_defs().map(|a| Some(render_targets.add(a)));
+        let denoise_pass = DenoisePass {
+            device: device.clone(),
+            direct_render_target: denoise_pass_targets[0].take().unwrap()?,
+            direct_render_target_acc: denoise_pass_targets[1].take().unwrap()?,
+            direct_render_target_history: denoise_pass_targets[2].take().unwrap()?,
+            indirect_render_target: denoise_pass_targets[3].take().unwrap()?,
+            indirect_render_target_acc: denoise_pass_targets[4].take().unwrap()?,
+            indirect_render_target_history: denoise_pass_targets[5].take().unwrap()?,
+        };
+
+        let taa_pass_targets = TaaPass::render_target_defs();
+        let mut taa_pass_targets = match taa_pass_targets {
+            [a, b] => [Some(render_targets.add(a)?), Some(render_targets.add(b)?)],
+        };
+        let taa_pass = TaaPass {
+            device: device.clone(),
+            render_target: taa_pass_targets[0].take().unwrap(),
+            render_target_history: taa_pass_targets[1].take().unwrap(),
+        };
+
         pipeline_builder.build_graphics(
             "tonemap",
             &TonemapPass::DESC_LAYOUTS
@@ -218,10 +245,10 @@ impl VulkanRenderer {
 
         pipeline_builder.build_compute(
             "taa",
-            &[
-                descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
-                descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
-            ],
+            &TaaPass::DESC_LAYOUTS
+                .iter()
+                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
+                .collect::<Vec<_>>(),
             (size_of::<i32>() * 6) as u32,
         )?;
         pipeline_builder.build_compute(
@@ -242,34 +269,12 @@ impl VulkanRenderer {
         )?;
         pipeline_builder.build_rt(
             "pt",
-            &[
-                descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
-                descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
-            ],
-            (size_of::<i32>() * 6) as u32,
+            &PathTracePass::DESC_LAYOUTS
+                .iter()
+                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
+                .collect::<Vec<_>>(),
+            (size_of::<i32>() * 7) as u32,
         )?;
-
-        let taa_builder = RenderTargetBuilder::new("taa_target")
-            .with_transfer()
-            .with_storage()
-            .with_size(RenderTargetSize::Scaled(1.0))
-            .with_color_attachment();
-
-        render_targets.add(taa_builder.duplicate("taa_history_target"))?;
-        render_targets.add(taa_builder)?;
-
-        let denoise_builder = RenderTargetBuilder::new("denoise_direct_out")
-            .with_format(vk::Format::R16G16B16A16_SFLOAT)
-            .with_transfer()
-            .with_storage()
-            .with_aspect(vk::ImageAspectFlags::COLOR);
-
-        render_targets.add(denoise_builder.duplicate("denoise_direct_acc"))?;
-        render_targets.add(denoise_builder.duplicate("denoise_direct_history"))?;
-        render_targets.add(denoise_builder.duplicate("denoise_indirect_out"))?;
-        render_targets.add(denoise_builder.duplicate("denoise_indirect_acc"))?;
-        render_targets.add(denoise_builder.duplicate("denoise_indirect_history"))?;
-        render_targets.add(denoise_builder)?;
 
         render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
@@ -414,7 +419,9 @@ impl VulkanRenderer {
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
             gbuffer_pass,
             pt_pass,
+            denoise_pass,
             shading_pass,
+            taa_pass,
             tonemap_pass,
         })
     }
@@ -596,8 +603,8 @@ impl VulkanRenderer {
             offset = (0.5, 0.5);
         }
         let (offset_x, offset_y) = (
-            (1.0 * offset.0 - 0.5) / drawable_size.0 as f32,
-            (1.0 * offset.1 - 0.5) / drawable_size.1 as f32,
+            (2.0 * offset.0 - 1.0) / drawable_size.0 as f32,
+            (2.0 * offset.1 - 1.0) / drawable_size.1 as f32,
         );
 
         let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 500.0, 0.01);
@@ -780,421 +787,14 @@ impl VulkanRenderer {
 
         self.gbuffer_pass.record(command_buffer, self, scene)?;
         self.pt_pass.record(command_buffer, self, scene)?;
-        self.record_denoise_temporal(command_buffer, context.clear_taa);
-        self.record_denoise_pass(command_buffer);
+        self.denoise_pass.record(command_buffer, self, context.clear_taa)?;
         self.shading_pass.record(command_buffer, self)?;
-        self.record_taa_pass(command_buffer, context.clear_taa);
+        self.taa_pass.record(command_buffer, self, context.clear_taa)?;
         self.tonemap_pass.record(command_buffer, self)?;
 
         self.record_end_copy(command_buffer, target)?;
 
         command_buffer.end()
-    }
-
-    fn record_denoise_temporal(&self, command_buffer: &CommandBuffer, clear: bool) {
-        self.device.begin_label("RT Denoise Temporal", command_buffer);
-
-        let pipeline = self.pipeline_builder.get_compute("denoise_temporal").unwrap();
-
-        command_buffer.bind_compute_pipeline(pipeline);
-
-        unsafe {
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[
-                    self.descriptors.borrow().global_sets[self.current_frame].inner,
-                    self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let clear = if clear { 1 } else { 0 };
-
-            let mut pc = PushConstBuilder::new()
-                .add_u32(clear as u32)
-                .add_u32(*self.descriptors.borrow().storages.get("denoise_direct_acc").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("last_depth").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("rt_direct").unwrap() as u32)
-                .add_u32(
-                    *self
-                        .descriptors
-                        .borrow()
-                        .samplers
-                        .get("denoise_direct_history")
-                        .unwrap() as u32,
-                )
-                .add_u32(*self.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
-                .build();
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &pc,
-            );
-
-            let x = (self.swap_chain.extent.width / 16) + 1;
-            let y = (self.swap_chain.extent.height / 16) + 1;
-
-            self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
-
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[
-                    self.descriptors.borrow().global_sets[self.current_frame].inner,
-                    self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                ],
-                &[],
-            );
-
-            pc[4..8].copy_from_slice(
-                &(*self.descriptors.borrow().storages.get("denoise_indirect_acc").unwrap() as u32).to_le_bytes(),
-            );
-            pc[16..20].copy_from_slice(
-                &(*self.descriptors.borrow().samplers.get("rt_indirect").unwrap() as u32).to_le_bytes(),
-            );
-            pc[20..24].copy_from_slice(
-                &(*self
-                    .descriptors
-                    .borrow()
-                    .samplers
-                    .get("denoise_indirect_history")
-                    .unwrap() as u32)
-                    .to_le_bytes(),
-            );
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &pc,
-            );
-
-            self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
-
-            let barriers = [
-                self.render_targets.get_ref("denoise_direct_acc").unwrap().image.inner,
-                self.render_targets.get_ref("denoise_indirect_acc").unwrap().image.inner,
-            ]
-            .map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            });
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
-
-        self.device.end_label(command_buffer);
-    }
-
-    fn record_denoise_pass(&self, command_buffer: &CommandBuffer) {
-        self.device.begin_label("RT Denoise", command_buffer);
-
-        let pipeline = self.pipeline_builder.get_compute("atrous").unwrap();
-
-        command_buffer.bind_compute_pipeline(pipeline);
-
-        let (width, height) = if self.quality.half_res {
-            (self.swap_chain.extent.width / 2, self.swap_chain.extent.height / 2)
-        } else {
-            (self.swap_chain.extent.width, self.swap_chain.extent.height)
-        };
-
-        let x = (width / 16) + 1;
-        let y = (height / 16) + 1;
-
-        unsafe {
-            for level in 0..4_i32 {
-                let level = level.to_le_bytes();
-
-                let mut pc = [0_u8; 5 * size_of::<f32>()];
-                pc[0..4].copy_from_slice(&level);
-                pc[4..8].copy_from_slice(
-                    &(*self.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32).to_le_bytes(),
-                );
-                pc[8..12].copy_from_slice(
-                    &(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes(),
-                );
-                pc[12..16].copy_from_slice(
-                    &(*self.descriptors.borrow().storages.get("denoise_direct_out").unwrap() as u32).to_le_bytes(),
-                );
-                pc[16..20].copy_from_slice(
-                    &(*self.descriptors.borrow().storages.get("denoise_direct_acc").unwrap() as u32).to_le_bytes(),
-                );
-
-                self.device.inner.cmd_bind_descriptor_sets(
-                    command_buffer.inner,
-                    vk::PipelineBindPoint::COMPUTE,
-                    pipeline.layout,
-                    0,
-                    &[
-                        self.descriptors.borrow().global_sets[self.current_frame].inner,
-                        self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                    ],
-                    &[],
-                );
-
-                self.device.inner.cmd_push_constants(
-                    command_buffer.inner,
-                    pipeline.layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    &pc,
-                );
-
-                self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
-
-                self.device.inner.cmd_bind_descriptor_sets(
-                    command_buffer.inner,
-                    vk::PipelineBindPoint::COMPUTE,
-                    pipeline.layout,
-                    0,
-                    &[
-                        self.descriptors.borrow().global_sets[self.current_frame].inner,
-                        self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                    ],
-                    &[],
-                );
-
-                pc[12..16].copy_from_slice(
-                    &(*self.descriptors.borrow().storages.get("denoise_indirect_out").unwrap() as u32).to_le_bytes(),
-                );
-                pc[16..20].copy_from_slice(
-                    &(*self.descriptors.borrow().storages.get("denoise_indirect_acc").unwrap() as u32).to_le_bytes(),
-                );
-
-                self.device.inner.cmd_push_constants(
-                    command_buffer.inner,
-                    pipeline.layout,
-                    vk::ShaderStageFlags::COMPUTE,
-                    0,
-                    &pc,
-                );
-
-                self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
-
-                let barriers = [
-                    self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
-                    self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
-                ]
-                .map(|image| vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                });
-
-                self.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &barriers,
-                );
-            }
-        }
-
-        self.device.end_label(command_buffer);
-    }
-
-    fn record_taa_pass(&self, command_buffer: &CommandBuffer, clear: bool) {
-        self.device.begin_label("TAA Resolve", command_buffer);
-
-        let pipeline = self.pipeline_builder.get_compute("taa").unwrap();
-
-        command_buffer.bind_compute_pipeline(pipeline);
-
-        unsafe {
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[
-                    self.descriptors.borrow().global_sets[self.current_frame].inner,
-                    self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let clear = if clear { 1 } else { 0 };
-
-            let pc = PushConstBuilder::new()
-                .add_u32(clear as u32)
-                .add_u32(*self.descriptors.borrow().storages.get("taa_target").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("tonemap").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("taa_history_target").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("last_depth").unwrap() as u32)
-                .build();
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &pc,
-            );
-
-            let x = (self.swap_chain.extent.width / 16) + 1;
-            let y = (self.swap_chain.extent.height / 16) + 1;
-
-            self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
-
-            let extent_3d = vk::Extent3D {
-                width: self.swap_chain.extent.width,
-                height: self.swap_chain.extent.height,
-                depth: 1,
-            };
-
-            let barriers =
-                [self.render_targets.get_ref("last_depth").unwrap().image.inner].map(|image| vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::DEPTH,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                });
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-
-            let image_color_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
-            let image_depth_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::DEPTH,
-                ..image_color_res
-            };
-
-            self.device.inner.cmd_copy_image(
-                command_buffer.inner,
-                self.render_targets.get("gbuffer_depth").unwrap().borrow().image.inner,
-                vk::ImageLayout::GENERAL,
-                self.render_targets.get("last_depth").unwrap().borrow().image.inner,
-                vk::ImageLayout::GENERAL,
-                &[vk::ImageCopy {
-                    extent: extent_3d,
-                    dst_subresource: image_depth_res,
-                    src_subresource: image_depth_res,
-                    ..Default::default()
-                }],
-            );
-
-            self.device.inner.cmd_copy_image(
-                command_buffer.inner,
-                self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
-                vk::ImageLayout::GENERAL,
-                self.render_targets
-                    .get_ref("denoise_direct_history")
-                    .unwrap()
-                    .image
-                    .inner,
-                vk::ImageLayout::GENERAL,
-                &[vk::ImageCopy {
-                    extent: extent_3d,
-                    dst_subresource: image_color_res,
-                    src_subresource: image_color_res,
-                    ..Default::default()
-                }],
-            );
-            self.device.inner.cmd_copy_image(
-                command_buffer.inner,
-                self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
-                vk::ImageLayout::GENERAL,
-                self.render_targets
-                    .get_ref("denoise_indirect_history")
-                    .unwrap()
-                    .image
-                    .inner,
-                vk::ImageLayout::GENERAL,
-                &[vk::ImageCopy {
-                    extent: extent_3d,
-                    dst_subresource: image_color_res,
-                    src_subresource: image_color_res,
-                    ..Default::default()
-                }],
-            );
-
-            self.device.inner.cmd_copy_image(
-                command_buffer.inner,
-                self.render_targets.get_ref("taa_target").unwrap().image.inner,
-                vk::ImageLayout::GENERAL,
-                self.render_targets.get_ref("taa_history_target").unwrap().image.inner,
-                vk::ImageLayout::GENERAL,
-                &[vk::ImageCopy {
-                    extent: extent_3d,
-                    dst_subresource: image_color_res,
-                    src_subresource: image_color_res,
-                    ..Default::default()
-                }],
-            );
-        }
-
-        self.device.end_label(command_buffer);
     }
 
     fn record_end_copy(&self, command_buffer: &CommandBuffer, target: &vk::Image) -> Result<(), VulkanError> {
@@ -1210,6 +810,8 @@ impl VulkanRenderer {
             DebugMode::DisOcclusion => self.render_targets.get_ref("taa_target").unwrap().image.inner,
             DebugMode::VarianceDirect => self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
             DebugMode::VarianceIndirect => self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
+            DebugMode::DenoiseDirect => self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
+            DebugMode::DenoiseIndirect => self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
         };
 
         unsafe {

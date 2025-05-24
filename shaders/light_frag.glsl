@@ -58,58 +58,7 @@ vec3 sky_color(vec3 view_dir) {
     return mix(sky, ground, factor);
 }
 
-vec4 get_debug_color() {
-    if (globals.debug == DEBUG_DIRECT) {
-        return vec4(
-        texture(images[3], uv).xyz,
-        1.0
-        );
-    } else if (globals.debug == DEBUG_INDIRECT) {
-        return vec4(
-        texture(images[4], uv).xyz,
-        1.0
-        );
-    } else if (globals.debug == DEBUG_TIME) {
-        return vec4(
-        texture(images[3], uv).xyz,
-        1.0
-        );
-    } else if (globals.debug == DEBUG_BASE_COLOR) {
-        /*return vec4(
-            texture(gb[0], uv).xyz,
-            1.0
-        );*/
-    } else if (globals.debug == DEBUG_NORMAL) {
-        /*return vec4(
-            texture(gb[1], uv).xyz,
-            1.0
-        );*/
-    } else if (globals.debug == DEBUG_DEPTH) {
-        return vec4(
-        vec3(fract(texture(images[2], uv).x * 500.0)),
-        1.0
-        );
-    } else if (globals.debug == DEBUG_DIRECT_VARIANCE) {
-        return vec4(
-        vec3(texture(images[3], uv).x),
-        1.0
-        );
-    } else if (globals.debug == DEBUG_INDIRECT_VARIANCE) {
-        return vec4(
-        vec3(texture(images[4], uv).x),
-        1.0
-        );
-    }
-
-    return vec4(1.0);
-}
-
 void main() {
-    if (!(globals.debug == DEBUG_NONE || globals.debug == DEBUG_DISOCCLUSION)) {
-        outColor = get_debug_color();
-        //return;
-    }
-
     vec3 light_dir = normalize(vec3(0.2, -0.5, 1.0));
 
     float ratio = globals.res_x / globals.res_y;

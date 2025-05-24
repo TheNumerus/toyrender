@@ -21,9 +21,12 @@ impl TonemapPass {
             .with_storage()
             .with_transfer()
             .with_format(Self::TARGET_FORMATS[0])
+            .with_sampled()
     }
 
     pub fn record(&self, command_buffer: &CommandBuffer, renderer: &VulkanRenderer) -> Result<(), VulkanError> {
+        self.device.begin_label("PostProcessing", command_buffer);
+
         let attachments = [vk::RenderingAttachmentInfo {
             image_view: self.render_target.borrow().view.inner,
             image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,

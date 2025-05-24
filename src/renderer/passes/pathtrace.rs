@@ -21,13 +21,11 @@ impl PathTracePass {
             RenderTargetBuilder::new("rt_direct")
                 .with_storage()
                 .with_transfer()
-                .with_format(Self::TARGET_FORMAT)
-                .with_aspect(vk::ImageAspectFlags::COLOR),
+                .with_format(Self::TARGET_FORMAT),
             RenderTargetBuilder::new("rt_indirect")
                 .with_storage()
                 .with_transfer()
-                .with_format(Self::TARGET_FORMAT)
-                .with_aspect(vk::ImageAspectFlags::COLOR),
+                .with_format(Self::TARGET_FORMAT),
         ]
     }
 
@@ -65,6 +63,7 @@ impl PathTracePass {
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
                 .add_f32(renderer.quality.rt_trace_disance)
+                .add_u32(scene.env.sky_only as u32)
                 .build();
 
             self.device.inner.cmd_push_constants(

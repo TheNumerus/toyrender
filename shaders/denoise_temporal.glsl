@@ -12,6 +12,7 @@ layout(set = 0, binding = 2) VIEW_PROJ;
 
 layout(set = 1, binding = 0) uniform sampler2D images[];
 layout(set = 1, binding = 1, rgb10_a2) uniform image2D storages[];
+layout(set = 1, binding = 1, rgba16) uniform image2D storages_hp[];
 
 layout(push_constant) uniform constants {
     int clear;
@@ -96,11 +97,10 @@ float luminance(vec3 color) {
     return dot(color, vec3(0.2126f, 0.7152f, 0.0722f));
 }
 
-float compute_spatial_variance(ivec2 uv_int) {
+float compute_spatial_variance(ivec2 uv_int, float luma_base) {
     vec2 uv = (vec2(uv_int) + 0.5) / vec2(globals.res_x, globals.res_y);
     vec3 base_normal = normalize(texture(images[push_consts.normal_idx], uv).xyz * 2.0 - 1.0);
     float base_depth = get_linear_depth(images[push_consts.curr_depth_idx], uv);
-    float luma_base = luminance(texture(images[push_consts.curr_idx], uv).xyz);
     float gradient = get_depth_gradient(uv_int.x, uv_int.y, images[push_consts.curr_depth_idx]);
 
     ivec2 size = imageSize(storages[push_consts.out_idx]);
@@ -114,7 +114,7 @@ float compute_spatial_variance(ivec2 uv_int) {
             if (uv.x >= 0 || uv.y >= 0 || uv.x < size.x || uv.y < size.y) {
                 vec2 texture_uv = (vec2(uv) + 0.5) / vec2(globals.res_x, globals.res_y);
 
-                vec4 current = texture(images[push_consts.curr_idx], texture_uv);
+                vec4 current = imageLoad(storages_hp[push_consts.curr_idx], uv);
                 float luma_sample = luminance(current.xyz);
                 vec3 normal_sample = normalize(texture(images[push_consts.normal_idx], texture_uv).xyz * 2.0 - 1.0);
                 float depth_sample = get_linear_depth(images[push_consts.curr_depth_idx], texture_uv);
@@ -122,7 +122,7 @@ float compute_spatial_variance(ivec2 uv_int) {
 
                 float normal_weight = pow(max(dot(base_normal, normal_sample), 0.0), 128.0);
                 float depth_weight = get_depth_weight(base_depth, depth_sample, gradient, sample_dist);
-                float luma_weight = get_luma_weight(luminance(current.xyz), luma_base, 1.0);
+                float luma_weight = get_luma_weight(luma_sample, luma_base, 1.0);
 
                 float weight = max(normal_weight * depth_weight * luma_weight, 0.0);
 
@@ -143,7 +143,7 @@ void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
 
-    ivec2 size = imageSize(storages[push_consts.out_idx]);
+    ivec2 size = imageSize(storages_hp[push_consts.out_idx]);
 
     float blend_factor = 0.2;
     if (push_consts.clear == 1) {
@@ -153,12 +153,12 @@ void main() {
     if (x <= size.x && y <= size.y) {
         vec2 uv = (vec2(x, y) + 0.5) / vec2(globals.res_x, globals.res_y);
 
-        vec4 current = texture(images[push_consts.curr_idx], uv);
+        vec3 current = imageLoad(storages_hp[push_consts.curr_idx], ivec2(x, y)).xyz;
 
-        float variance = compute_spatial_variance(ivec2(x, y));
+        float variance = compute_spatial_variance(ivec2(x, y), luminance(current));
 
         if (globals.debug == DEBUG_DIRECT_VARIANCE || globals.debug == DEBUG_INDIRECT_VARIANCE) {
-            imageStore(storages[push_consts.out_idx], ivec2(x, y), vec4(vec3(variance * 5.0), 1.0));
+            imageStore(storages_hp[push_consts.out_idx], ivec2(x, y), vec4(vec3(variance * 5.0), 1.0));
             return;
         }
 
@@ -168,6 +168,6 @@ void main() {
         }
 
         vec4 prev = max(texture(images[push_consts.prev_idx], uv_reprojected), vec4(0.000001));
-        imageStore(storages[push_consts.out_idx], ivec2(x, y), mix(prev, vec4(current.xyz, variance), blend_factor));
+        imageStore(storages_hp[push_consts.out_idx], ivec2(x, y), mix(prev, vec4(current, variance), blend_factor));
     }
 }
