@@ -11,10 +11,8 @@ fragment = "deferred_frag"
 use_depth = true
 
 [light]
-kind = "graphics"
-vertex = "light_vert"
-fragment = "light_frag"
-use_depth = false
+kind = "compute"
+compute = "light_frag"
 
 [tonemap]
 kind = "graphics"
@@ -33,3 +31,7 @@ compute = "atrous"
 [denoise_temporal]
 kind = "compute"
 compute = "denoise_temporal"
+
+[sky]
+kind = "compute"
+compute = "sky"

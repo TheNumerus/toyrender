@@ -6,6 +6,7 @@ use crate::input::InputMapper;
 use crate::renderer::{FrameContext, VulkanRenderer};
 use crate::scene::Scene;
 use log::{error, info};
+use nalgebra_glm::vec3;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
@@ -90,10 +91,11 @@ impl App {
         let mut frame_end = Instant::now();
 
         let mouse_sens = 0.002;
-        let scroll_sens = 0.5;
-        let movement_speed = 4.0;
+        let scroll_sens = 2.5;
+        let movement_speed = 16.0;
         let mut focused = true;
         let mut taa_enable = true;
+        let mut direction = 0.0;
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -156,7 +158,8 @@ impl App {
                         self.sdl_context.mouse().set_relative_mouse_mode(dragging);
 
                         if dragging {
-                            mouse = (xrel, yrel);
+                            mouse.0 += xrel;
+                            mouse.1 += yrel;
                         } else {
                             self.sdl_context.mouse().show_cursor(true);
                         }
@@ -240,6 +243,9 @@ impl App {
             if toggle_sun {
                 self.scene.env.sky_only = !self.scene.env.sky_only;
             }
+
+            direction += delta * 0.1;
+            self.scene.env.sun_direction = vec3(direction.cos(), direction.sin(), 0.9).normalize();
 
             let cpu_time = self
                 .renderer

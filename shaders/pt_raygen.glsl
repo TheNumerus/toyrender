@@ -31,6 +31,7 @@ layout( push_constant ) uniform constants {
     int normal_idx;
     int direct_idx;
     int indirect_idx;
+    int sky_idx;
     float trace_distance;
     int sky_only;
 } push_consts;
@@ -86,14 +87,25 @@ uint time_diff(uint startTime, uint endTime) {
 }
 
 vec3 sky_color(vec3 view_dir) {
-    float vertical = dot(view_dir, vec3(0.0, 0.0, 1.0));
+    ivec2 size = imageSize(storages[push_consts.sky_idx]);
+    vec2 dir = normalize(view_dir.xy);
 
-    vec3 sky = mix(vec3(0.5, 0.5, 0.6), vec3(0.2, 0.4, 0.9), pow(abs(vertical), 0.7));
-    vec3 ground = mix(vec3(0.2, 0.2, 0.2), vec3(0.03, 0.02, 0.01), -vertical);
+    float u = 0.0;
+    if (dir.y >= 0.0) {
+        u = acos(dir.x);
+    } else {
+        u = -acos(dir.x);
+    }
 
-    float factor = smoothstep(0.02, -0.02, vertical);
+    u = (u + PI) / (2.0 * PI);
 
-    return mix(sky, ground, factor);
+    float v = ((asin(view_dir.z) / (PI / 2.0)) * 0.5) + 0.5;
+
+    ivec2 uv = ivec2(max(min(int(u * size.x), size.x - 1), 0), max(min(int(v * size.y), size.y - 1), 0));
+
+    vec3 color = imageLoad(storages[push_consts.sky_idx], uv).xyz;
+
+    return color;
 }
 
 void main () {

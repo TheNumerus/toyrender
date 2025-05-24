@@ -27,7 +27,7 @@ mod descriptors;
 use descriptors::{DescLayout, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
 mod passes;
-use passes::{DenoisePass, GBufferPass, PathTracePass, ShadingPass, TaaPass, TonemapPass};
+use passes::{DenoisePass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
 
 mod pipeline_builder;
 use pipeline_builder::PipelineBuilder;
@@ -81,6 +81,7 @@ pub struct VulkanRenderer {
     prev_jitter: (f32, f32),
     frames_in_flight: usize,
     gbuffer_pass: GBufferPass,
+    sky_pass: SkyPass,
     pt_pass: PathTracePass,
     denoise_pass: DenoisePass,
     shading_pass: ShadingPass,
@@ -159,19 +160,18 @@ impl VulkanRenderer {
         let mut render_targets = RenderTargets::new(device.clone(), extent_3d, default_sampler.clone());
         let mut pipeline_builder = PipelineBuilder::new(shader_loader, device.clone(), rt_pipeline_ext.clone());
 
-        let gbuf_targets = GBufferPass::render_target_defs();
-        let mut gbuf_targets = match gbuf_targets {
-            [a, b, c] => [
-                Some(render_targets.add(a)?),
-                Some(render_targets.add(b)?),
-                Some(render_targets.add(c)?),
-            ],
+        let sky_pass = SkyPass {
+            device: device.clone(),
+            render_target: render_targets.add(SkyPass::render_target_def())?,
+            is_init: RefCell::new(false),
         };
+
+        let mut gbuf_targets = GBufferPass::render_target_defs().map(|a| Some(render_targets.add(a)));
         let gbuffer_pass = GBufferPass {
             device: device.clone(),
-            render_target_color: gbuf_targets[0].take().unwrap(),
-            render_target_normal: gbuf_targets[1].take().unwrap(),
-            render_target_depth: gbuf_targets[2].take().unwrap(),
+            render_target_color: gbuf_targets[0].take().unwrap()?,
+            render_target_normal: gbuf_targets[1].take().unwrap()?,
+            render_target_depth: gbuf_targets[2].take().unwrap()?,
         };
 
         let tonemap_pass = TonemapPass {
@@ -184,14 +184,11 @@ impl VulkanRenderer {
             render_target: render_targets.add(ShadingPass::render_target_def())?,
         };
 
-        let pt_pass_targets = PathTracePass::render_target_defs();
-        let mut pt_pass_targets = match pt_pass_targets {
-            [a, b] => [Some(render_targets.add(a)?), Some(render_targets.add(b)?)],
-        };
+        let mut pt_pass_targets = PathTracePass::render_target_defs().map(|a| Some(render_targets.add(a)));
         let pt_pass = PathTracePass {
             device: device.clone(),
-            direct_render_target: pt_pass_targets[0].take().unwrap(),
-            indirect_render_target: pt_pass_targets[1].take().unwrap(),
+            direct_render_target: pt_pass_targets[0].take().unwrap()?,
+            indirect_render_target: pt_pass_targets[1].take().unwrap()?,
         };
 
         let mut denoise_pass_targets = DenoisePass::render_target_defs().map(|a| Some(render_targets.add(a)));
@@ -233,16 +230,23 @@ impl VulkanRenderer {
             &GBufferPass::PIPELINE_TARGET_FORMATS,
             (size_of::<nalgebra_glm::Mat4x4>()) as u32,
         )?;
-        pipeline_builder.build_graphics(
+        pipeline_builder.build_compute(
             "light",
             &ShadingPass::DESC_LAYOUTS
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
                 .collect::<Vec<_>>(),
-            &ShadingPass::TARGET_FORMATS,
-            (size_of::<i32>() * 5) as u32,
+            (size_of::<i32>() * 7) as u32,
         )?;
 
+        pipeline_builder.build_compute(
+            "sky",
+            &[
+                descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
+                descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
+            ],
+            (size_of::<i32>() * 1) as u32,
+        )?;
         pipeline_builder.build_compute(
             "taa",
             &TaaPass::DESC_LAYOUTS
@@ -273,7 +277,7 @@ impl VulkanRenderer {
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
                 .collect::<Vec<_>>(),
-            (size_of::<i32>() * 7) as u32,
+            (size_of::<i32>() * 8) as u32,
         )?;
 
         render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
@@ -418,6 +422,7 @@ impl VulkanRenderer {
             prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
             gbuffer_pass,
+            sky_pass,
             pt_pass,
             denoise_pass,
             shading_pass,
@@ -786,6 +791,7 @@ impl VulkanRenderer {
         command_buffer.begin()?;
 
         self.gbuffer_pass.record(command_buffer, self, scene)?;
+        self.sky_pass.record(command_buffer, self)?;
         self.pt_pass.record(command_buffer, self, scene)?;
         self.denoise_pass.record(command_buffer, self, context.clear_taa)?;
         self.shading_pass.record(command_buffer, self)?;

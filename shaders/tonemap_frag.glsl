@@ -58,7 +58,7 @@ void main() {
         sum += color * 0.5;
     }*/
 
-    vec3 tonemapped = reinhard_extended_luminance(texture(images[push_consts.src], uv).rgb, 2.5);
+    vec3 tonemapped = reinhard_extended_luminance(texture(images[push_consts.src], uv).rgb, 10.0);
     vec3 color_correction = vec3(
     smoothstep(0.0, 1.0, tonemapped.r),
     smoothstep(0.0, 1.0, tonemapped.g),
