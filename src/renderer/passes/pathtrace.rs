@@ -57,7 +57,7 @@ impl PathTracePass {
             );
 
             let pc = PushConstBuilder::new()
-                .add_u32(renderer.quality.rtao_samples as u32)
+                .add_u32(renderer.quality.pt_bounces as u32)
                 .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)

@@ -95,7 +95,8 @@ impl App {
         let movement_speed = 16.0;
         let mut focused = true;
         let mut taa_enable = true;
-        let mut direction = 0.0;
+        let mut direction: f32 = 0.0;
+        let mut angle = 0.5;
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -120,6 +121,7 @@ impl App {
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
             let mut toggle_sun = false;
+            let mut toggle_spatial_filter = false;
 
             for event in self.event_pump.poll_iter() {
                 match event {
@@ -183,6 +185,21 @@ impl App {
                         Some(Keycode::I) => {
                             toggle_sun = true;
                         }
+                        Some(Keycode::Y) => {
+                            toggle_spatial_filter = true;
+                        }
+                        Some(Keycode::Up) => {
+                            angle += 0.01;
+                        }
+                        Some(Keycode::Down) => {
+                            angle -= 0.01;
+                        }
+                        Some(Keycode::Left) => {
+                            direction += 0.01;
+                        }
+                        Some(Keycode::Right) => {
+                            direction -= 0.01;
+                        }
                         Some(Keycode::KpPlus) => {
                             exposure_adjust += 0.5;
                         }
@@ -219,8 +236,8 @@ impl App {
             };
 
             if sample_adjust != 0 {
-                let new_samples = (self.renderer.quality.rtao_samples + sample_adjust).max(0);
-                self.renderer.quality.rtao_samples = new_samples;
+                let new_samples = (self.renderer.quality.pt_bounces + sample_adjust).max(0);
+                self.renderer.quality.pt_bounces = new_samples;
                 info!("new sample count: {new_samples}");
             }
 
@@ -244,8 +261,13 @@ impl App {
                 self.scene.env.sky_only = !self.scene.env.sky_only;
             }
 
-            direction += delta * 0.1;
-            self.scene.env.sun_direction = vec3(direction.cos(), direction.sin(), 0.9).normalize();
+            //direction += delta * 0.1;
+            //self.scene.env.sun_direction = vec3(direction.cos(), direction.sin(), 0.9).normalize();
+            self.scene.env.sun_direction = vec3(direction.cos(), direction.sin(), angle).normalize();
+
+            if toggle_spatial_filter {
+                self.renderer.quality.use_spatial_denoise = !self.renderer.quality.use_spatial_denoise;
+            }
 
             let cpu_time = self
                 .renderer

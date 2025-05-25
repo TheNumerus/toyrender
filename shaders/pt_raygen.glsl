@@ -132,6 +132,7 @@ void main () {
             ivec2(gl_LaunchIDEXT.xy),
             vec4(0.0)
         );
+        return;
     }
 
     vec3 normal = normalize((texture(images[push_consts.normal_idx], uv).xyz - 0.5) * 2.0);
@@ -180,7 +181,14 @@ void main () {
                 float((pcg_hash((1 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x) + i))) % 1024) / 1024.0
             )
         );
-        dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
+
+        float d = 0.8 + (1.0 - 0.8) * pow(dot(-hitNormal, dir), 5.0);
+
+        if ((float((pcg_hash((2 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x) + i))) % 1024) / 1024.0) > d) {
+            dir = dir - 2.0 * hitNormal * (dot(dir, hitNormal));
+        } else {
+            dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
+        }
 
         trace(pos + bias, dir);
 

@@ -119,16 +119,6 @@ void main() {
 
     ivec2 size = imageSize(storages[push_consts.src_idx]);
 
-    if (globals.debug == DEBUG_INDIRECT || globals.debug == DEBUG_DIRECT) {
-        vec4 raw = imageLoad(storages[push_consts.acc_idx], ivec2(x_base, y_base));
-        imageStore(storages[push_consts.src_idx], ivec2(x_base, y_base), raw);
-        return;
-    } else if (globals.debug == DEBUG_DIRECT_VARIANCE || globals.debug == DEBUG_INDIRECT_VARIANCE) {
-        vec4 raw = imageLoad(storages[push_consts.acc_idx], ivec2(x_base, y_base));
-        imageStore(storages[push_consts.src_idx], ivec2(x_base, y_base), raw);
-        return;
-    }
-
     if (x_base <= size.x && y_base <= size.y) {
         vec4 result = imageLoad(storages[push_consts.src_idx], ivec2(x_base, y_base));
         vec4 raw = imageLoad(storages[push_consts.acc_idx], ivec2(x_base, y_base));
@@ -179,7 +169,7 @@ void main() {
                 sum += img_in * weight;
                 weight_sum += weight;
                 new_variance_sum += variance * variance_weight;
-                new_variance_weight_sum += weight * weight;
+                new_variance_weight_sum += get_weight(x) * get_weight(y) * pow(normal_weight * depth_weight * luma_weight, 2.0);
             }
         }
 
