@@ -2,22 +2,22 @@ use crate::err::AppError;
 use crate::err::AppError::VulkanAllocatorError;
 use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 use gpu_allocator::MemoryLocation;
-use std::cell::RefCell;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub struct Buffer {
     pub inner: vk::Buffer,
     allocation: Option<Allocation>,
     device: Rc<Device>,
-    allocator: Rc<RefCell<Allocator>>,
+    allocator: Arc<Mutex<Allocator>>,
 }
 
 impl Buffer {
     pub fn new(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         location: MemoryLocation,
         usage: vk::BufferUsageFlags,
         size: u64,
@@ -39,7 +39,8 @@ impl Buffer {
         let requirements = unsafe { device.inner.get_buffer_memory_requirements(inner) };
 
         let allocation = allocator
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .allocate(&AllocationCreateDesc {
                 name: "TEST",
                 requirements,
@@ -66,7 +67,7 @@ impl Buffer {
 
     pub fn new_with_alignment(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         location: MemoryLocation,
         usage: vk::BufferUsageFlags,
         size: u64,
@@ -90,7 +91,8 @@ impl Buffer {
         requirements.alignment = alignment;
 
         let allocation = allocator
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .allocate(&AllocationCreateDesc {
                 name: "TEST",
                 requirements,
@@ -137,7 +139,8 @@ impl Buffer {
 impl Drop for Buffer {
     fn drop(&mut self) {
         self.allocator
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .free(self.allocation.take().unwrap())
             .unwrap();
         unsafe { self.device.inner.destroy_buffer(self.inner, None) }

@@ -5,6 +5,7 @@ use crate::import::ImportedScene;
 use crate::input::InputMapper;
 use crate::renderer::{FrameContext, VulkanRenderer};
 use crate::scene::Scene;
+use imgui::DrawData;
 use log::{error, info};
 use nalgebra_glm::vec3;
 use sdl2::event::{Event, WindowEvent};
@@ -21,6 +22,7 @@ pub struct App {
     pub event_pump: EventPump,
     pub input_mapper: InputMapper<InputAxes>,
     pub scene: Scene,
+    pub imgui: imgui::Context,
 }
 
 impl App {
@@ -42,7 +44,10 @@ impl App {
 
         let event_pump = sdl_context.event_pump().expect("cannot get event pump");
 
-        let renderer = VulkanRenderer::init(&window)?;
+        let mut imgui = imgui::Context::create();
+        Self::set_ui_style(imgui.style_mut());
+
+        let renderer = VulkanRenderer::init(&window, &mut imgui)?;
 
         let input_mapper = Self::setup_input_mapper();
 
@@ -55,6 +60,7 @@ impl App {
             renderer,
             input_mapper,
             scene,
+            imgui,
         })
     }
 
@@ -95,8 +101,6 @@ impl App {
         let movement_speed = 16.0;
         let mut focused = true;
         let mut taa_enable = true;
-        let mut direction: f32 = 0.0;
-        let mut angle = 0.5;
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -104,6 +108,8 @@ impl App {
         }
 
         let mut frame = 0;
+
+        let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui);
 
         'running: loop {
             let mut resized = false;
@@ -114,16 +120,15 @@ impl App {
             let mut mouse = (0, 0);
             let mut mouse_scroll = 0.0;
             let mut dragging;
-            let mut sample_adjust = 0;
+            let mut bounce_adjust = 0;
             let mut dist_adjust = 0.0;
             let mut exposure_adjust = 0.0;
             let mut flip_half_res = false;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
-            let mut toggle_sun = false;
-            let mut toggle_spatial_filter = false;
 
             for event in self.event_pump.poll_iter() {
+                platform.handle_event(&mut self.imgui, &event);
                 match event {
                     Event::Quit { .. } => {
                         self.renderer.device.wait_idle()?;
@@ -167,8 +172,8 @@ impl App {
                         }
                     }
                     Event::KeyDown { keycode, .. } => match keycode {
-                        Some(Keycode::LeftBracket) => sample_adjust = -1,
-                        Some(Keycode::RightBracket) => sample_adjust = 1,
+                        Some(Keycode::LeftBracket) => bounce_adjust = -1,
+                        Some(Keycode::RightBracket) => bounce_adjust = 1,
                         Some(Keycode::O) => dist_adjust = -5.0,
                         Some(Keycode::P) => dist_adjust = 5.0,
                         Some(Keycode::R) => {
@@ -178,27 +183,6 @@ impl App {
                         Some(Keycode::H) => {
                             flip_half_res = true;
                             clear_taa = true;
-                        }
-                        Some(Keycode::T) => {
-                            taa_enable = !taa_enable;
-                        }
-                        Some(Keycode::I) => {
-                            toggle_sun = true;
-                        }
-                        Some(Keycode::Y) => {
-                            toggle_spatial_filter = true;
-                        }
-                        Some(Keycode::Up) => {
-                            angle += 0.01;
-                        }
-                        Some(Keycode::Down) => {
-                            angle -= 0.01;
-                        }
-                        Some(Keycode::Left) => {
-                            direction += 0.01;
-                        }
-                        Some(Keycode::Right) => {
-                            direction -= 0.01;
                         }
                         Some(Keycode::KpPlus) => {
                             exposure_adjust += 0.5;
@@ -226,8 +210,6 @@ impl App {
             self.scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
             self.scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
 
-            frame_end = Instant::now();
-
             let context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
@@ -235,10 +217,10 @@ impl App {
                 frame_index: frame,
             };
 
-            if sample_adjust != 0 {
-                let new_samples = (self.renderer.quality.pt_bounces + sample_adjust).max(0);
-                self.renderer.quality.pt_bounces = new_samples;
-                info!("new sample count: {new_samples}");
+            if bounce_adjust != 0 {
+                let new_bounces = (self.renderer.quality.pt_bounces + bounce_adjust).max(0);
+                self.renderer.quality.pt_bounces = new_bounces;
+                info!("new bounce count: {new_bounces}");
             }
 
             self.scene.env.exposure = (self.scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
@@ -257,21 +239,36 @@ impl App {
                 self.renderer.resize(self.window.drawable_size())?;
             }
 
-            if toggle_sun {
-                self.scene.env.sky_only = !self.scene.env.sky_only;
-            }
+            frame_end = Instant::now();
 
-            //direction += delta * 0.1;
-            //self.scene.env.sun_direction = vec3(direction.cos(), direction.sin(), 0.9).normalize();
-            self.scene.env.sun_direction = vec3(direction.cos(), direction.sin(), angle).normalize();
+            platform.prepare_frame(&mut self.imgui, &self.window, &self.event_pump);
 
-            if toggle_spatial_filter {
-                self.renderer.quality.use_spatial_denoise = !self.renderer.quality.use_spatial_denoise;
-            }
+            let ui = self.imgui.frame();
+            ui.window("toyrender controls")
+                .size([300.0, 100.0], imgui::Condition::FirstUseEver)
+                .build(|| {
+                    let group = ui.begin_group();
+                    ui.text("RT Setings");
+                    ui.slider(
+                        "Indirect trace distance",
+                        0.0,
+                        500.0,
+                        &mut self.renderer.quality.rt_trace_disance,
+                    );
+                    ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces);
 
-            let cpu_time = self
-                .renderer
-                .render_frame(&self.scene, self.window.drawable_size(), &context)?;
+                    group.end();
+                    ui.checkbox("Temporal accumulation", &mut taa_enable);
+                    ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
+                    ui.checkbox("Sky only", &mut self.scene.env.sky_only);
+                    ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
+                        .build();
+                });
+            let draw_data = self.imgui.render();
+
+            let cpu_time =
+                self.renderer
+                    .render_frame(&self.scene, self.window.drawable_size(), &context, Some(draw_data))?;
 
             if !focused {
                 let frametime_target = 1.0 / 30.0;
@@ -352,7 +349,7 @@ impl App {
             };
 
             self.renderer
-                .render_frame(&self.scene, self.window.drawable_size(), &context)?;
+                .render_frame(&self.scene, self.window.drawable_size(), &context, None)?;
         }
 
         self.renderer.device.wait_idle()?;
@@ -368,6 +365,15 @@ impl App {
         println!("Average time per frame (ms): {avg}");
 
         Ok(())
+    }
+
+    fn set_ui_style(style: &mut imgui::Style) {
+        style.use_dark_colors();
+        style.window_rounding = 4.0;
+        style.tab_rounding = 4.0;
+        style.frame_rounding = 4.0;
+
+        style.colors[imgui::StyleColor::WindowBg as usize] = [0.02, 0.02, 0.02, 0.9];
     }
 }
 

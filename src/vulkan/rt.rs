@@ -7,11 +7,11 @@ use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
 use ash::extensions::khr::RayTracingPipeline as RayTracingPipelineLoader;
 use ash::vk;
 use ash::vk::{AccelerationStructureKHR, Packed24_8};
-use gpu_allocator::vulkan::Allocator;
 use gpu_allocator::MemoryLocation;
-use std::cell::RefCell;
+use gpu_allocator::vulkan::Allocator;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub struct RayTracingPipeline {
     pub loader: RayTracingPipelineLoader,
@@ -48,7 +48,7 @@ pub struct ShaderBindingTable {
 impl ShaderBindingTable {
     pub fn new(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         rt_pipeline: &RayTracingPipeline,
         pipeline: &Pipeline<Rt>,
         miss_count: usize,
@@ -192,7 +192,7 @@ pub struct AccelerationStructure {
 impl AccelerationStructure {
     fn create(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         ray_tracing_as: Rc<RayTracingAs>,
         size: u64,
         level: AsLevel,
@@ -229,7 +229,7 @@ impl AccelerationStructure {
 
     pub fn top_build(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_buf: &CommandBuffer,
         blases: &HashMap<u64, Self>,
@@ -421,7 +421,7 @@ impl AccelerationStructure {
 
     pub fn batch_bottom_build(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_pool: &CommandPool,
         ranges: HashMap<u64, vk::AccelerationStructureBuildRangeInfoKHR>,

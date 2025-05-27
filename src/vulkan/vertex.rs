@@ -1,11 +1,11 @@
 use crate::err::AppError;
 use crate::vulkan::{Buffer, CommandPool, Device, IntoVulkanError};
 use ash::vk;
-use gpu_allocator::vulkan::Allocator;
 use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::Allocator;
 use nalgebra_glm::{Vec2, Vec3, Vec4};
-use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -62,7 +62,7 @@ pub struct VertexIndexBuffer {
 impl VertexIndexBuffer {
     pub fn new(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         cmd_pool: &CommandPool,
         data: &[u8],
     ) -> Result<Self, AppError> {

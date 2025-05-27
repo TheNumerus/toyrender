@@ -2,8 +2,8 @@ use crate::err::AppError;
 use crate::mesh::MeshResource;
 use crate::vulkan::{CommandPool, Device, Vertex, VertexIndexBuffer};
 use gpu_allocator::vulkan::Allocator;
-use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub struct VulkanMesh {
     pub buf: VertexIndexBuffer,
@@ -14,7 +14,7 @@ pub struct VulkanMesh {
 impl VulkanMesh {
     pub fn new(
         device: Rc<Device>,
-        allocator: Rc<RefCell<Allocator>>,
+        allocator: Arc<Mutex<Allocator>>,
         cmd_pool: &CommandPool,
         mesh: &MeshResource,
     ) -> Result<Self, AppError> {

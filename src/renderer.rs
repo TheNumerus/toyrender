@@ -8,9 +8,9 @@ use crate::vulkan::{
     Swapchain, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk::Handle;
-use ash::{vk, Entry};
-use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
+use ash::{Entry, vk};
 use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
 use log::info;
 use nalgebra_glm::Mat4;
 use sdl2::video::Window;
@@ -20,6 +20,7 @@ use std::fmt::Write;
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zip::ZipArchive;
 
@@ -50,7 +51,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 pub struct VulkanRenderer {
     pub instance: Rc<Instance>,
     pub device: Rc<Device>,
-    pub allocator: Rc<RefCell<Allocator>>,
+    pub allocator: Arc<Mutex<Allocator>>,
     pub swap_chain: Swapchain,
     pub surface: Surface,
     pub rt_pipeline_ext: Rc<RayTracingPipeline>,
@@ -72,6 +73,7 @@ pub struct VulkanRenderer {
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
+    pub imgui_renderer: imgui_rs_vulkan_renderer::Renderer,
     meshes: HashMap<u64, VulkanMesh>,
     fs_quad: VulkanMesh,
     img_available: Vec<Semaphore>,
@@ -90,7 +92,7 @@ pub struct VulkanRenderer {
 }
 
 impl VulkanRenderer {
-    pub fn init(window: &Window) -> Result<Self, AppError> {
+    pub fn init(window: &Window, imgui: &mut imgui::Context) -> Result<Self, AppError> {
         let entry = unsafe { Entry::load().expect("cannot load vulkan entry") };
 
         let instance = Rc::new(Instance::new(&entry, &window.vulkan_instance_extensions().unwrap())?);
@@ -111,7 +113,7 @@ impl VulkanRenderer {
             allocation_sizes: Default::default(),
         })?;
 
-        let allocator = Rc::new(RefCell::new(allocator));
+        let allocator = Arc::new(Mutex::new(allocator));
 
         let rt_pipeline_ext = Rc::new(RayTracingPipeline::new(&instance, &device)?);
         let rt_acc_struct_ext = Rc::new(RayTracingAs::new(&instance, &device)?);
@@ -388,6 +390,23 @@ impl VulkanRenderer {
 
         DescriptorWriter::batch_write(&device, writes);
 
+        let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::with_gpu_allocator(
+            allocator.clone(),
+            device.inner.clone(),
+            device.graphics_queue,
+            graphics_command_pool.inner,
+            imgui_rs_vulkan_renderer::DynamicRendering {
+                color_attachment_format: swap_chain.format.format,
+                depth_attachment_format: None,
+            },
+            imgui,
+            Some(imgui_rs_vulkan_renderer::Options {
+                in_flight_frames: MAX_FRAMES_IN_FLIGHT,
+                ..Default::default()
+            }),
+        )
+        .map_err(|e| AppError::Other(format!("Failed to create imgui renderer: {}", e)))?;
+
         Ok(Self {
             instance,
             device: device.clone(),
@@ -414,6 +433,7 @@ impl VulkanRenderer {
             uniform_buffers_globals,
             env_uniforms,
             in_flight,
+            imgui_renderer,
             last_view_proj: ViewProj::default(),
             debug_mode: DebugMode::None,
             quality: QualitySettings::new(),
@@ -587,6 +607,7 @@ impl VulkanRenderer {
         scene: &Scene,
         drawable_size: (u32, u32),
         context: &FrameContext,
+        ui: Option<&imgui::DrawData>,
     ) -> Result<f32, AppError> {
         self.prepare_meshes(scene)?;
 
@@ -670,6 +691,7 @@ impl VulkanRenderer {
         DescriptorWriter::batch_write(&self.device, writes);
 
         let start = Instant::now();
+        command_buffer.begin()?;
 
         self.record_command_buffer(
             command_buffer,
@@ -677,6 +699,14 @@ impl VulkanRenderer {
             scene,
             context,
         )?;
+
+        if let Some(dd) = ui {
+            self.imgui_renderer
+                .cmd_draw(command_buffer.inner, dd)
+                .map_err(|e| AppError::Other(format!("Failed to draw imgui: {e}")))?;
+        }
+
+        command_buffer.end()?;
 
         let end = Instant::now();
 
@@ -788,8 +818,6 @@ impl VulkanRenderer {
         scene: &Scene,
         context: &FrameContext,
     ) -> Result<(), VulkanError> {
-        command_buffer.begin()?;
-
         self.gbuffer_pass.record(command_buffer, self, scene)?;
         self.sky_pass.record(command_buffer, self)?;
         self.pt_pass.record(command_buffer, self, scene)?;
@@ -800,7 +828,7 @@ impl VulkanRenderer {
 
         self.record_end_copy(command_buffer, target)?;
 
-        command_buffer.end()
+        Ok(())
     }
 
     fn record_end_copy(&self, command_buffer: &CommandBuffer, target: &vk::Image) -> Result<(), VulkanError> {
@@ -1016,10 +1044,12 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
 fn env_to_buffer(env: &Environment) -> Box<[u8]> {
     let mut buf = Vec::new();
 
+    let sun_dir = env.sun_direction.normalize();
+
     for x in [
-        env.sun_direction.x,
-        env.sun_direction.y,
-        env.sun_direction.z,
+        sun_dir.x,
+        sun_dir.y,
+        sun_dir.z,
         0.0,
         env.sun_color.x,
         env.sun_color.y,
