@@ -100,6 +100,11 @@ float luminance(vec3 color) {
 float compute_spatial_variance(ivec2 uv_int, float luma_base) {
     vec2 uv = (vec2(uv_int) + 0.5) / vec2(globals.res_x, globals.res_y);
     vec3 base_normal = normalize(texture(images[push_consts.normal_idx], uv).xyz * 2.0 - 1.0);
+
+    if (texture(images[push_consts.curr_depth_idx], uv).x == 0.0) {
+        return 0.0;
+    }
+
     float base_depth = get_linear_depth(images[push_consts.curr_depth_idx], uv);
     float gradient = get_depth_gradient(uv_int.x, uv_int.y, images[push_consts.curr_depth_idx]);
 

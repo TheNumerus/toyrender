@@ -131,6 +131,10 @@ void main() {
 
         vec2 uv = vec2((x_base + 0.5) / size.x, (y_base + 0.5) / size.y);
 
+        if (texture(images[push_consts.depth_idx], uv).x == 0.0) {
+            return;
+        }
+
         float luma_base = luminance(raw.xyz);
         vec3 normal_base = normalize(texture(images[push_consts.normal_idx], uv).xyz * 2.0 - 1.0);
         float depth_base = get_linear_depth(images[push_consts.depth_idx], uv);

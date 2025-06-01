@@ -263,6 +263,8 @@ impl App {
                     ui.checkbox("Sky only", &mut self.scene.env.sky_only);
                     ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
                         .build();
+                    ui.input_float3("Camera position", self.scene.camera.position.as_mut())
+                        .build();
                 });
             let draw_data = self.imgui.render();
 

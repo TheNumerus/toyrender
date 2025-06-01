@@ -98,14 +98,53 @@ vec3 sky_color(vec3 view_dir) {
     }
 
     u = (u + PI) / (2.0 * PI);
+    if (isnan(u) || isinf(u)) {
+        u = 0.0;
+    }
 
     float v = ((asin(view_dir.z) / (PI / 2.0)) * 0.5) + 0.5;
 
-    ivec2 uv = ivec2(max(min(int(u * size.x), size.x - 1), 0), max(min(int(v * size.y), size.y - 1), 0));
+    if (isnan(v) || isinf(v)) {
+        v = 0.0;
+    }
 
-    vec3 color = imageLoad(storages[push_consts.sky_idx], uv).xyz;
+    u = clamp(u, 0.0, 1.0);
+    v = clamp(v, 0.0, 1.0);
 
-    return color;
+    int uLeft = int(max(floor(u * size.x), 0.0));
+    int uRight = int(ceil(u * size.x));
+    float uFactor = fract(u * size.x + 1.0);
+
+    int vTop = int(max(floor(v * size.y), 0.0));
+    int vBottom = int(ceil(v * size.y));
+    float vFactor = fract(v * size.y + 1.0);
+
+    if (uRight >= size.x) {
+        uRight = size.x - 1;
+    }
+
+    if (uLeft >= size.x) {
+        uLeft = 0;
+    }
+
+    if (vTop >= size.y) {
+        vTop = 0;
+    }
+
+    if (vBottom >= size.y) {
+        vBottom = size.y - 1;
+    }
+
+    vec3 colorLeftTop = imageLoad(storages[push_consts.sky_idx], ivec2(uLeft, vTop)).xyz;
+    vec3 colorRightTop = imageLoad(storages[push_consts.sky_idx], ivec2(uRight, vTop)).xyz;
+
+    vec3 colorLeftBottom = imageLoad(storages[push_consts.sky_idx], ivec2(uLeft, vBottom)).xyz;
+    vec3 colorRightBottom = imageLoad(storages[push_consts.sky_idx], ivec2(uRight, vBottom)).xyz;
+
+    vec3 colorTop = mix(colorLeftTop, colorRightTop, uFactor);
+    vec3 colorBottom = mix(colorLeftBottom, colorRightBottom, uFactor);
+
+    return mix(colorTop, colorBottom, vFactor);
 }
 
 void main () {
