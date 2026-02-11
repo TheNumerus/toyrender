@@ -1,6 +1,6 @@
+use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
-use crate::renderer::VulkanRenderer;
 use crate::scene::Scene;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
@@ -112,7 +112,7 @@ impl GBufferPass {
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
                 vk::PipelineStageFlags::ALL_GRAPHICS,
                 vk::DependencyFlags::empty(),
                 &[],

@@ -15,7 +15,7 @@ layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) ENV;
 
 layout(set = 1, binding = 0) uniform sampler2D images[];
-layout(set = 1, binding = 1, rgba16) uniform image2D storages[];
+layout(set = 1, binding = 1, rgba16f) uniform image2D storages[];
 
 layout(push_constant) uniform constants {
     int out_idx;
@@ -66,41 +66,9 @@ vec3 sky_color(vec3 view_dir) {
 
     u = clamp(u, 0.0, 1.0);
     v = clamp(v, 0.0, 1.0);
+    v = (sqrt(abs((v - 0.5) * 2.0)) * sign(v - 0.5)) * 0.5 + 0.5;
 
-    int uLeft = int(max(floor(u * size.x), 0.0));
-    int uRight = int(ceil(u * size.x));
-    float uFactor = fract(u * size.x + 1.0);
-
-    int vTop = int(max(floor(v * size.y), 0.0));
-    int vBottom = int(ceil(v * size.y));
-    float vFactor = fract(v * size.y + 1.0);
-
-    if (uRight >= size.x) {
-        uRight = size.x - 1;
-    }
-
-    if (uLeft >= size.x) {
-        uLeft = 0;
-    }
-
-    if (vTop >= size.y) {
-        vTop = 0;
-    }
-
-    if (vBottom >= size.y) {
-        vBottom = size.y - 1;
-    }
-
-    vec3 colorLeftTop = imageLoad(storages[push_consts.sky_idx], ivec2(uLeft, vTop)).xyz;
-    vec3 colorRightTop = imageLoad(storages[push_consts.sky_idx], ivec2(uRight, vTop)).xyz;
-
-    vec3 colorLeftBottom = imageLoad(storages[push_consts.sky_idx], ivec2(uLeft, vBottom)).xyz;
-    vec3 colorRightBottom = imageLoad(storages[push_consts.sky_idx], ivec2(uRight, vBottom)).xyz;
-
-    vec3 colorTop = mix(colorLeftTop, colorRightTop, uFactor);
-    vec3 colorBottom = mix(colorLeftBottom, colorRightBottom, uFactor);
-
-    return mix(colorTop, colorBottom, vFactor);
+    return texture(images[push_consts.sky_idx], vec2(u, v)).xyz;
 }
 
 void main() {
@@ -109,7 +77,7 @@ void main() {
     ivec2 size = imageSize(storages[push_consts.out_idx]);
     vec2 uv = (vec2(x, y) + 0.5) / vec2(globals.res_x, globals.res_y);
 
-    vec3 light_dir = env.sun_direction;
+    vec3 light_dir = env.sun_dir_sun_angle.xyz;
 
     float ratio = globals.res_x / globals.res_y;
 
@@ -123,14 +91,14 @@ void main() {
     vec3 loc = inverse(view_proj.view[0])[3].xyz;
     vec3 view_dir = normalize(vertPos - loc);
 
-    vec3 direct = texture(images[push_consts.direct_idx], uv).xyz;
-    vec3 indirect = texture(images[push_consts.indirect_idx], uv).xyz;
+    vec3 direct = texture(images[push_consts.direct_idx], uv).xyz * pow(2.0, globals.exposure);
+    vec3 indirect = texture(images[push_consts.indirect_idx], uv).xyz * pow(2.0, globals.exposure);
 
     vec3 diffuse_dir = light(normalize(normal), light_dir, direct) + indirect;
     vec3 specular = vec3(0.0);
     vec3 lighted = ((diffuse_dir + specular));
 
-    vec3 sky_col = sky_color(view_dir) * pow(2.0, globals.exposure);
+    vec3 sky_col = sky_color(view_dir) * pow(2.0, globals.exposure) * env.sun_color_sky_int.w;
 
     if (x <= size.x && y <= size.y) {
         imageStore(storages[push_consts.out_idx], ivec2(x, y), vec4(mix(sky_col, lighted, color.a), 1.0));

@@ -456,12 +456,13 @@ impl AccelerationStructure {
                 )
             };
 
-            let buf = Buffer::new(
+            let buf = Buffer::new_with_alignment(
                 device.clone(),
                 allocator.clone(),
                 MemoryLocation::GpuOnly,
                 vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
                 size_info.build_scratch_size,
+                device.rt_properties.min_bvh_scratch_alignment as u64,
             )?;
 
             let blas = Self::create(

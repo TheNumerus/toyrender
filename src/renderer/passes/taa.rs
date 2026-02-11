@@ -95,9 +95,9 @@ impl TaaPass {
                 depth: 1,
             };
 
-            let barriers = [renderer.render_targets.get_ref("last_depth").unwrap().image.inner].map(|image| {
+            let barriers = [renderer.render_targets.get_ref("taa_target").unwrap().image.inner].map(|image| {
                 vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
                     dst_access_mask: vk::AccessFlags::MEMORY_READ,
                     old_layout: vk::ImageLayout::GENERAL,
                     new_layout: vk::ImageLayout::GENERAL,
@@ -105,7 +105,7 @@ impl TaaPass {
                     dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                     image,
                     subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::DEPTH,
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
                         base_mip_level: 0,
                         level_count: 1,
                         base_array_layer: 0,
@@ -118,7 +118,7 @@ impl TaaPass {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],

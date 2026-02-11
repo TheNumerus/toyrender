@@ -62,7 +62,7 @@ impl PathTracePass {
                 .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().storages.get("sky").unwrap() as u32)
+                .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
                 .add_f32(renderer.quality.rt_trace_disance)
                 .add_u32(scene.env.sky_only as u32)
                 .build();
@@ -103,7 +103,7 @@ impl PathTracePass {
                 src_access_mask: vk::AccessFlags::MEMORY_WRITE,
                 dst_access_mask: vk::AccessFlags::MEMORY_READ,
                 old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                new_layout: vk::ImageLayout::GENERAL,
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 image,

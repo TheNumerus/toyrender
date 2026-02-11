@@ -1,5 +1,5 @@
 use crate::renderer::descriptors::DescLayout;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargetSize};
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargetSampler, RenderTargetSize};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
@@ -20,6 +20,8 @@ impl SkyPass {
     pub fn render_target_def() -> RenderTargetBuilder {
         RenderTargetBuilder::new("sky")
             .with_storage()
+            .with_sampled()
+            .with_sampler(RenderTargetSampler::RepeatXOnly)
             .with_format(Self::TARGET_FORMAT)
             .with_size(RenderTargetSize::Custom(Self::SKY_SIZE[0], Self::SKY_SIZE[1]))
     }

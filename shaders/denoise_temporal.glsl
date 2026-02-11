@@ -12,7 +12,7 @@ layout(set = 0, binding = 2) VIEW_PROJ;
 
 layout(set = 1, binding = 0) uniform sampler2D images[];
 layout(set = 1, binding = 1, rgb10_a2) uniform image2D storages[];
-layout(set = 1, binding = 1, rgba16) uniform image2D storages_hp[];
+layout(set = 1, binding = 1, rgba16f) uniform image2D storages_hp[];
 
 layout(push_constant) uniform constants {
     int clear;
@@ -150,7 +150,7 @@ void main() {
 
     ivec2 size = imageSize(storages_hp[push_consts.out_idx]);
 
-    float blend_factor = 0.2;
+    float blend_factor = 0.1;
     if (push_consts.clear == 1) {
         blend_factor = 1.0;
     }

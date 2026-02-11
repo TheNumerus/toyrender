@@ -4,8 +4,8 @@ use crate::mesh::MeshResource;
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
     AccelerationStructure, Buffer, CommandBuffer, CommandPool, DescriptorPool, Device, DeviceQueryResult, Fence,
-    Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, Sampler, Semaphore, ShaderBindingTable, Surface,
-    Swapchain, Vertex, VulkanError, VulkanMesh,
+    ImageView, Instance, IntoVulkanError, RayTracingAs, RayTracingPipeline, Sampler, Semaphore, ShaderBindingTable,
+    Surface, Swapchain, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk::Handle;
 use ash::{Entry, vk};
@@ -53,6 +53,7 @@ pub struct VulkanRenderer {
     pub device: Rc<Device>,
     pub allocator: Arc<Mutex<Allocator>>,
     pub swap_chain: Swapchain,
+    pub swap_chain_image_views: Vec<ImageView>,
     pub surface: Surface,
     pub rt_pipeline_ext: Rc<RayTracingPipeline>,
     pub rt_acc_struct_ext: Rc<RayTracingAs>,
@@ -119,10 +120,13 @@ impl VulkanRenderer {
         let rt_acc_struct_ext = Rc::new(RayTracingAs::new(&instance, &device)?);
 
         let swap_chain = Swapchain::new(device.clone(), &instance, window.drawable_size(), &surface)?;
+        let swap_chain_image_views = swap_chain.create_image_views()?;
 
         let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
         let default_sampler = Rc::new(Sampler::new(device.clone())?);
+        let repeat_sampler = Rc::new(Sampler::new_repeat(device.clone())?);
+        let repeat_x_only_sampler = Rc::new(Sampler::new_repeat_x_only(device.clone())?);
 
         let descriptor_pool = DescriptorPool::new(
             device.clone(),
@@ -159,7 +163,13 @@ impl VulkanRenderer {
             depth: 1,
         };
 
-        let mut render_targets = RenderTargets::new(device.clone(), extent_3d, default_sampler.clone());
+        let mut render_targets = RenderTargets::new(
+            device.clone(),
+            extent_3d,
+            default_sampler,
+            repeat_sampler,
+            repeat_x_only_sampler,
+        );
         let mut pipeline_builder = PipelineBuilder::new(shader_loader, device.clone(), rt_pipeline_ext.clone());
 
         let sky_pass = SkyPass {
@@ -359,7 +369,7 @@ impl VulkanRenderer {
                 allocator.clone(),
                 MemoryLocation::CpuToGpu,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                size_of::<Globals>() as u64,
+                size_of::<Globals>() as u64 + 4,
             )?;
 
             uniform_buffers_globals.push(uniform_buffer_global);
@@ -415,6 +425,7 @@ impl VulkanRenderer {
             rt_pipeline_ext,
             rt_acc_struct_ext,
             swap_chain,
+            swap_chain_image_views,
             render_targets,
             pipeline_builder,
             shader_binding_table,
@@ -595,10 +606,10 @@ impl VulkanRenderer {
         env: &vk::Buffer,
     ) -> Vec<DescriptorWrite> {
         vec![
-            create_buffer_update(globals, size_of::<Globals>() as u64, desc_set, 0),
+            create_buffer_update(globals, size_of::<Globals>() as u64 + 4, desc_set, 0),
             Self::create_tlas_update_descriptor_set(desc_set, tlas),
             create_buffer_update(view, size_of::<ViewProj>() as u64 * 2, desc_set, 2),
-            create_buffer_update(env, size_of::<Environment>() as u64, desc_set, 3),
+            create_buffer_update(env, size_of::<GPUEnv>() as u64, desc_set, 3),
         ]
     }
 
@@ -700,11 +711,35 @@ impl VulkanRenderer {
             context,
         )?;
 
+        let attachments = [vk::RenderingAttachmentInfo {
+            image_view: self.swap_chain_image_views[image_index as usize].inner,
+            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: vk::AttachmentLoadOp::DONT_CARE,
+            store_op: vk::AttachmentStoreOp::STORE,
+            ..Default::default()
+        }];
+
+        let rendering_info = vk::RenderingInfo {
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent: self.swap_chain.extent,
+            },
+            layer_count: 1,
+            color_attachment_count: attachments.len() as u32,
+            p_color_attachments: attachments.as_ptr(),
+            p_depth_attachment: std::ptr::null(),
+            ..Default::default()
+        };
+
+        command_buffer.begin_rendering(&rendering_info);
+
         if let Some(dd) = ui {
             self.imgui_renderer
                 .cmd_draw(command_buffer.inner, dd)
                 .map_err(|e| AppError::Other(format!("Failed to draw imgui: {e}")))?;
         }
+
+        command_buffer.end_rendering();
 
         command_buffer.end()?;
 
@@ -766,8 +801,13 @@ impl VulkanRenderer {
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), AppError> {
         self.device.wait_idle()?;
 
+        // need to drop before creating new ones
+        self.swap_chain_image_views.clear();
+
         self.swap_chain
             .recreate(self.device.clone(), drawable_size, &self.surface)?;
+
+        self.swap_chain_image_views = self.swap_chain.create_image_views()?;
 
         let extent_3d = vk::Extent3D {
             width: self.swap_chain.extent.width,
@@ -994,6 +1034,7 @@ pub struct ViewProj {
     pub projection: nalgebra_glm::Mat4,
 }
 
+#[repr(C)]
 pub struct Globals {
     pub exposure: f32,
     pub debug_mode: i32,
@@ -1041,22 +1082,33 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
     Ok(arch)
 }
 
+#[repr(C)]
+struct GPUEnv {
+    sun_dir: [f32; 3],
+    sun_angle: f32,
+    sun_color: [f32; 3],
+    sky_intensity: f32,
+}
+
 fn env_to_buffer(env: &Environment) -> Box<[u8]> {
-    let mut buf = Vec::new();
+    let mut buf = Vec::with_capacity(size_of::<GPUEnv>());
 
     let sun_dir = env.sun_direction.normalize();
 
-    for x in [
-        sun_dir.x,
-        sun_dir.y,
-        sun_dir.z,
-        0.0,
-        env.sun_color.x,
-        env.sun_color.y,
-        env.sun_color.z,
-        0.0,
-    ] {
-        buf.extend(x.to_le_bytes());
+    let gpu_env = GPUEnv {
+        sun_dir: sun_dir.data.0[0],
+        sun_angle: env.sun_angle,
+        sun_color: env.sun_color.data.0[0],
+        sky_intensity: env.sky_intensity,
+    };
+
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            std::ptr::from_ref(&gpu_env) as *const u8,
+            buf.as_mut_ptr(),
+            size_of::<GPUEnv>(),
+        );
+        buf.set_len(size_of::<GPUEnv>());
     }
 
     buf.into_boxed_slice()

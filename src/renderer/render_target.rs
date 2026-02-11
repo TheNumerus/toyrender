@@ -103,12 +103,20 @@ pub enum RenderTargetSize {
     Custom(u32, u32),
 }
 
+#[derive(Copy, Clone)]
+pub enum RenderTargetSampler {
+    Clamped,
+    Repeat,
+    RepeatXOnly,
+}
+
 pub struct RenderTargetBuilder {
     name: String,
     size: RenderTargetSize,
     format: vk::Format,
     aspect: vk::ImageAspectFlags,
     usage: vk::ImageUsageFlags,
+    sampler: RenderTargetSampler,
 }
 
 impl RenderTargetBuilder {
@@ -119,6 +127,7 @@ impl RenderTargetBuilder {
             format: vk::Format::R16G16B16A16_SFLOAT,
             aspect: vk::ImageAspectFlags::COLOR,
             usage: vk::ImageUsageFlags::empty(),
+            sampler: RenderTargetSampler::Clamped,
         }
     }
 
@@ -129,6 +138,7 @@ impl RenderTargetBuilder {
             format: vk::Format::D32_SFLOAT,
             aspect: vk::ImageAspectFlags::DEPTH,
             usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+            sampler: RenderTargetSampler::Clamped,
         }
     }
 
@@ -173,6 +183,11 @@ impl RenderTargetBuilder {
         self.usage |= vk::ImageUsageFlags::COLOR_ATTACHMENT;
         self
     }
+
+    pub fn with_sampler(mut self, sampler: RenderTargetSampler) -> Self {
+        self.sampler = sampler;
+        self
+    }
 }
 
 pub(crate) struct RenderTargetItem {
@@ -184,16 +199,26 @@ pub struct RenderTargets {
     pub targets: HashMap<String, RenderTargetItem>,
     device: Rc<Device>,
     default_extent: Extent3D,
-    default_sampler: Rc<Sampler>,
+    clamped_sampler: Rc<Sampler>,
+    repeat_sampler: Rc<Sampler>,
+    repeat_x_only_sampler: Rc<Sampler>,
 }
 
 impl RenderTargets {
-    pub fn new(device: Rc<Device>, default_extent: Extent3D, default_sampler: Rc<Sampler>) -> Self {
+    pub fn new(
+        device: Rc<Device>,
+        default_extent: Extent3D,
+        clamped_sampler: Rc<Sampler>,
+        repeat_sampler: Rc<Sampler>,
+        repeat_x_only_sampler: Rc<Sampler>,
+    ) -> Self {
         Self {
             targets: HashMap::new(),
             device,
             default_extent,
-            default_sampler,
+            clamped_sampler,
+            repeat_sampler,
+            repeat_x_only_sampler,
         }
     }
 
@@ -273,13 +298,19 @@ impl RenderTargets {
             },
         };
 
+        let sampler = match builder.sampler {
+            RenderTargetSampler::Clamped => self.clamped_sampler.clone(),
+            RenderTargetSampler::Repeat => self.repeat_sampler.clone(),
+            RenderTargetSampler::RepeatXOnly => self.repeat_x_only_sampler.clone(),
+        };
+
         let mut rt = RenderTarget::new(
             self.device.clone(),
             extent,
             builder.format,
             builder.usage,
             builder.aspect,
-            self.default_sampler.clone(),
+            sampler,
         )
         .map_err(AppError::VulkanError)?;
 

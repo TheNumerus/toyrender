@@ -23,7 +23,7 @@ layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) ENV;
 
 layout(set = 1, binding = 0) uniform sampler2D images[];
-layout(set = 1, binding = 1, rgba16) uniform image2D storages[];
+layout(set = 1, binding = 1, rgba16f) uniform image2D storages[];
 
 layout( push_constant ) uniform constants {
     int samples;
@@ -110,41 +110,9 @@ vec3 sky_color(vec3 view_dir) {
 
     u = clamp(u, 0.0, 1.0);
     v = clamp(v, 0.0, 1.0);
+    v = (sqrt(abs((v - 0.5) * 2.0)) * sign(v - 0.5)) * 0.5 + 0.5;
 
-    int uLeft = int(max(floor(u * size.x), 0.0));
-    int uRight = int(ceil(u * size.x));
-    float uFactor = fract(u * size.x + 1.0);
-
-    int vTop = int(max(floor(v * size.y), 0.0));
-    int vBottom = int(ceil(v * size.y));
-    float vFactor = fract(v * size.y + 1.0);
-
-    if (uRight >= size.x) {
-        uRight = size.x - 1;
-    }
-
-    if (uLeft >= size.x) {
-        uLeft = 0;
-    }
-
-    if (vTop >= size.y) {
-        vTop = 0;
-    }
-
-    if (vBottom >= size.y) {
-        vBottom = size.y - 1;
-    }
-
-    vec3 colorLeftTop = imageLoad(storages[push_consts.sky_idx], ivec2(uLeft, vTop)).xyz;
-    vec3 colorRightTop = imageLoad(storages[push_consts.sky_idx], ivec2(uRight, vTop)).xyz;
-
-    vec3 colorLeftBottom = imageLoad(storages[push_consts.sky_idx], ivec2(uLeft, vBottom)).xyz;
-    vec3 colorRightBottom = imageLoad(storages[push_consts.sky_idx], ivec2(uRight, vBottom)).xyz;
-
-    vec3 colorTop = mix(colorLeftTop, colorRightTop, uFactor);
-    vec3 colorBottom = mix(colorLeftBottom, colorRightBottom, uFactor);
-
-    return mix(colorTop, colorBottom, vFactor);
+    return texture(images[push_consts.sky_idx], vec2(u, v)).xyz;
 }
 
 void main () {
@@ -198,14 +166,14 @@ void main () {
 
     vec3 sphere = rand_sphere(rand) * 0.1;
 
-    compute_default_basis(env.sun_direction, tangent, bitangent);
+    compute_default_basis(env.sun_dir_sun_angle.xyz, tangent, bitangent);
 
-    vec3 cone = rand_cone(rand, cos(0.02));
-    vec3 ray_shadow_dir = cone.x * tangent + cone.y * bitangent + cone.z * env.sun_direction;
+    vec3 cone = rand_cone(rand, cos(env.sun_dir_sun_angle.w));
+    vec3 ray_shadow_dir = cone.x * tangent + cone.y * bitangent + cone.z * env.sun_dir_sun_angle.xyz;
 
     float intensity_indirect = 1.0;
     float total_intensity_indirect = 1.0;
-    vec3 pos = vertPos;
+    vec3 pos = vertPos + bias;
     vec3 hitNormal = normal;
     vec3 dir = view_dir;
 
@@ -224,16 +192,20 @@ void main () {
         float d = 0.8 + (1.0 - 0.8) * pow(dot(-hitNormal, dir), 5.0);
 
         if ((float((pcg_hash((2 + int(globals.frame_index)) * (gl_LaunchIDEXT.x + gl_LaunchIDEXT.y * uint(globals.res_x) + i))) % 1024) / 1024.0) > d) {
-            dir = dir - 2.0 * hitNormal * (dot(dir, hitNormal));
+            float ddot = dot(dir, hitNormal);
+            dir = dir - 2.0 * hitNormal * (ddot);
+            compute_default_basis(dir, tangent, bitangent);
+            vec3 cone = rand_cone(rand, cos(ddot * 0.3));
+            dir = cone.x * tangent + cone.y * bitangent + cone.z * dir;
         } else {
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
-        trace(pos + bias, dir);
+        trace(pos, dir);
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * sky_color(dir);
+            indirect += intensity_indirect * bounce_energy * sky_color(dir) * env.sun_color_sky_int.w;
             intensity_indirect *= bounce_energy;
             total_intensity_indirect += intensity_indirect;
             break;
@@ -254,11 +226,11 @@ void main () {
                 continue;
             }
 
-            traceShadow(pos + bias, ray_shadow_dir);
+            traceShadow(pos, ray_shadow_dir);
 
             // sun boounce
             if (payload.isMiss) {
-                indirect += intensity_indirect * bounce_energy * env.sun_color;
+                indirect += intensity_indirect * bounce_energy * env.sun_color_sky_int.xyz;
             } else {
                 indirect += intensity_indirect * bounce_energy * payload.color;
             }
@@ -278,7 +250,7 @@ void main () {
     }
 
     float shadow = float(payload.isMiss);
-    vec3 direct = shadow * env.sun_color;
+    vec3 direct = shadow * env.sun_color_sky_int.xyz;
 
     uint end = clockRealtime2x32EXT().x;
 
@@ -299,7 +271,7 @@ void main () {
             storages[push_consts.direct_idx],
             ivec2(gl_LaunchIDEXT.xy),
                 vec4(
-                direct * pow(2.0, globals.exposure),
+                direct,
                 0.0
             )
         );
@@ -307,7 +279,7 @@ void main () {
             storages[push_consts.indirect_idx],
             ivec2(gl_LaunchIDEXT.xy),
             vec4(
-                indirect * pow(2.0, globals.exposure),
+                indirect,
                 0.0
             )
         );

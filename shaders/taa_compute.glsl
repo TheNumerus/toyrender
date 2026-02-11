@@ -11,7 +11,7 @@ layout(set = 0, binding = 0) GLOBAL;
 layout(set = 0, binding = 2) VIEW_PROJ;
 
 layout(set = 1, binding = 0) uniform sampler2D images[];
-layout(set = 1, binding = 1, rgb10_a2) uniform image2D storages[];
+layout(set = 1, binding = 1, rgba16f) uniform image2D storages[];
 
 layout(push_constant) uniform constants {
     int clear;

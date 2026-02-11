@@ -1,6 +1,6 @@
+use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
-use crate::renderer::VulkanRenderer;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -102,7 +102,7 @@ impl ShadingPass {
                     .to_le_bytes(),
             );
             pc[24..28]
-                .copy_from_slice(&(*renderer.descriptors.borrow().storages.get("sky").unwrap() as u32).to_le_bytes());
+                .copy_from_slice(&(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32).to_le_bytes());
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,

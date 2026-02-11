@@ -5,9 +5,7 @@ use crate::import::ImportedScene;
 use crate::input::InputMapper;
 use crate::renderer::{FrameContext, VulkanRenderer};
 use crate::scene::Scene;
-use imgui::DrawData;
 use log::{error, info};
-use nalgebra_glm::vec3;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
@@ -256,15 +254,25 @@ impl App {
                         &mut self.renderer.quality.rt_trace_disance,
                     );
                     ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces);
+                    ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
 
                     group.end();
                     ui.checkbox("Temporal accumulation", &mut taa_enable);
                     ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
                     ui.checkbox("Sky only", &mut self.scene.env.sky_only);
+                    ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky_intensity);
                     ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
                         .build();
+                    ui.slider(
+                        "Sun angle",
+                        0.0,
+                        std::f32::consts::FRAC_PI_2,
+                        &mut self.scene.env.sun_angle,
+                    );
+                    ui.color_edit3("Sun color", self.scene.env.sun_color.as_mut());
                     ui.input_float3("Camera position", self.scene.camera.position.as_mut())
                         .build();
+                    ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
                 });
             let draw_data = self.imgui.render();
 

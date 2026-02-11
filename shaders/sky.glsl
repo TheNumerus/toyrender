@@ -14,7 +14,7 @@ layout(set = 0, binding = 2) VIEW_PROJ;
 layout(set = 0, binding = 3) ENV;
 
 layout(set = 1, binding = 0) uniform sampler2D images[];
-layout(set = 1, binding = 1, rgba16) uniform image2D storages[];
+layout(set = 1, binding = 1, rgba16f) uniform image2D storages[];
 
 layout(push_constant) uniform constants {
     int out_idx;
@@ -224,6 +224,7 @@ void main() {
         float vert = (float(x) / float(size.x)) * 2.0 * PI;
         float hor = (float(y) / float(size.y)) * 2.0 - 1.0;
         hor = sin(hor * (PI / 2.0));
+        hor = hor * hor * sign(hor);
         float vert_intensity = sqrt(1.0 - (hor * hor));
 
         vec3 camera_vector = normalize(vec3(-cos(vert) * vert_intensity, -sin(vert) * vert_intensity, hor));
@@ -234,7 +235,7 @@ void main() {
         vec3 col = calculate_scattering(
         camera_position, // the position of the camera
         camera_vector, // the camera vector (ray direction of this pixel)
-        env.sun_direction, // light direction
+        env.sun_dir_sun_angle.xyz, // light direction
         vec3(40.0), // light intensity, 40 looks nice
         PLANET_POS, // position of the planet
         PLANET_RADIUS, // radius of the planet in meters

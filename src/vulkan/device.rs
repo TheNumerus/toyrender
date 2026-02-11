@@ -1,11 +1,11 @@
 use crate::vulkan::{
-    CommandBuffer, Instance, IntoVulkanError, Surface, VulkanError, DEFERRED_HOST_OPS_EXTENSION, DYN_RENDER_EXTENSION,
+    CommandBuffer, DEFERRED_HOST_OPS_EXTENSION, DYN_RENDER_EXTENSION, Instance, IntoVulkanError,
     RT_ACCELERATION_EXTENSION, RT_PIPELINE_EXTENSION, RT_POSITION_FETCH_EXTENSION, SHADER_CLOCK_EXTENSION,
-    SWAPCHAIN_EXTENSION,
+    SWAPCHAIN_EXTENSION, Surface, VulkanError,
 };
+use ash::Device as RawDevice;
 use ash::vk;
 use ash::vk::{ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
-use ash::Device as RawDevice;
 use log::info;
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
@@ -41,7 +41,6 @@ impl Device {
             RT_ACCELERATION_EXTENSION,
             RT_POSITION_FETCH_EXTENSION,
             SHADER_CLOCK_EXTENSION,
-            DYN_RENDER_EXTENSION,
         ];
 
         let mut res_devices = Vec::new();
@@ -118,7 +117,6 @@ impl Device {
             DEFERRED_HOST_OPS_EXTENSION,
             RT_POSITION_FETCH_EXTENSION,
             SHADER_CLOCK_EXTENSION,
-            DYN_RENDER_EXTENSION,
         ];
 
         let device_extensions_ptr = device_extensions.iter().map(|c| (*c).as_ptr()).collect::<Vec<_>>();
@@ -146,7 +144,7 @@ impl Device {
             ..Default::default()
         };
 
-        let dyn_create_info = vk::PhysicalDeviceDynamicRenderingFeatures {
+        let vk_13_info = vk::PhysicalDeviceVulkan13Features {
             dynamic_rendering: 1,
             p_next: std::ptr::addr_of!(rt_create_info) as *mut c_void,
             ..Default::default()
@@ -156,7 +154,7 @@ impl Device {
             runtime_descriptor_array: 1,
             buffer_device_address: 1,
             descriptor_binding_partially_bound: 1,
-            p_next: std::ptr::addr_of!(dyn_create_info) as *mut c_void,
+            p_next: std::ptr::addr_of!(vk_13_info) as *mut c_void,
             ..Default::default()
         };
 
