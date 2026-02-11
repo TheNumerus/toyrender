@@ -85,10 +85,11 @@ impl RendererDescriptors {
 
             if item.value.borrow().usage.contains(vk::ImageUsageFlags::SAMPLED) {
                 for set in &self.compute_sets {
-                    let image_info = vec![item
-                        .value
-                        .borrow()
-                        .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                    let image_info = vec![
+                        item.value
+                            .borrow()
+                            .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                    ];
 
                     let write = vk::WriteDescriptorSet {
                         dst_set: set.inner,
@@ -106,10 +107,11 @@ impl RendererDescriptors {
                     })
                 }
                 for set in &self.image_sets {
-                    let image_info = vec![item
-                        .value
-                        .borrow()
-                        .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
+                    let image_info = vec![
+                        item.value
+                            .borrow()
+                            .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                    ];
 
                     let write = vk::WriteDescriptorSet {
                         dst_set: set.inner,
@@ -227,8 +229,8 @@ impl DescLayout {
     }
 }
 
-pub struct DescriptorWrite {
-    pub write: vk::WriteDescriptorSet,
+pub struct DescriptorWrite<'a> {
+    pub write: vk::WriteDescriptorSet<'a>,
     pub buffer_info: Option<vk::DescriptorBufferInfo>,
     pub image_info: Option<Vec<vk::DescriptorImageInfo>>,
     pub tlases: Option<Vec<vk::AccelerationStructureKHR>>,

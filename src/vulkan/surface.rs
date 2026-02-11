@@ -1,7 +1,7 @@
 use crate::vulkan::{Instance, VulkanError};
-use ash::extensions::khr::Surface as SurfaceLoader;
-use ash::vk::{Handle, SurfaceKHR};
 use ash::Entry;
+use ash::khr::surface::Instance as SurfaceLoader;
+use ash::vk::{Handle, SurfaceKHR};
 use sdl2::video::VkSurfaceKHR;
 
 pub struct Surface {

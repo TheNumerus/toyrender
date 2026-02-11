@@ -1,10 +1,10 @@
-use crate::vulkan::{IntoVulkanError, DEBUG_UTILS_EXTENSION};
-use ash::extensions::ext::DebugUtils;
-use ash::{vk, Entry, Instance as RawInstance};
+use crate::vulkan::{DEBUG_UTILS_EXTENSION, IntoVulkanError};
+use ash::ext::debug_utils::Instance as DebugUtils;
+use ash::{Entry, Instance as RawInstance, vk};
 use log::warn;
 use std::ffi::{CStr, CString};
 
-use super::{VulkanError, VALIDATION_LAYER};
+use super::{VALIDATION_LAYER, VulkanError};
 
 pub struct Instance {
     pub inner: RawInstance,
@@ -83,9 +83,11 @@ fn get_instance_layers(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
         return Ok(vec![]);
     }
 
-    let layers = entry
-        .enumerate_instance_layer_properties()
-        .map_to_err("cannot get possible layers")?;
+    let layers = unsafe {
+        entry
+            .enumerate_instance_layer_properties()
+            .map_to_err("cannot get possible layers")?
+    };
 
     let has_validation = layers
         .iter()
@@ -110,9 +112,11 @@ fn get_instance_extensions(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
         return Ok(vec![]);
     }
 
-    let layers = entry
-        .enumerate_instance_extension_properties(None)
-        .map_to_err("cannot get possible layers")?;
+    let layers = unsafe {
+        entry
+            .enumerate_instance_extension_properties(None)
+            .map_to_err("cannot get possible layers")?
+    };
 
     let has_markers = layers
         .iter()

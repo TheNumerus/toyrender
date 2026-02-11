@@ -1,4 +1,4 @@
-use ash::extensions::khr::Swapchain as SwapchainLoader;
+use ash::khr::swapchain::Device as SwapchainLoader;
 use ash::vk;
 use ash::vk::{Extent2D, Image, SurfaceFormatKHR, SwapchainKHR};
 use std::rc::Rc;

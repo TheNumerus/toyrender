@@ -40,15 +40,14 @@ pub use sync::{Fence, Semaphore};
 pub use vertex::{Vertex, VertexIndexBuffer};
 
 pub const VALIDATION_LAYER: &str = "VK_LAYER_KHRONOS_validation";
-pub const DEBUG_UTILS_EXTENSION: &CStr = ash::extensions::ext::DebugUtils::name();
-pub const SHADER_CLOCK_EXTENSION: &CStr = unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_KHR_shader_clock\0") };
-pub const SWAPCHAIN_EXTENSION: &CStr = ash::extensions::khr::Swapchain::name();
-pub const RT_ACCELERATION_EXTENSION: &CStr = ash::extensions::khr::AccelerationStructure::name();
-pub const RT_PIPELINE_EXTENSION: &CStr = ash::extensions::khr::RayTracingPipeline::name();
-pub const DEFERRED_HOST_OPS_EXTENSION: &CStr = ash::extensions::khr::DeferredHostOperations::name();
-pub const RT_POSITION_FETCH_EXTENSION: &CStr =
-    unsafe { CStr::from_bytes_with_nul_unchecked(b"VK_KHR_ray_tracing_position_fetch\0") };
-pub const DYN_RENDER_EXTENSION: &CStr = ash::extensions::khr::DynamicRendering::name();
+pub const DEBUG_UTILS_EXTENSION: &CStr = ash::ext::debug_utils::NAME;
+pub const SHADER_CLOCK_EXTENSION: &CStr = ash::khr::shader_clock::NAME;
+pub const SWAPCHAIN_EXTENSION: &CStr = ash::khr::swapchain::NAME;
+pub const RT_ACCELERATION_EXTENSION: &CStr = ash::khr::acceleration_structure::NAME;
+pub const RT_PIPELINE_EXTENSION: &CStr = ash::khr::ray_tracing_pipeline::NAME;
+pub const DEFERRED_HOST_OPS_EXTENSION: &CStr = ash::khr::deferred_host_operations::NAME;
+pub const RT_POSITION_FETCH_EXTENSION: &CStr = ash::khr::ray_tracing_position_fetch::NAME;
+pub const DYN_RENDER_EXTENSION: &CStr = ash::khr::dynamic_rendering::NAME;
 
 #[derive(Error, Debug)]
 #[error("{msg}: {code}")]

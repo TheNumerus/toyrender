@@ -393,12 +393,16 @@ impl VulkanRenderer {
             ));
         }
 
-        writes.extend(descriptors.borrow_mut().update_resources(&render_targets)?);
+        let mut desc_borrow = descriptors.borrow_mut();
+
+        writes.extend(desc_borrow.update_resources(&render_targets)?);
+
+        DescriptorWriter::batch_write(&device, writes);
+
+        drop(desc_borrow);
 
         info!("Storage images: {:?}", descriptors.borrow().storages.len());
         info!("Sampled images: {:?}", descriptors.borrow().samplers.len());
-
-        DescriptorWriter::batch_write(&device, writes);
 
         let imgui_renderer = imgui_rs_vulkan_renderer::Renderer::with_gpu_allocator(
             allocator.clone(),
@@ -577,10 +581,10 @@ impl VulkanRenderer {
         }
     }
 
-    fn create_tlas_update_descriptor_set(
+    fn create_tlas_update_descriptor_set<'a>(
         desc_set: &vk::DescriptorSet,
         tlas: &AccelerationStructure,
-    ) -> DescriptorWrite {
+    ) -> DescriptorWrite<'a> {
         let tlas_write = vk::WriteDescriptorSet {
             dst_set: *desc_set,
             dst_binding: 1,
@@ -598,13 +602,13 @@ impl VulkanRenderer {
         }
     }
 
-    fn init_global_descriptor_set(
+    fn init_global_descriptor_set<'a>(
         desc_set: &vk::DescriptorSet,
         globals: &vk::Buffer,
         tlas: &AccelerationStructure,
         view: &vk::Buffer,
         env: &vk::Buffer,
-    ) -> Vec<DescriptorWrite> {
+    ) -> Vec<DescriptorWrite<'a>> {
         vec![
             create_buffer_update(globals, size_of::<Globals>() as u64 + 4, desc_set, 0),
             Self::create_tlas_update_descriptor_set(desc_set, tlas),
@@ -844,9 +848,12 @@ impl VulkanRenderer {
             &[self.render_targets.get_ref("last_depth").unwrap().image.inner],
         )?;
 
-        let writes = self.descriptors.borrow_mut().update_resources(&self.render_targets)?;
+        let mut desc_borrow = self.descriptors.borrow_mut();
+        let writes = desc_borrow.update_resources(&self.render_targets)?;
 
         DescriptorWriter::batch_write(&self.device, writes);
+
+        drop(desc_borrow);
 
         Ok(())
     }
@@ -1126,7 +1133,12 @@ fn view_proj_to_buffer(current: &ViewProj, old: &ViewProj) -> Box<[u8]> {
     buf.into_boxed_slice()
 }
 
-fn create_buffer_update(buffer: &vk::Buffer, range: u64, dst_set: &vk::DescriptorSet, binding: u32) -> DescriptorWrite {
+fn create_buffer_update<'a>(
+    buffer: &vk::Buffer,
+    range: u64,
+    dst_set: &vk::DescriptorSet,
+    binding: u32,
+) -> DescriptorWrite<'a> {
     let buffer_info = vk::DescriptorBufferInfo {
         buffer: *buffer,
         offset: 0,

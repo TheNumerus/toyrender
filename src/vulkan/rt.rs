@@ -3,8 +3,8 @@ use crate::renderer::TlasIndex;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, Device, Fence, Instance, IntoVulkanError, Pipeline, Rt, VulkanError,
 };
-use ash::extensions::khr::AccelerationStructure as AccelerationStructureLoader;
-use ash::extensions::khr::RayTracingPipeline as RayTracingPipelineLoader;
+use ash::khr::acceleration_structure::Device as AccelerationStructureLoader;
+use ash::khr::ray_tracing_pipeline::Device as RayTracingPipelineLoader;
 use ash::vk;
 use ash::vk::{AccelerationStructureKHR, Packed24_8};
 use gpu_allocator::MemoryLocation;
@@ -354,11 +354,14 @@ impl AccelerationStructure {
             ..Default::default()
         };
 
-        let size_info = unsafe {
+        let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+
+        unsafe {
             rt_acc_struct_ext.loader.get_acceleration_structure_build_sizes(
                 vk::AccelerationStructureBuildTypeKHR::DEVICE,
                 &build_info,
                 &[instances.len() as u32],
+                &mut size_info,
             )
         };
 
@@ -448,11 +451,14 @@ impl AccelerationStructure {
                 ..Default::default()
             };
 
-            let size_info = unsafe {
+            let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+
+            unsafe {
                 rt_acc_struct_ext.loader.get_acceleration_structure_build_sizes(
                     vk::AccelerationStructureBuildTypeKHR::DEVICE,
                     &build_info,
                     &[range.primitive_count],
+                    &mut size_info,
                 )
             };
 

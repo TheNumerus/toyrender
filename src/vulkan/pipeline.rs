@@ -239,7 +239,7 @@ impl Pipeline<Rt> {
                     &[pipeline_info],
                     None,
                 )
-                .map_err(|code| VulkanError {
+                .map_err(|(_, code)| VulkanError {
                     code,
                     msg: "Cannot create pipeline".into(),
                 })?

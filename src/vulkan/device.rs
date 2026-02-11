@@ -4,6 +4,7 @@ use crate::vulkan::{
     SWAPCHAIN_EXTENSION, Surface, VulkanError,
 };
 use ash::Device as RawDevice;
+use ash::ext::debug_utils::Device as DebugUtils;
 use ash::vk;
 use ash::vk::{ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
 use log::info;
@@ -22,6 +23,7 @@ pub struct Device {
     pub compute_queue_family: usize,
     pub physical_device: PhysicalDevice,
     pub rt_properties: RtProperties,
+    pub debug_utils: Option<DebugUtils>,
     instance: Rc<Instance>,
 }
 
@@ -197,6 +199,13 @@ impl Device {
             vk::api_version_patch(properties.properties.api_version)
         );
 
+        let markers_active = instance.debug_utils.is_some();
+
+        let debug_utils = match markers_active {
+            true => Some(DebugUtils::new(&instance.inner, &inner)),
+            false => None,
+        };
+
         Ok(Self {
             inner,
             graphics_queue,
@@ -207,6 +216,7 @@ impl Device {
             compute_queue_family: queue_families.compute.unwrap(),
             physical_device: device.device,
             rt_properties,
+            debug_utils,
             instance,
         })
     }
@@ -352,11 +362,10 @@ impl Device {
         }
 
         unsafe {
-            self.instance
-                .debug_utils
+            self.debug_utils
                 .as_ref()
                 .unwrap()
-                .set_debug_utils_object_name(self.inner.handle(), &name_info)
+                .set_debug_utils_object_name(&name_info)
                 .map_to_err("Cannot name object")
         }
     }
@@ -375,8 +384,7 @@ impl Device {
         };
 
         unsafe {
-            self.instance
-                .debug_utils
+            self.debug_utils
                 .as_ref()
                 .unwrap()
                 .cmd_begin_debug_utils_label(command_buffer.inner, &label_info);
@@ -389,8 +397,7 @@ impl Device {
         }
 
         unsafe {
-            self.instance
-                .debug_utils
+            self.debug_utils
                 .as_ref()
                 .unwrap()
                 .cmd_end_debug_utils_label(command_buffer.inner);
