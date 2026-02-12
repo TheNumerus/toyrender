@@ -8,7 +8,7 @@ use gltf::mesh::Mode;
 use gltf::{Accessor, Gltf, Primitive, Semantic};
 use log::info;
 use nalgebra::{Point3, Quaternion, Rotation3};
-use nalgebra_glm::{inverse, quat_cast, vec3, Mat4, Vec2, Vec3, Vec4};
+use nalgebra_glm::{Mat4, Vec2, Vec3, Vec4, inverse, quat_cast, vec3};
 use std::rc::Rc;
 
 fn get_mesh_indices_type(mesh: &gltf::Mesh, buffers: &[Data]) -> Result<IndexType, AppError> {
@@ -168,18 +168,13 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
         meshes.push(m);
     }
 
-    for instance in gltf.document.scenes().next().unwrap().nodes() {
-        let mesh = instance.mesh();
-
-        let mut ins = match mesh {
-            Some(m) => MeshInstance::new(meshes[m.index()].clone()),
-            None => continue,
-        };
-
-        ins.transform = transform_from_node(&instance, &gltf_convert_matrix);
-
-        instances.push(ins);
-    }
+    extract_instances(
+        gltf_convert_matrix,
+        Mat4::identity(),
+        gltf.document.scenes().next().unwrap().nodes(),
+        &mut meshes,
+        &mut instances,
+    );
 
     info!("Loaded {} meshes in {} instances", meshes.len(), instances.len());
 
@@ -188,6 +183,36 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
         instances,
         camera,
     })
+}
+
+fn extract_instances<'a, T: ExactSizeIterator<Item = gltf::Node<'a>>>(
+    convert_mat: Mat4,
+    root_transform: Mat4,
+    nodes: T,
+    meshes: &mut Vec<Rc<MeshResource>>,
+    instances: &mut Vec<MeshInstance>,
+) {
+    for instance in nodes {
+        let transform = transform_from_node(&instance, &convert_mat);
+        extract_instances(
+            convert_mat,
+            root_transform * transform,
+            instance.children(),
+            meshes,
+            instances,
+        );
+
+        let mesh = instance.mesh();
+
+        let mut ins = match mesh {
+            Some(m) => MeshInstance::new(meshes[m.index()].clone()),
+            None => continue,
+        };
+
+        ins.transform = root_transform * transform;
+
+        instances.push(ins);
+    }
 }
 
 pub struct ImportedScene {
@@ -292,13 +317,16 @@ impl<'a> Accessors<'a> {
         match accessor.data_type() {
             ComponentType::U16 => IndicesAccessor::U16(Self::accessor_to_slice(accessor, data)),
             ComponentType::U32 => IndicesAccessor::U32(Self::accessor_to_slice(accessor, data)),
-            _ => panic!("invalid indices format in glTF"),
+            _ => panic!("invalid indices format in glTF: {}", {
+                accessor.data_type().as_gl_enum()
+            }),
         }
     }
 }
 
 fn transform_from_node(node: &gltf::Node, convert_matrix: &Mat4) -> Mat4 {
     let (pos, rot, scale) = node.transform().decomposed();
+    let scale = [scale[0], scale[2], scale[1]];
 
     let quat = Quaternion::new(rot[3], rot[0], rot[1], rot[2]);
 

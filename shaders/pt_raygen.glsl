@@ -32,7 +32,8 @@ layout( push_constant ) uniform constants {
     int direct_idx;
     int indirect_idx;
     int sky_idx;
-    float trace_distance;
+    float direct_trace_distance;
+    float indirect_trace_distance;
     int sky_only;
 } push_consts;
 
@@ -61,7 +62,7 @@ void trace (vec3 pos, vec3 dir) {
         pos,
         0.0001,
         dir,
-        push_consts.trace_distance,
+        push_consts.indirect_trace_distance,
         0
     );
 }
@@ -77,7 +78,7 @@ void traceShadow (vec3 pos, vec3 dir) {
         pos,
         0.0001,
         dir,
-        100.0,
+        push_consts.direct_trace_distance,
         0
     );
 }

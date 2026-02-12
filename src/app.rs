@@ -172,8 +172,6 @@ impl App {
                     Event::KeyDown { keycode, .. } => match keycode {
                         Some(Keycode::LeftBracket) => bounce_adjust = -1,
                         Some(Keycode::RightBracket) => bounce_adjust = 1,
-                        Some(Keycode::O) => dist_adjust = -5.0,
-                        Some(Keycode::P) => dist_adjust = 5.0,
                         Some(Keycode::R) => {
                             debug_mode_flip = true;
                             clear_taa = true;
@@ -222,7 +220,6 @@ impl App {
             }
 
             self.scene.env.exposure = (self.scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
-            self.renderer.quality.rt_trace_disance += dist_adjust;
 
             if flip_half_res {
                 self.renderer.quality.half_res = !self.renderer.quality.half_res;
@@ -248,10 +245,16 @@ impl App {
                     let group = ui.begin_group();
                     ui.text("RT Setings");
                     ui.slider(
+                        "Direct trace distance",
+                        0.0,
+                        500.0,
+                        &mut self.renderer.quality.rt_direct_trace_disance,
+                    );
+                    ui.slider(
                         "Indirect trace distance",
                         0.0,
                         500.0,
-                        &mut self.renderer.quality.rt_trace_disance,
+                        &mut self.renderer.quality.rt_indirect_trace_disance,
                     );
                     ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces);
                     ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);

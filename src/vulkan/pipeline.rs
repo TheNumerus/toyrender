@@ -39,7 +39,11 @@ impl Pipeline<Graphics> {
         use_depth: bool,
         push_consts_size: u32,
     ) -> Result<Self, VulkanError> {
-        let dynamic_states = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
+        let dynamic_states = [
+            vk::DynamicState::VIEWPORT,
+            vk::DynamicState::SCISSOR,
+            vk::DynamicState::CULL_MODE,
+        ];
 
         let dynamic_state = vk::PipelineDynamicStateCreateInfo {
             dynamic_state_count: dynamic_states.len() as u32,

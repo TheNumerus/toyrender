@@ -63,7 +63,8 @@ impl PathTracePass {
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
-                .add_f32(renderer.quality.rt_trace_disance)
+                .add_f32(renderer.quality.rt_direct_trace_disance)
+                .add_f32(renderer.quality.rt_indirect_trace_disance)
                 .add_u32(scene.env.sky_only as u32)
                 .build();
 
