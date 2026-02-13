@@ -1,33 +1,30 @@
-#version 450
-#pragma shader_stage(compute)
-#extension GL_EXT_nonuniform_qualifier : enable
-
-#include "common/debug_modes.glsl"
-#include "common/defs.glsl"
-
-layout (local_size_x = 16, local_size_y = 16) in;
+import Common;
 
 #define PI 3.14159265359
 
-layout(set = 0, binding = 0) GLOBAL;
-layout(set = 0, binding = 2) VIEW_PROJ;
-layout(set = 0, binding = 3) ENV;
+[[vk::binding(0, 0)]]
+ConstantBuffer<Global> global;
 
-layout(set = 1, binding = 0) uniform sampler2D images[];
-layout(set = 1, binding = 1, rgba16f) uniform image2D storages[];
+[[vk::binding(2, 0)]]
+ConstantBuffer<ViewProj> vp;
 
-layout(push_constant) uniform constants {
-    int out_idx;
-} push_consts;
+[[vk::binding(3, 0)]]
+ConstantBuffer<Environment> env;
 
-#define PLANET_POS vec3(0.0) /* the position of the planet */
+[[vk::binding(0, 1)]]
+Sampler2D images[];
+
+[[vk::binding(1, 1)]]
+RWTexture2D<float4> storages[];
+
+#define PLANET_POS float3(0.0) /* the position of the planet */
 #define PLANET_RADIUS 6371e3 /* radius of the planet */
 #define ATMOS_RADIUS 6471e3 /* radius of the atmosphere */
 // scattering coeffs
-#define RAY_BETA vec3(5.5e-6, 13.0e-6, 22.4e-6) /* rayleigh, affects the color of the sky */
-#define MIE_BETA vec3(21e-6) /* mie, affects the color of the blob around the sun */
-#define AMBIENT_BETA vec3(0.0) /* ambient, affects the scattering color when there is no lighting from the sun */
-#define ABSORPTION_BETA vec3(2.04e-5, 4.97e-5, 1.95e-6) /* what color gets absorbed by the atmosphere (Due to things like ozone) */
+#define RAY_BETA float3(5.5e-6, 13.0e-6, 22.4e-6) /* rayleigh, affects the color of the sky */
+#define MIE_BETA float3(21e-6) /* mie, affects the color of the blob around the sun */
+#define AMBIENT_BETA float3(0.0) /* ambient, affects the scattering color when there is no lighting from the sun */
+#define ABSORPTION_BETA float3(2.04e-5, 4.97e-5, 1.95e-6) /* what color gets absorbed by the atmosphere (Due to things like ozone) */
 #define G 0.7 /* mie scattering direction, or how big the blob around the sun is */
 // and the heights (how far to go up before the scattering has no effect)
 #define HEIGHT_RAY 8e3 /* rayleigh height */
@@ -45,18 +42,18 @@ This traces a ray from start to end and takes a certain amount of samples along 
 For every sample, we'll also trace a ray in the direction of the light,
 because the color that reaches the sample also changes due to scattering
 */
-vec3 calculate_scattering(
-vec3 start, // the start of the ray (the camera position)
-vec3 dir, // the direction of the ray (the camera vector)
-vec3 light_dir, // the direction of the light
-vec3 light_intensity, // how bright the light is, affects the brightness of the atmosphere
-vec3 planet_position, // the position of the planet
+float3 calculate_scattering(
+float3 start, // the start of the ray (the camera position)
+float3 dir, // the direction of the ray (the camera vector)
+float3 light_dir, // the direction of the light
+float3 light_intensity, // how bright the light is, affects the brightness of the atmosphere
+float3 planet_position, // the position of the planet
 float planet_radius, // the radius of the planet
 float atmo_radius, // the radius of the atmosphere
-vec3 beta_ray, // the amount rayleigh scattering scatters the colors (for earth: causes the blue atmosphere)
-vec3 beta_mie, // the amount mie scattering scatters colors
-vec3 beta_absorption, // how much air is absorbed
-vec3 beta_ambient, // the amount of scattering that always occurs, cna help make the back side of the atmosphere a bit brighter
+float3 beta_ray, // the amount rayleigh scattering scatters the colors (for earth: causes the blue atmosphere)
+float3 beta_mie, // the amount mie scattering scatters colors
+float3 beta_absorption, // how much air is absorbed
+float3 beta_ambient, // the amount of scattering that always occurs, cna help make the back side of the atmosphere a bit brighter
 float g, // the direction mie scatters the light in (like a cone). closer to -1 means more towards a single direction
 float height_ray, // how high do you have to go before there is no rayleigh scattering?
 float height_mie, // the same, but for mie
@@ -75,16 +72,16 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
     float d = (b * b) - 4.0 * a * c;
 
     // stop early if there is no intersect
-    if (d < 0.0) return vec3(0.0);
+    if (d < 0.0) return float3(0.0);
 
     // calculate the ray length
-    vec2 ray_length = vec2(
+    float2 ray_length = float2(
     max((-b - sqrt(d)) / (2.0 * a), 0.0),
     min((-b + sqrt(d)) / (2.0 * a), 100000000.0)
     );
 
     // if the ray did not hit the atmosphere, return a black color
-    if (ray_length.x > ray_length.y) return vec3(0.0);
+    if (ray_length.x > ray_length.y) return float3(0.0);
     // prevent the mie glow from appearing if there's an object in front of the camera
     bool allow_mie = 100000000.0 > ray_length.y;
     // make sure the ray is no longer than allowed
@@ -100,14 +97,14 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
     float ray_pos_i = ray_length.x + step_size_i * 0.5;
 
     // these are the values we use to gather all the scattered light
-    vec3 total_ray = vec3(0.0);// for rayleigh
-    vec3 total_mie = vec3(0.0);// for mie
+    float3 total_ray = float3(0.0);// for rayleigh
+    float3 total_mie = float3(0.0);// for mie
 
     // initialize the optical depth. This is used to calculate how much air was in the ray
-    vec3 opt_i = vec3(0.0);
+    float3 opt_i = float3(0.0);
 
-    // also init the scale height, avoids some vec2's later on
-    vec2 scale_height = vec2(height_ray, height_mie);
+    // also init the scale height, avoids some float2's later on
+    float2 scale_height = float2(height_ray, height_mie);
 
     // Calculate the Rayleigh and Mie phases.
     // This is the color that will be scattered for this ray
@@ -122,13 +119,13 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
     for (int i = 0; i < steps_i; ++i) {
 
         // calculate where we are along this ray
-        vec3 pos_i = start + dir * ray_pos_i;
+        float3 pos_i = start + dir * ray_pos_i;
 
         // and how high we are above the surface
         float height_i = length(pos_i) - planet_radius;
 
         // now calculate the density of the particles (both for rayleigh and mie)
-        vec3 density = vec3(exp(-height_i / scale_height), 0.0);
+        float3 density = float3(exp(-height_i / scale_height), 0.0);
 
         // and the absorption density. this is for ozone, which scales together with the rayleigh,
         // but absorbs the most at a specific height, so use the sech function for a nice curve falloff for this height
@@ -160,14 +157,14 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
         float ray_pos_l = step_size_l * 0.5;
 
         // and the optical depth of this ray
-        vec3 opt_l = vec3(0.0);
+        float3 opt_l = float3(0.0);
 
         // now sample the light ray
         // this is similar to what we did before
         for (int l = 0; l < steps_l; ++l) {
 
             // calculate where we are along this ray
-            vec3 pos_l = pos_i + light_dir * ray_pos_l;
+            float3 pos_l = pos_i + light_dir * ray_pos_l;
 
             // the heigth of the position
             float height_l = length(pos_l) - planet_radius;
@@ -175,7 +172,7 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
             // calculate the particle density, and add it
             // this is a bit verbose
             // first, set the density for ray and mie
-            vec3 density_l = vec3(exp(-height_l / scale_height), 0.0);
+            float3 density_l = float3(exp(-height_l / scale_height), 0.0);
 
             // then, the absorption
             float denom = (height_absorption - height_l) / absorption_falloff;
@@ -194,7 +191,7 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
 
         // Now we need to calculate the attenuation
         // this is essentially how much light reaches the current sample point due to scattering
-        vec3 attn = exp(-beta_ray * (opt_i.x + opt_l.x) - beta_mie * (opt_i.y + opt_l.y) - beta_absorption * (opt_i.z + opt_l.z));
+        float3 attn = exp(-beta_ray * (opt_i.x + opt_l.x) - beta_mie * (opt_i.y + opt_l.y) - beta_absorption * (opt_i.z + opt_l.z));
 
         // accumulate the scattered light (how much will be scattered towards the camera)
         total_ray += density.x * attn;
@@ -212,14 +209,19 @@ int steps_l// the amount of steps along the light ray, more looks better but slo
     ) * light_intensity;// now make sure the background is rendered correctly
 }
 
-void main() {
-    uint x = gl_GlobalInvocationID.x;
-    uint y = gl_GlobalInvocationID.y;
+[numthreads(16, 16, 1)]
+[shader("compute")]
+void main(uint3 tid: SV_DispatchThreadID, uniform int out_idx) {
+    uint x = tid.x;
+    uint y = tid.y;
 
-    ivec2 size = imageSize(storages[push_consts.out_idx]);
+    int width;
+    int height;
+    storages[out_idx].GetDimensions(width, height);
+    int2 size = int2(width, height);
 
     if (x <= size.x && y <= size.y) {
-        vec4 color = vec4(0.0);
+        float4 color = float4(0.0);
 
         float vert = (float(x) / float(size.x)) * 2.0 * PI;
         float hor = (float(y) / float(size.y)) * 2.0 - 1.0;
@@ -227,16 +229,16 @@ void main() {
         hor = hor * hor * sign(hor);
         float vert_intensity = sqrt(1.0 - (hor * hor));
 
-        vec3 camera_vector = normalize(vec3(-cos(vert) * vert_intensity, -sin(vert) * vert_intensity, hor));
+        float3 camera_vector = normalize(float3(-cos(vert) * vert_intensity, -sin(vert) * vert_intensity, hor));
 
-        vec3 camera_position = vec3(0.0, 0.0, PLANET_RADIUS + 100.0);
+        float3 camera_position = float3(0.0, 0.0, PLANET_RADIUS + 100.0);
 
         // the color of this pixel
-        vec3 col = calculate_scattering(
+        float3 col = calculate_scattering(
         camera_position, // the position of the camera
         camera_vector, // the camera vector (ray direction of this pixel)
         env.sun_dir_sun_angle.xyz, // light direction
-        vec3(40.0), // light intensity, 40 looks nice
+        float3(40.0), // light intensity, 40 looks nice
         PLANET_POS, // position of the planet
         PLANET_RADIUS, // radius of the planet in meters
         ATMOS_RADIUS, // radius of the atmosphere in meters
@@ -253,8 +255,8 @@ void main() {
         LIGHT_STEPS// steps in the light direction
         );
 
-        col = max(col, vec3(0.0));
+        col = max(col, float3(0.0));
 
-        imageStore(storages[push_consts.out_idx], ivec2(x, y), vec4(col, 1.0));
+        storages[out_idx].Store(int2(x, y), float4(col, 1.0));
     }
 }

@@ -24,6 +24,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zip::ZipArchive;
 
+mod buffers;
+use buffers::view_proj::ViewProj;
+
 mod descriptors;
 use descriptors::{DescLayout, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
@@ -41,6 +44,9 @@ use render_target::{RenderTargetBuilder, RenderTargets};
 
 mod debug;
 use debug::DebugMode;
+
+mod push_const;
+use push_const::PushConstBuilder;
 
 mod shader_loader;
 use shader_loader::ShaderLoader;
@@ -226,24 +232,31 @@ impl VulkanRenderer {
 
         pipeline_builder.build_graphics(
             "tonemap",
+            "tonemap|vertMain",
+            "tonemap|fragMain",
             &TonemapPass::DESC_LAYOUTS
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
                 .collect::<Vec<_>>(),
             &TonemapPass::TARGET_FORMATS,
             (size_of::<i32>()) as u32,
+            false,
         )?;
         pipeline_builder.build_graphics(
             "deferred",
+            "deferred|vertMain",
+            "deferred|fragMain",
             &GBufferPass::DESC_LAYOUTS
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
                 .collect::<Vec<_>>(),
             &GBufferPass::PIPELINE_TARGET_FORMATS,
-            (size_of::<nalgebra_glm::Mat4x4>()) as u32,
+            (size_of::<nalgebra_glm::Mat4x4>()) as u32 * 2,
+            true,
         )?;
         pipeline_builder.build_compute(
             "light",
+            "light|main",
             &ShadingPass::DESC_LAYOUTS
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
@@ -253,6 +266,7 @@ impl VulkanRenderer {
 
         pipeline_builder.build_compute(
             "sky",
+            "sky|main",
             &[
                 descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
                 descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
@@ -261,6 +275,7 @@ impl VulkanRenderer {
         )?;
         pipeline_builder.build_compute(
             "taa",
+            "taa|main",
             &TaaPass::DESC_LAYOUTS
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
@@ -269,6 +284,7 @@ impl VulkanRenderer {
         )?;
         pipeline_builder.build_compute(
             "atrous",
+            "atrous|main",
             &[
                 descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
                 descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
@@ -277,6 +293,7 @@ impl VulkanRenderer {
         )?;
         pipeline_builder.build_compute(
             "denoise_temporal",
+            "denoise_temporal|main",
             &[
                 descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
                 descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
@@ -285,6 +302,9 @@ impl VulkanRenderer {
         )?;
         pipeline_builder.build_rt(
             "pt",
+            "pt_rt|raygen",
+            "pt_rt|miss",
+            "pt_rt|chit",
             &PathTracePass::DESC_LAYOUTS
                 .iter()
                 .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
@@ -359,7 +379,7 @@ impl VulkanRenderer {
                 allocator.clone(),
                 MemoryLocation::CpuToGpu,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                size_of::<ViewProj>() as u64 * 2,
+                ViewProj::BUF_SIZE as u64,
             )?;
 
             uniform_buffers.push(uniform_buffer);
@@ -379,7 +399,7 @@ impl VulkanRenderer {
                 allocator.clone(),
                 MemoryLocation::CpuToGpu,
                 vk::BufferUsageFlags::UNIFORM_BUFFER,
-                size_of::<f32>() as u64 * 8,
+                size_of::<GPUEnv>() as u64,
             )?;
 
             env_uniforms.push(env_buf);
@@ -660,6 +680,10 @@ impl VulkanRenderer {
         let view_proj = ViewProj {
             view: scene.camera.view(),
             projection: proj,
+            view_prev: self.last_view_proj.view,
+            projection_prev: self.last_view_proj.projection,
+            view_inverse: scene.camera.view().try_inverse().unwrap(),
+            projection_inverse: proj.try_inverse().unwrap(),
         };
 
         let globals = Globals {
@@ -675,9 +699,9 @@ impl VulkanRenderer {
         };
 
         let env = env_to_buffer(&scene.env);
-        let view_proj_buf = view_proj_to_buffer(&view_proj, &self.last_view_proj);
+        //let view_proj_buf = view_proj_to_buffer(&view_proj, &self.last_view_proj);
 
-        self.uniform_buffers[self.current_frame].fill_host(view_proj_buf.as_ref())?;
+        self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
 
@@ -1034,12 +1058,12 @@ pub struct FrameContext {
     pub clear_taa: bool,
     pub frame_index: u32,
 }
-
+/*
 #[derive(Default)]
 pub struct ViewProj {
     pub view: nalgebra_glm::Mat4,
     pub projection: nalgebra_glm::Mat4,
-}
+}*/
 
 #[repr(C)]
 pub struct Globals {
@@ -1095,6 +1119,7 @@ struct GPUEnv {
     sun_angle: f32,
     sun_color: [f32; 3],
     sky_intensity: f32,
+    sun_intensity: f32,
 }
 
 fn env_to_buffer(env: &Environment) -> Box<[u8]> {
@@ -1107,6 +1132,7 @@ fn env_to_buffer(env: &Environment) -> Box<[u8]> {
         sun_angle: env.sun_angle,
         sun_color: env.sun_color.data.0[0],
         sky_intensity: env.sky_intensity,
+        sun_intensity: env.sun_intensity,
     };
 
     unsafe {
@@ -1120,7 +1146,7 @@ fn env_to_buffer(env: &Environment) -> Box<[u8]> {
 
     buf.into_boxed_slice()
 }
-
+/*
 fn view_proj_to_buffer(current: &ViewProj, old: &ViewProj) -> Box<[u8]> {
     let mut buf = Vec::new();
 
@@ -1131,7 +1157,7 @@ fn view_proj_to_buffer(current: &ViewProj, old: &ViewProj) -> Box<[u8]> {
     }
 
     buf.into_boxed_slice()
-}
+}*/
 
 fn create_buffer_update<'a>(
     buffer: &vk::Buffer,
@@ -1159,39 +1185,5 @@ fn create_buffer_update<'a>(
         buffer_info: Some(buffer_info),
         tlases: None,
         image_info: None,
-    }
-}
-
-pub struct PushConstBuilder {
-    storage: Vec<u8>,
-}
-
-impl PushConstBuilder {
-    pub fn new() -> Self {
-        Self { storage: Vec::new() }
-    }
-
-    pub fn add_u32(mut self, value: u32) -> Self {
-        self.storage.extend(value.to_le_bytes());
-        self
-    }
-
-    pub fn update_u32(mut self, value: u32, position: usize) -> Self {
-        self.storage.as_mut_slice()[position..position + 4].copy_from_slice(&value.to_le_bytes());
-        self
-    }
-
-    pub fn add_f32(mut self, value: f32) -> Self {
-        self.storage.extend(value.to_le_bytes());
-        self
-    }
-
-    pub fn update_f32(mut self, value: f32, position: usize) -> Self {
-        self.storage.as_mut_slice()[position..position + 4].copy_from_slice(&value.to_le_bytes());
-        self
-    }
-
-    pub fn build(self) -> Box<[u8]> {
-        self.storage.into_boxed_slice()
     }
 }

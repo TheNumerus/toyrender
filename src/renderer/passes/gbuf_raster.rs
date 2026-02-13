@@ -1,6 +1,6 @@
-use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::renderer::{PushConstBuilder, VulkanRenderer};
 use crate::scene::Scene;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
@@ -215,15 +215,20 @@ impl GBufferPass {
 
             command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
 
+            let invert = instance.transform.try_inverse().unwrap();
+
             unsafe {
-                let constants = std::slice::from_raw_parts(instance.transform.as_ptr() as *const u8, 64);
+                let push_consts = PushConstBuilder::new()
+                    .add_mat(instance.transform)
+                    .add_mat(invert)
+                    .build();
 
                 self.device.inner.cmd_push_constants(
                     command_buffer.inner,
                     pipeline.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    constants,
+                    &push_consts,
                 );
 
                 self.device.inner.cmd_bind_index_buffer(

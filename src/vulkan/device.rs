@@ -357,7 +357,7 @@ impl Device {
     }
 
     pub fn name_object(&self, name_info: vk::DebugUtilsObjectNameInfoEXT) -> Result<(), VulkanError> {
-        if !self.instance.markers_active() {
+        if self.debug_utils.is_none() {
             return Ok(());
         }
 
@@ -371,7 +371,7 @@ impl Device {
     }
 
     pub fn begin_label(&self, label: &str, command_buffer: &CommandBuffer) {
-        if !self.instance.markers_active() {
+        if self.debug_utils.is_none() {
             return;
         }
 
@@ -392,7 +392,7 @@ impl Device {
     }
 
     pub fn end_label(&self, command_buffer: &CommandBuffer) {
-        if !self.instance.markers_active() {
+        if self.debug_utils.is_none() {
             return;
         }
 

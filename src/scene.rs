@@ -1,28 +1,40 @@
 use crate::camera::PerspectiveCamera;
 use crate::mesh::MeshInstance;
-use nalgebra_glm::{Vec3, vec3};
+use nalgebra_glm::{Mat4, Vec3, vec3};
 
 pub struct PointLight {
-    pub position: Vec3,
     pub color: Vec3,
     pub intensity: f32,
     pub radius: f32,
 }
 
+pub enum Component {
+    Transform(Mat4),
+    MeshInstance,
+    PointLight(PointLight),
+    Camera,
+    Environment,
+}
+
+pub struct Node {
+    pub children: Vec<Node>,
+    pub components: Vec<Component>,
+}
+
 pub struct Scene {
+    pub nodes: Vec<Node>,
     pub camera: PerspectiveCamera,
     pub meshes: Vec<MeshInstance>,
     pub env: Environment,
-    pub lights: Vec<PointLight>,
 }
 
 impl Scene {
     pub fn new() -> Self {
         Scene {
+            nodes: Vec::new(),
             camera: PerspectiveCamera::new(),
             meshes: Vec::new(),
             env: Environment::default(),
-            lights: Vec::new(),
         }
     }
 }
@@ -33,7 +45,7 @@ pub struct Environment {
     pub sun_angle: f32,
     pub exposure: f32,
     pub sky_intensity: f32,
-    pub sky_only: bool,
+    pub sun_intensity: f32,
 }
 
 impl Default for Environment {
@@ -44,7 +56,7 @@ impl Default for Environment {
             sun_angle: 0.54 / (180.0 * std::f32::consts::PI),
             exposure: 0.0,
             sky_intensity: 1.0,
-            sky_only: false,
+            sun_intensity: 1.0,
         }
     }
 }

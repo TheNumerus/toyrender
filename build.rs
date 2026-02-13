@@ -1,7 +1,9 @@
 use std::io::{ErrorKind, Write};
 use std::path::Path;
-use zip::write::FileOptions;
 use zip::ZipWriter;
+use zip::write::FileOptions;
+
+const ENTRY_REGEX: &str = r##"\[shader\("[a-z]+"\)\][\sa-zA-Z0-9]+ ([A-Za-z]+)\("##;
 
 fn main() -> Result<(), std::io::Error> {
     if let Err(e) = std::fs::create_dir("build") {
@@ -14,56 +16,51 @@ fn main() -> Result<(), std::io::Error> {
         std::fs::remove_file(file?.path())?;
     }
 
+    let archive = std::fs::File::create("build/shaders.zip")?;
+    let mut archive = ZipWriter::new(archive);
+
+    let re = regex::Regex::new(ENTRY_REGEX).map_err(|e| std::io::Error::other(e))?;
+
     for file in std::fs::read_dir("shaders")? {
         let file = file?;
-        if file.path().is_dir() {
+        let path = file.path();
+
+        if path.is_dir() {
             continue;
         }
 
         let name = file.file_name();
 
-        if file.path().extension().unwrap() != "glsl" {
+        if path.extension().unwrap() != "slang" {
             continue;
         }
 
-        let final_name = format!("{}.spv", file.path().file_stem().unwrap().to_str().unwrap());
+        let stem = path.file_stem().unwrap().to_str().unwrap();
 
         let input = format!("shaders/{}", name.to_str().unwrap());
-        let output = format!("build/{}", final_name);
 
-        let res = std::process::Command::new("glslc")
-            .args([&input, "-o", &output, "--target-env=vulkan1.3"])
-            .output()
-            .unwrap();
+        let content = std::fs::read_to_string(&input)?;
 
-        if !res.status.success() {
-            panic!("{}", String::from_utf8_lossy(&res.stderr));
+        for m in re.captures_iter(&content) {
+            let entry = m.get(1).unwrap().as_str();
+
+            let name = format!("{stem}|{entry}");
+
+            let res = std::process::Command::new("slangc")
+                .args([&input, "-target", "spirv", "-entry", entry])
+                .output()
+                .unwrap();
+
+            if !res.status.success() {
+                panic!("{}", String::from_utf8_lossy(&res.stderr));
+            }
+
+            println!("Compiling {stem}|{entry}");
+
+            archive.start_file(&name, FileOptions::default())?;
+            archive.write_all(&res.stdout)?;
         }
-
-        println!("Compiling {} to {}", name.to_str().unwrap(), final_name);
     }
-
-    let archive = std::fs::File::create("build/shaders.zip")?;
-    let mut archive = ZipWriter::new(archive);
-
-    for file in std::fs::read_dir("build")? {
-        let file = file?;
-
-        if file.path().extension().unwrap() != "spv" {
-            continue;
-        }
-
-        archive.start_file(
-            file.path().file_name().unwrap().to_string_lossy(),
-            FileOptions::default(),
-        )?;
-        let content = std::fs::read(file.path())?;
-        archive.write_all(content.as_slice())?;
-    }
-
-    archive.start_file("manifest.toml", FileOptions::default())?;
-    let content = std::fs::read("shaders/manifest.toml")?;
-    archive.write_all(content.as_slice())?;
 
     archive.finish()?;
 

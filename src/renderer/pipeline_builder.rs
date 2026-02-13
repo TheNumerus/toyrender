@@ -1,5 +1,5 @@
 use crate::err::AppError;
-use crate::renderer::shader_loader::{PipelineStub, ShaderLoader};
+use crate::renderer::shader_loader::ShaderLoader;
 use crate::vulkan::{Compute, Device, Graphics, Pipeline, RayTracingPipeline, Rt, ShaderModule, ShaderStage};
 use ash::vk;
 use std::collections::HashMap;
@@ -29,151 +29,96 @@ impl PipelineBuilder {
     pub fn build_graphics(
         &mut self,
         name: impl AsRef<str>,
+        vert_name: impl AsRef<str>,
+        frag_name: impl AsRef<str>,
         desc_layouts: &[vk::DescriptorSetLayout],
         attachment_formats: &[vk::Format],
         push_consts_size: u32,
+        use_depth: bool,
     ) -> Result<(), AppError> {
-        match self.shader_loader.manifest.stubs.get(name.as_ref()) {
-            Some(stub) => {
-                if let PipelineStub::Graphics {
-                    vertex,
-                    fragment,
-                    use_depth,
-                } = stub
-                {
-                    let vertex_module = ShaderModule::new(
-                        self.shader_loader.shaders.get(vertex).unwrap().as_ref(),
-                        self.device.clone(),
-                        ShaderStage::Vertex,
-                    )?;
-                    vertex_module.set_name(vertex.to_owned())?;
-                    let fragment_module = ShaderModule::new(
-                        self.shader_loader.shaders.get(fragment).unwrap().as_ref(),
-                        self.device.clone(),
-                        ShaderStage::Fragment,
-                    )?;
-                    fragment_module.set_name(fragment.to_owned())?;
+        let vert_name = vert_name.as_ref();
+        let frag_name = frag_name.as_ref();
 
-                    let stages = [vertex_module.stage_info(), fragment_module.stage_info()];
+        let vertex_module = self.get_shader(vert_name, ShaderStage::Vertex)?;
+        vertex_module.set_name(vert_name.to_owned())?;
 
-                    let pipeline = Pipeline::new_graphics(
-                        self.device.clone(),
-                        &stages,
-                        desc_layouts,
-                        attachment_formats,
-                        *use_depth,
-                        push_consts_size,
-                    )?;
-                    pipeline.set_name(name.as_ref().to_owned())?;
+        let fragment_module = self.get_shader(frag_name, ShaderStage::Fragment)?;
+        fragment_module.set_name(frag_name.to_owned())?;
 
-                    self.graphic_pipelines.insert(name.as_ref().to_owned(), pipeline);
+        let stages = [vertex_module.stage_info(), fragment_module.stage_info()];
 
-                    Ok(())
-                } else {
-                    Err(AppError::Other(format!(
-                        "Wrong type of pipeline stub: {}",
-                        name.as_ref()
-                    )))
-                }
-            }
-            None => Err(AppError::Other(format!("Missing pipeline stub: {}", name.as_ref()))),
-        }
+        let pipeline = Pipeline::new_graphics(
+            self.device.clone(),
+            &stages,
+            desc_layouts,
+            attachment_formats,
+            use_depth,
+            push_consts_size,
+        )?;
+        pipeline.set_name(name.as_ref().to_owned())?;
+
+        self.graphic_pipelines.insert(name.as_ref().to_owned(), pipeline);
+
+        Ok(())
     }
 
     pub fn build_compute(
         &mut self,
         name: impl AsRef<str>,
+        compute_name: impl AsRef<str>,
         desc_layouts: &[vk::DescriptorSetLayout],
         push_consts_size: u32,
     ) -> Result<(), AppError> {
-        match self.shader_loader.manifest.stubs.get(name.as_ref()) {
-            Some(stub) => {
-                if let PipelineStub::Compute { compute } = stub {
-                    let module = ShaderModule::new(
-                        self.shader_loader.shaders.get(compute).unwrap().as_ref(),
-                        self.device.clone(),
-                        ShaderStage::Compute,
-                    )?;
-                    module.set_name(compute.to_owned())?;
+        let compute_name = compute_name.as_ref();
+        let module = self.get_shader(compute_name, ShaderStage::Compute)?;
+        module.set_name(compute_name.to_owned())?;
 
-                    let pipeline = Pipeline::new_compute(
-                        self.device.clone(),
-                        module.stage_info(),
-                        desc_layouts,
-                        push_consts_size,
-                    )?;
-                    pipeline.set_name(name.as_ref().to_owned())?;
+        let pipeline = Pipeline::new_compute(self.device.clone(), module.stage_info(), desc_layouts, push_consts_size)?;
+        pipeline.set_name(name.as_ref().to_owned())?;
 
-                    self.compute_pipelines.insert(name.as_ref().to_owned(), pipeline);
+        self.compute_pipelines.insert(name.as_ref().to_owned(), pipeline);
 
-                    Ok(())
-                } else {
-                    Err(AppError::Other(format!(
-                        "Wrong type of pipeline stub: {}",
-                        name.as_ref()
-                    )))
-                }
-            }
-            None => Err(AppError::Other(format!("Missing pipeline stub: {}", name.as_ref()))),
-        }
+        Ok(())
     }
 
     pub fn build_rt(
         &mut self,
         name: impl AsRef<str>,
+        name_raygen: impl AsRef<str>,
+        name_miss: impl AsRef<str>,
+        name_hit: impl AsRef<str>,
         desc_layouts: &[vk::DescriptorSetLayout],
         push_consts_size: u32,
     ) -> Result<(), AppError> {
-        match self.shader_loader.manifest.stubs.get(name.as_ref()) {
-            Some(stub) => {
-                if let PipelineStub::Rt { raygen, closest, miss } = stub {
-                    let raygen_module = ShaderModule::new(
-                        self.shader_loader.shaders.get(raygen).unwrap().as_ref(),
-                        self.device.clone(),
-                        ShaderStage::RayGen,
-                    )?;
-                    raygen_module.set_name(raygen.to_owned())?;
+        let raygen_name = name_raygen.as_ref();
+        let raygen_module = self.get_shader(raygen_name, ShaderStage::RayGen)?;
+        raygen_module.set_name(raygen_name.to_owned())?;
 
-                    let miss_module = ShaderModule::new(
-                        self.shader_loader.shaders.get(miss).unwrap().as_ref(),
-                        self.device.clone(),
-                        ShaderStage::RayMiss,
-                    )?;
-                    miss_module.set_name(miss.to_owned())?;
+        let miss_name = name_miss.as_ref();
+        let miss_module = self.get_shader(miss_name, ShaderStage::RayMiss)?;
+        miss_module.set_name(miss_name.to_owned())?;
 
-                    let hit_module = ShaderModule::new(
-                        self.shader_loader.shaders.get(closest).unwrap().as_ref(),
-                        self.device.clone(),
-                        ShaderStage::RayClosestHit,
-                    )?;
-                    hit_module.set_name(closest.to_owned())?;
+        let hit_name = name_hit.as_ref();
+        let hit_module = self.get_shader(hit_name, ShaderStage::RayClosestHit)?;
+        hit_module.set_name(hit_name.to_owned())?;
 
-                    let rt_stages = [
-                        raygen_module.stage_info(),
-                        miss_module.stage_info(),
-                        hit_module.stage_info(),
-                    ];
+        let rt_stages = [
+            raygen_module.stage_info(),
+            miss_module.stage_info(),
+            hit_module.stage_info(),
+        ];
 
-                    let pipeline = Pipeline::new_rt(
-                        self.device.clone(),
-                        &*self.rt_pipeline_ext,
-                        &rt_stages,
-                        desc_layouts,
-                        push_consts_size,
-                    )?;
-                    pipeline.set_name(name.as_ref().to_owned())?;
+        let pipeline = Pipeline::new_rt(
+            self.device.clone(),
+            &*self.rt_pipeline_ext,
+            &rt_stages,
+            desc_layouts,
+            push_consts_size,
+        )?;
+        pipeline.set_name(name.as_ref().to_owned())?;
 
-                    self.rt_pipelines.insert(name.as_ref().to_owned(), pipeline);
-                    Ok(())
-                } else {
-                    Err(AppError::Other(format!(
-                        "Wrong type of pipeline stub: {}",
-                        name.as_ref()
-                    )))
-                }
-            }
-            None => Err(AppError::Other(format!("Missing pipeline stub: {}", name.as_ref()))),
-        }
+        self.rt_pipelines.insert(name.as_ref().to_owned(), pipeline);
+        Ok(())
     }
 
     pub fn get_graphics(&self, key: &str) -> Option<&Pipeline<Graphics>> {
@@ -186,5 +131,18 @@ impl PipelineBuilder {
 
     pub fn get_rt(&self, key: &str) -> Option<&Pipeline<Rt>> {
         self.rt_pipelines.get(key)
+    }
+
+    fn get_shader(&self, shader_name: &str, shader_stage: ShaderStage) -> Result<ShaderModule, AppError> {
+        let module = ShaderModule::new(
+            self.shader_loader
+                .shaders
+                .get(shader_name)
+                .ok_or_else(|| AppError::Other(format!("Missing shader stub: {}", shader_name)))?
+                .as_ref(),
+            self.device.clone(),
+            shader_stage,
+        )?;
+        Ok(module)
     }
 }

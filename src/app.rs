@@ -119,7 +119,6 @@ impl App {
             let mut mouse_scroll = 0.0;
             let mut dragging;
             let mut bounce_adjust = 0;
-            let mut dist_adjust = 0.0;
             let mut exposure_adjust = 0.0;
             let mut flip_half_res = false;
             let mut clear_taa = false;
@@ -262,7 +261,7 @@ impl App {
                     group.end();
                     ui.checkbox("Temporal accumulation", &mut taa_enable);
                     ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
-                    ui.checkbox("Sky only", &mut self.scene.env.sky_only);
+                    ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
                     ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky_intensity);
                     ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
                         .build();

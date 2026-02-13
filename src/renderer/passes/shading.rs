@@ -1,6 +1,8 @@
 use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
+use crate::renderer::push_const::PushConstBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::scene::Scene;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -70,39 +72,29 @@ impl ShadingPass {
                 &[],
             );
 
-            let mut pc = [0_u8; 7 * size_of::<f32>()];
-            pc[0..4].copy_from_slice(
-                &(*renderer.descriptors.borrow().storages.get("tonemap").unwrap() as u32).to_le_bytes(),
-            );
-            pc[4..8].copy_from_slice(
-                &(*renderer.descriptors.borrow().samplers.get("gbuffer_color").unwrap() as u32).to_le_bytes(),
-            );
-            pc[8..12].copy_from_slice(
-                &(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32).to_le_bytes(),
-            );
-            pc[12..16].copy_from_slice(
-                &(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes(),
-            );
-            pc[16..20].copy_from_slice(
-                &(*renderer
-                    .descriptors
-                    .borrow()
-                    .samplers
-                    .get("denoise_direct_out")
-                    .unwrap() as u32)
-                    .to_le_bytes(),
-            );
-            pc[20..24].copy_from_slice(
-                &(*renderer
-                    .descriptors
-                    .borrow()
-                    .samplers
-                    .get("denoise_indirect_out")
-                    .unwrap() as u32)
-                    .to_le_bytes(),
-            );
-            pc[24..28]
-                .copy_from_slice(&(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32).to_le_bytes());
+            let pc = PushConstBuilder::new()
+                .add_u32(*renderer.descriptors.borrow().storages.get("tonemap").unwrap() as u32)
+                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_color").unwrap() as u32)
+                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
+                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
+                .add_u32(
+                    *renderer
+                        .descriptors
+                        .borrow()
+                        .samplers
+                        .get("denoise_direct_out")
+                        .unwrap() as u32,
+                )
+                .add_u32(
+                    *renderer
+                        .descriptors
+                        .borrow()
+                        .samplers
+                        .get("denoise_indirect_out")
+                        .unwrap() as u32,
+                )
+                .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
+                .build();
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
