@@ -1,4 +1,5 @@
 use crate::renderer::descriptors::DescLayout;
+use crate::renderer::mesh_collector::DrawData;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
 use crate::scene::Scene;
@@ -53,6 +54,7 @@ impl GBufferPass {
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
         scene: &Scene,
+        draw_data: &Vec<DrawData>,
     ) -> Result<(), VulkanError> {
         self.device.begin_label("GBuffer", command_buffer);
 
@@ -209,7 +211,41 @@ impl GBufferPass {
             );
         }
 
-        for instance in &scene.meshes {
+        for draw in draw_data {
+            let mesh_data = &renderer.meshes[&draw.mesh_id];
+
+            command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
+
+            unsafe {
+                let push_consts = PushConstBuilder::new().add_u32(draw.offset).build();
+
+                self.device.inner.cmd_push_constants(
+                    command_buffer.inner,
+                    pipeline.layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    &push_consts,
+                );
+
+                self.device.inner.cmd_bind_index_buffer(
+                    command_buffer.inner,
+                    mesh_data.buf.inner.inner,
+                    mesh_data.indices_offset,
+                    vk::IndexType::UINT32,
+                );
+
+                self.device.inner.cmd_draw_indexed(
+                    command_buffer.inner,
+                    mesh_data.index_count as u32,
+                    draw.count,
+                    0,
+                    0,
+                    0,
+                );
+            }
+        }
+
+        /*for instance in &scene.meshes {
             let mesh = &instance.resource;
             let mesh_data = &renderer.meshes[&mesh.id];
 
@@ -242,7 +278,7 @@ impl GBufferPass {
                     .inner
                     .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
             }
-        }
+        }*/
 
         command_buffer.end_rendering();
 

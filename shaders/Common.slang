@@ -25,6 +25,11 @@ public struct Environment {
     public float sun_int;
 };
 
+public struct MeshTransform {
+    public float4x4 model;
+    public float4x4 inverse;
+};
+
 public enum DebugMode {
     None = 0,
     Direct,

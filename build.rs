@@ -52,7 +52,7 @@ fn main() -> Result<(), std::io::Error> {
                 .unwrap();
 
             if !res.status.success() {
-                panic!("{}", String::from_utf8_lossy(&res.stderr));
+                panic!("{}: {}", res.status, String::from_utf8_lossy(&res.stderr));
             }
 
             println!("Compiling {stem}|{entry}");

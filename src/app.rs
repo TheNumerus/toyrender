@@ -274,6 +274,8 @@ impl App {
                     ui.color_edit3("Sun color", self.scene.env.sun_color.as_mut());
                     ui.input_float3("Camera position", self.scene.camera.position.as_mut())
                         .build();
+                    ui.input_float3("Camera rotation", self.scene.camera.rotation.as_mut())
+                        .build();
                     ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
                 });
             let draw_data = self.imgui.render();
@@ -290,7 +292,7 @@ impl App {
                 }
             };
 
-            eprint!("{} FPS, CPU: {} ms\r", 1.0 / delta, cpu_time * 1000.0);
+            eprint!("{:03.3} FPS, CPU: {:02.3} ms\r", 1.0 / delta, cpu_time * 1000.0);
             frame += 1;
         }
         eprintln!();
@@ -357,7 +359,7 @@ impl App {
                 delta_time: 0.016,
                 total_time: frame_start.duration_since(start).as_secs_f32(),
                 clear_taa: false,
-                frame_index: 0,
+                frame_index: frame as u32,
             };
 
             self.renderer

@@ -108,7 +108,7 @@ fn get_instance_layers(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
 }
 
 fn get_instance_extensions(entry: &Entry) -> Result<Vec<CString>, VulkanError> {
-    if cfg!(not(debug_assertions)) {
+    if cfg!(not(debug_assertions)) && std::env::var("TOYRENDER_DEBUG").is_err() {
         return Ok(vec![]);
     }
 

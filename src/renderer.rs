@@ -30,6 +30,8 @@ use buffers::view_proj::ViewProj;
 mod descriptors;
 use descriptors::{DescLayout, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
+mod mesh_collector;
+
 mod passes;
 use passes::{DenoisePass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
 
@@ -49,6 +51,7 @@ mod push_const;
 use push_const::PushConstBuilder;
 
 mod shader_loader;
+use crate::renderer::mesh_collector::{DrawData, MeshCollector};
 use shader_loader::ShaderLoader;
 pub use shader_loader::ShaderLoaderError;
 
@@ -77,6 +80,7 @@ pub struct VulkanRenderer {
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
+    pub mesh_bufs: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
@@ -345,6 +349,7 @@ impl VulkanRenderer {
         let mut uniform_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut mesh_bufs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let (fs_quad_v, fs_quad_i) = crate::mesh::fs_triangle();
         let fs_quad = VulkanMesh::new(
@@ -404,12 +409,23 @@ impl VulkanRenderer {
 
             env_uniforms.push(env_buf);
 
+            let mesh_transform_buffer = Buffer::new(
+                device.clone(),
+                allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                size_of::<Mat4>() as u64 * 8192,
+            )?;
+
+            mesh_bufs.push(mesh_transform_buffer);
+
             writes.extend(Self::init_global_descriptor_set(
                 &descriptors.borrow().global_sets[i].inner,
                 &uniform_buffers_globals[i].inner,
                 &tlas,
                 &uniform_buffers[i].inner,
                 &env_uniforms[i].inner,
+                &mesh_bufs[i].inner,
             ));
         }
 
@@ -467,6 +483,7 @@ impl VulkanRenderer {
             uniform_buffers,
             uniform_buffers_globals,
             env_uniforms,
+            mesh_bufs: mesh_bufs,
             in_flight,
             imgui_renderer,
             last_view_proj: ViewProj::default(),
@@ -628,12 +645,14 @@ impl VulkanRenderer {
         tlas: &AccelerationStructure,
         view: &vk::Buffer,
         env: &vk::Buffer,
+        mesh: &vk::Buffer,
     ) -> Vec<DescriptorWrite<'a>> {
         vec![
             create_buffer_update(globals, size_of::<Globals>() as u64 + 4, desc_set, 0),
             Self::create_tlas_update_descriptor_set(desc_set, tlas),
-            create_buffer_update(view, size_of::<ViewProj>() as u64 * 2, desc_set, 2),
+            create_buffer_update(view, ViewProj::BUF_SIZE as u64, desc_set, 2),
             create_buffer_update(env, size_of::<GPUEnv>() as u64, desc_set, 3),
+            create_buffer_update(mesh, size_of::<Mat4>() as u64 * 8192, desc_set, 4),
         ]
     }
 
@@ -645,6 +664,7 @@ impl VulkanRenderer {
         ui: Option<&imgui::DrawData>,
     ) -> Result<f32, AppError> {
         self.prepare_meshes(scene)?;
+        let collected_meshes = MeshCollector::collect_transforms(scene);
 
         self.in_flight[self.current_frame].wait()?;
         let (image_index, _is_suboptimal) = self
@@ -699,11 +719,11 @@ impl VulkanRenderer {
         };
 
         let env = env_to_buffer(&scene.env);
-        //let view_proj_buf = view_proj_to_buffer(&view_proj, &self.last_view_proj);
 
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
+        self.mesh_bufs[self.current_frame].fill_host(collected_meshes.data.as_ref())?;
 
         let tlas_index = self.build_tlas_index(scene);
 
@@ -737,6 +757,7 @@ impl VulkanRenderer {
             &self.swap_chain.images[image_index as usize],
             scene,
             context,
+            &collected_meshes.draws,
         )?;
 
         let attachments = [vk::RenderingAttachmentInfo {
@@ -888,8 +909,9 @@ impl VulkanRenderer {
         target: &vk::Image,
         scene: &Scene,
         context: &FrameContext,
+        draw_data: &Vec<DrawData>,
     ) -> Result<(), VulkanError> {
-        self.gbuffer_pass.record(command_buffer, self, scene)?;
+        self.gbuffer_pass.record(command_buffer, self, scene, draw_data)?;
         self.sky_pass.record(command_buffer, self)?;
         self.pt_pass.record(command_buffer, self, scene)?;
         self.denoise_pass.record(command_buffer, self, context.clear_taa)?;
@@ -1058,12 +1080,6 @@ pub struct FrameContext {
     pub clear_taa: bool,
     pub frame_index: u32,
 }
-/*
-#[derive(Default)]
-pub struct ViewProj {
-    pub view: nalgebra_glm::Mat4,
-    pub projection: nalgebra_glm::Mat4,
-}*/
 
 #[repr(C)]
 pub struct Globals {
@@ -1146,18 +1162,6 @@ fn env_to_buffer(env: &Environment) -> Box<[u8]> {
 
     buf.into_boxed_slice()
 }
-/*
-fn view_proj_to_buffer(current: &ViewProj, old: &ViewProj) -> Box<[u8]> {
-    let mut buf = Vec::new();
-
-    for x in [current.view, old.view, current.projection, old.projection] {
-        buf.extend(unsafe {
-            std::slice::from_raw_parts(x.as_ptr() as *const u8, std::mem::size_of::<f32>() * x.len())
-        });
-    }
-
-    buf.into_boxed_slice()
-}*/
 
 fn create_buffer_update<'a>(
     buffer: &vk::Buffer,

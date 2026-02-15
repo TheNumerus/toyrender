@@ -3,6 +3,9 @@ import Common;
 [[vk::binding(2, 0)]]
 ConstantBuffer<ViewProj> vp;
 
+[[vk::binding(4, 0)]]
+StructuredBuffer<MeshTransform> mesh;
+
 struct VSInput {
     float3 pos;
     float3 normal;
@@ -24,13 +27,13 @@ struct FSOutput {
 };
 
 [shader("vertex")]
-FSInput vertMain(VSInput input, uniform float4x4 model, uniform float4x4 modelInv) {
+FSInput vertMain(VSInput input, uint inst: SV_InstanceID, uniform uint first) {
     FSInput output;
 
-    output.pos = mul(vp.proj[0], mul(vp.view[0], mul(model, float4(input.pos, 1.0))));
+    output.pos = mul(vp.proj[0], mul(vp.view[0], mul(mesh[inst + first].model, float4(input.pos, 1.0))));
     output.color = float3(1.0);
-    output.worldPos = mul(model, float4(input.pos, 1.0)).xyz;
-    output.normal = normalize(mul(float3x3(transpose(modelInv)), input.normal));
+    output.worldPos = mul(mesh[inst + first].model, float4(input.pos, 1.0)).xyz;
+    output.normal = normalize(mul(float3x3(transpose(mesh[inst + first].inverse)), input.normal));
     output.uv = input.uv;
 
     return output;

@@ -196,6 +196,13 @@ impl DescLayout {
                     },
                     uniform(2),
                     uniform(3),
+                    vk::DescriptorSetLayoutBinding {
+                        binding: 4,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                        ..Default::default()
+                    },
                 ]
             }
             DescLayout::Image => {
