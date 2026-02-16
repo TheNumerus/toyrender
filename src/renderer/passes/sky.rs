@@ -92,8 +92,8 @@ impl SkyPass {
                 &pc,
             );
 
-            let x = (Self::SKY_SIZE[0] / 16);
-            let y = (Self::SKY_SIZE[1] / 16);
+            let x = Self::SKY_SIZE[0] / 16;
+            let y = Self::SKY_SIZE[1] / 16;
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
 
@@ -124,17 +124,6 @@ impl SkyPass {
                 &[],
                 &[barrier],
             );
-
-            let image_color_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
-            let image_depth_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::DEPTH,
-                ..image_color_res
-            };
         }
 
         self.device.end_label(command_buffer);

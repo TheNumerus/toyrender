@@ -25,6 +25,7 @@ use std::time::Instant;
 use zip::ZipArchive;
 
 mod buffers;
+use buffers::global::Globals;
 use buffers::view_proj::ViewProj;
 
 mod descriptors;
@@ -85,6 +86,7 @@ pub struct VulkanRenderer {
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
     pub imgui_renderer: imgui_rs_vulkan_renderer::Renderer,
+    pub render_scale: f32,
     meshes: HashMap<u64, VulkanMesh>,
     fs_quad: VulkanMesh,
     img_available: Vec<Semaphore>,
@@ -156,6 +158,10 @@ impl VulkanRenderer {
                 vk::DescriptorPoolSize {
                     descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
+                },
+                vk::DescriptorPoolSize {
+                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                    ty: vk::DescriptorType::STORAGE_BUFFER,
                 },
             ],
             200 * MAX_FRAMES_IN_FLIGHT as u32,
@@ -271,10 +277,10 @@ impl VulkanRenderer {
         pipeline_builder.build_compute(
             "sky",
             "sky|main",
-            &[
-                descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
-                descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
-            ],
+            &SkyPass::DESC_LAYOUTS
+                .iter()
+                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
+                .collect::<Vec<_>>(),
             (size_of::<i32>() * 1) as u32,
         )?;
         pipeline_builder.build_compute(
@@ -289,19 +295,19 @@ impl VulkanRenderer {
         pipeline_builder.build_compute(
             "atrous",
             "atrous|main",
-            &[
-                descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
-                descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
-            ],
+            &DenoisePass::DESC_LAYOUTS
+                .iter()
+                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
+                .collect::<Vec<_>>(),
             (size_of::<i32>() * 5) as u32,
         )?;
         pipeline_builder.build_compute(
             "denoise_temporal",
             "denoise_temporal|main",
-            &[
-                descriptors.borrow().layouts.get(&DescLayout::Global).unwrap().inner,
-                descriptors.borrow().layouts.get(&DescLayout::Compute).unwrap().inner,
-            ],
+            &DenoisePass::DESC_LAYOUTS
+                .iter()
+                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
+                .collect::<Vec<_>>(),
             (size_of::<i32>() * 7) as u32,
         )?;
         pipeline_builder.build_rt(
@@ -483,7 +489,7 @@ impl VulkanRenderer {
             uniform_buffers,
             uniform_buffers_globals,
             env_uniforms,
-            mesh_bufs: mesh_bufs,
+            mesh_bufs,
             in_flight,
             imgui_renderer,
             last_view_proj: ViewProj::default(),
@@ -500,6 +506,7 @@ impl VulkanRenderer {
             shading_pass,
             taa_pass,
             tonemap_pass,
+            render_scale: 1.0,
         })
     }
 
@@ -648,11 +655,35 @@ impl VulkanRenderer {
         mesh: &vk::Buffer,
     ) -> Vec<DescriptorWrite<'a>> {
         vec![
-            create_buffer_update(globals, size_of::<Globals>() as u64 + 4, desc_set, 0),
+            create_buffer_update(
+                globals,
+                size_of::<Globals>() as u64,
+                desc_set,
+                0,
+                vk::DescriptorType::UNIFORM_BUFFER,
+            ),
             Self::create_tlas_update_descriptor_set(desc_set, tlas),
-            create_buffer_update(view, ViewProj::BUF_SIZE as u64, desc_set, 2),
-            create_buffer_update(env, size_of::<GPUEnv>() as u64, desc_set, 3),
-            create_buffer_update(mesh, size_of::<Mat4>() as u64 * 8192, desc_set, 4),
+            create_buffer_update(
+                view,
+                ViewProj::BUF_SIZE as u64,
+                desc_set,
+                2,
+                vk::DescriptorType::UNIFORM_BUFFER,
+            ),
+            create_buffer_update(
+                env,
+                size_of::<GPUEnv>() as u64,
+                desc_set,
+                3,
+                vk::DescriptorType::UNIFORM_BUFFER,
+            ),
+            create_buffer_update(
+                mesh,
+                size_of::<Mat4>() as u64 * 8192,
+                desc_set,
+                4,
+                vk::DescriptorType::STORAGE_BUFFER,
+            ),
         ]
     }
 
@@ -675,7 +706,10 @@ impl VulkanRenderer {
 
         let command_buffer = &self.command_buffers[self.current_frame];
 
-        let aspect_ratio = drawable_size.0 as f32 / drawable_size.1 as f32;
+        let width = (drawable_size.0 as f32 * self.render_scale).max(1.0) as u32;
+        let height = (drawable_size.1 as f32 * self.render_scale).max(1.0) as u32;
+
+        let aspect_ratio = width as f32 / height as f32;
         let fov_rad = math::deg_to_rad(scene.camera.fov);
         let fovy = math::fovx_to_fovy(fov_rad, aspect_ratio);
 
@@ -684,8 +718,8 @@ impl VulkanRenderer {
             offset = (0.5, 0.5);
         }
         let (offset_x, offset_y) = (
-            (2.0 * offset.0 - 1.0) / drawable_size.0 as f32,
-            (2.0 * offset.1 - 1.0) / drawable_size.1 as f32,
+            (2.0 * offset.0 - 1.0) / width as f32,
+            (2.0 * offset.1 - 1.0) / height as f32,
         );
 
         let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 500.0, 0.01);
@@ -711,9 +745,10 @@ impl VulkanRenderer {
             debug_mode: self.debug_mode as i32,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
+            draw_res_x: width as f32,
+            draw_res_y: height as f32,
             time: context.total_time,
             frame_index: context.frame_index,
-            half_res: if self.quality.half_res { 1 } else { 0 },
             current_jitter: offset,
             prev_jitter: self.prev_jitter,
         };
@@ -721,7 +756,7 @@ impl VulkanRenderer {
         let env = env_to_buffer(&scene.env);
 
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
-        self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_boxed_slice().as_ref())?;
+        self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
         self.mesh_bufs[self.current_frame].fill_host(collected_meshes.data.as_ref())?;
 
@@ -755,9 +790,9 @@ impl VulkanRenderer {
         self.record_command_buffer(
             command_buffer,
             &self.swap_chain.images[image_index as usize],
-            scene,
             context,
             &collected_meshes.draws,
+            (width, height),
         )?;
 
         let attachments = [vk::RenderingAttachmentInfo {
@@ -863,11 +898,6 @@ impl VulkanRenderer {
             height: self.swap_chain.extent.height,
             depth: 1,
         };
-        let extent_3d_half = vk::Extent3D {
-            width: self.swap_chain.extent.width / 2,
-            height: self.swap_chain.extent.height / 2,
-            depth: 1,
-        };
 
         self.render_targets.set_extent(extent_3d);
         self.render_targets.resize()?;
@@ -907,24 +937,32 @@ impl VulkanRenderer {
         &self,
         command_buffer: &CommandBuffer,
         target: &vk::Image,
-        scene: &Scene,
         context: &FrameContext,
         draw_data: &Vec<DrawData>,
+        viewport_size: (u32, u32),
     ) -> Result<(), VulkanError> {
-        self.gbuffer_pass.record(command_buffer, self, scene, draw_data)?;
+        self.gbuffer_pass
+            .record(command_buffer, self, draw_data, viewport_size)?;
         self.sky_pass.record(command_buffer, self)?;
-        self.pt_pass.record(command_buffer, self, scene)?;
-        self.denoise_pass.record(command_buffer, self, context.clear_taa)?;
-        self.shading_pass.record(command_buffer, self)?;
-        self.taa_pass.record(command_buffer, self, context.clear_taa)?;
-        self.tonemap_pass.record(command_buffer, self)?;
+        self.pt_pass.record(command_buffer, self, viewport_size)?;
+        self.denoise_pass
+            .record(command_buffer, self, context.clear_taa, viewport_size)?;
+        self.shading_pass.record(command_buffer, self, viewport_size)?;
+        self.taa_pass
+            .record(command_buffer, self, context.clear_taa, viewport_size)?;
+        self.tonemap_pass.record(command_buffer, self, viewport_size)?;
 
-        self.record_end_copy(command_buffer, target)?;
+        self.record_end_copy(command_buffer, target, viewport_size)?;
 
         Ok(())
     }
 
-    fn record_end_copy(&self, command_buffer: &CommandBuffer, target: &vk::Image) -> Result<(), VulkanError> {
+    fn record_end_copy(
+        &self,
+        command_buffer: &CommandBuffer,
+        target: &vk::Image,
+        viewport_size: (u32, u32),
+    ) -> Result<(), VulkanError> {
         let src_image = match self.debug_mode {
             DebugMode::None => self.tonemap_pass.render_target.borrow().image.inner,
             DebugMode::Direct => self.render_targets.get_ref("rt_direct").unwrap().image.inner,
@@ -943,7 +981,12 @@ impl VulkanRenderer {
 
         unsafe {
             let offset_min = vk::Offset3D { x: 0, y: 0, z: 0 };
-            let offset_max = vk::Offset3D {
+            let offset_src_max = vk::Offset3D {
+                x: viewport_size.0 as i32,
+                y: viewport_size.1 as i32,
+                z: 1,
+            };
+            let offset_dst_max = vk::Offset3D {
                 x: self.swap_chain.extent.width as i32,
                 y: self.swap_chain.extent.height as i32,
                 z: 1,
@@ -962,14 +1005,14 @@ impl VulkanRenderer {
                         base_array_layer: 0,
                         layer_count: 1,
                     },
-                    src_offsets: [offset_min, offset_max],
+                    src_offsets: [offset_min, offset_src_max],
                     dst_subresource: vk::ImageSubresourceLayers {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                         mip_level: 0,
                         base_array_layer: 0,
                         layer_count: 1,
                     },
-                    dst_offsets: [offset_min, offset_max],
+                    dst_offsets: [offset_min, offset_dst_max],
                 }],
                 vk::Filter::LINEAR,
             );
@@ -1081,39 +1124,6 @@ pub struct FrameContext {
     pub frame_index: u32,
 }
 
-#[repr(C)]
-pub struct Globals {
-    pub exposure: f32,
-    pub debug_mode: i32,
-    pub res_x: f32,
-    pub res_y: f32,
-    pub time: f32,
-    pub frame_index: u32,
-    pub half_res: i32,
-    pub current_jitter: (f32, f32),
-    pub prev_jitter: (f32, f32),
-}
-
-impl Globals {
-    pub fn to_boxed_slice(&self) -> Box<[u8]> {
-        let mut vec = Vec::with_capacity(std::mem::size_of::<Self>());
-
-        vec.extend(self.exposure.to_le_bytes());
-        vec.extend(self.debug_mode.to_le_bytes());
-        vec.extend(self.res_x.to_le_bytes());
-        vec.extend(self.res_y.to_le_bytes());
-        vec.extend(self.time.to_le_bytes());
-        vec.extend(self.frame_index.to_le_bytes());
-        vec.extend(self.half_res.to_le_bytes());
-        vec.extend(self.current_jitter.0.to_le_bytes());
-        vec.extend(self.current_jitter.1.to_le_bytes());
-        vec.extend(self.prev_jitter.0.to_le_bytes());
-        vec.extend(self.prev_jitter.1.to_le_bytes());
-
-        vec.into_boxed_slice()
-    }
-}
-
 fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError> {
     let mut base =
         std::env::current_exe().map_err(|_| AppError::Other("Cannot get current path to executable".into()))?;
@@ -1130,6 +1140,7 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
 }
 
 #[repr(C)]
+/// float3 followed by float are turned into float 4
 struct GPUEnv {
     sun_dir: [f32; 3],
     sun_angle: f32,
@@ -1138,9 +1149,7 @@ struct GPUEnv {
     sun_intensity: f32,
 }
 
-fn env_to_buffer(env: &Environment) -> Box<[u8]> {
-    let mut buf = Vec::with_capacity(size_of::<GPUEnv>());
-
+fn env_to_buffer(env: &Environment) -> Vec<u8> {
     let sun_dir = env.sun_direction.normalize();
 
     let gpu_env = GPUEnv {
@@ -1151,16 +1160,7 @@ fn env_to_buffer(env: &Environment) -> Box<[u8]> {
         sun_intensity: env.sun_intensity,
     };
 
-    unsafe {
-        std::ptr::copy_nonoverlapping(
-            std::ptr::from_ref(&gpu_env) as *const u8,
-            buf.as_mut_ptr(),
-            size_of::<GPUEnv>(),
-        );
-        buf.set_len(size_of::<GPUEnv>());
-    }
-
-    buf.into_boxed_slice()
+    unsafe { core::slice::from_raw_parts(&gpu_env as *const GPUEnv as *const u8, size_of::<GPUEnv>()).to_owned() }
 }
 
 fn create_buffer_update<'a>(
@@ -1168,6 +1168,7 @@ fn create_buffer_update<'a>(
     range: u64,
     dst_set: &vk::DescriptorSet,
     binding: u32,
+    desc_type: vk::DescriptorType,
 ) -> DescriptorWrite<'a> {
     let buffer_info = vk::DescriptorBufferInfo {
         buffer: *buffer,
@@ -1179,7 +1180,7 @@ fn create_buffer_update<'a>(
         dst_set: *dst_set,
         dst_binding: binding,
         dst_array_element: 0,
-        descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
+        descriptor_type: desc_type,
         descriptor_count: 1,
         ..Default::default()
     };

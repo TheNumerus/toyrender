@@ -2,7 +2,6 @@ use crate::renderer::descriptors::DescLayout;
 use crate::renderer::mesh_collector::DrawData;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::scene::Scene;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -53,8 +52,8 @@ impl GBufferPass {
         &self,
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
-        scene: &Scene,
         draw_data: &Vec<DrawData>,
+        viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.device.begin_label("GBuffer", command_buffer);
 
@@ -154,8 +153,8 @@ impl GBufferPass {
         command_buffer.begin_rendering(&rendering_info);
 
         let viewport = vk::Viewport {
-            width: renderer.swap_chain.extent.width as f32,
-            height: renderer.swap_chain.extent.height as f32,
+            width: viewport.0 as f32,
+            height: viewport.1 as f32,
             max_depth: 1.0,
             ..Default::default()
         };
@@ -245,40 +244,13 @@ impl GBufferPass {
             }
         }
 
-        /*for instance in &scene.meshes {
-            let mesh = &instance.resource;
-            let mesh_data = &renderer.meshes[&mesh.id];
-
-            command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
-
-            let invert = instance.transform.try_inverse().unwrap();
-
-            unsafe {
-                let push_consts = PushConstBuilder::new()
-                    .add_mat(instance.transform)
-                    .add_mat(invert)
-                    .build();
-
-                self.device.inner.cmd_push_constants(
-                    command_buffer.inner,
-                    pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    &push_consts,
-                );
-
-                self.device.inner.cmd_bind_index_buffer(
-                    command_buffer.inner,
-                    mesh_data.buf.inner.inner,
-                    mesh_data.indices_offset,
-                    vk::IndexType::UINT32,
-                );
-
-                self.device
-                    .inner
-                    .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
-            }
-        }*/
+        let viewport = vk::Viewport {
+            width: renderer.swap_chain.extent.width as f32,
+            height: renderer.swap_chain.extent.height as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+        command_buffer.set_viewport(viewport);
 
         command_buffer.end_rendering();
 

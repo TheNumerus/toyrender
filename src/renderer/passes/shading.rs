@@ -2,7 +2,6 @@ use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
 use crate::renderer::push_const::PushConstBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
-use crate::scene::Scene;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -26,7 +25,12 @@ impl ShadingPass {
             .with_sampled()
     }
 
-    pub fn record(&self, command_buffer: &CommandBuffer, renderer: &VulkanRenderer) -> Result<(), VulkanError> {
+    pub fn record(
+        &self,
+        command_buffer: &CommandBuffer,
+        renderer: &VulkanRenderer,
+        viewport: (u32, u32),
+    ) -> Result<(), VulkanError> {
         self.device.begin_label("Lighting", command_buffer);
 
         unsafe {
@@ -104,8 +108,8 @@ impl ShadingPass {
                 &pc,
             );
 
-            let x = (renderer.swap_chain.extent.width / 16) + 1;
-            let y = (renderer.swap_chain.extent.height / 16) + 1;
+            let x = (viewport.0 / 16) + 1;
+            let y = (viewport.1 / 16) + 1;
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
         }

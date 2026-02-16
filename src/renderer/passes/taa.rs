@@ -38,6 +38,7 @@ impl TaaPass {
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
         clear: bool,
+        viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.device.begin_label("TAA Resolve", command_buffer);
 
@@ -84,14 +85,14 @@ impl TaaPass {
                 &pc,
             );
 
-            let x = (renderer.swap_chain.extent.width / 16) + 1;
-            let y = (renderer.swap_chain.extent.height / 16) + 1;
+            let x = (viewport.0 / 16) + 1;
+            let y = (viewport.1 / 16) + 1;
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
 
             let extent_3d = vk::Extent3D {
-                width: renderer.swap_chain.extent.width,
-                height: renderer.swap_chain.extent.height,
+                width: viewport.0,
+                height: viewport.1,
                 depth: 1,
             };
 

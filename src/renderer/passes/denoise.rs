@@ -42,6 +42,7 @@ impl DenoisePass {
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
         clear: bool,
+        viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.device.begin_label("RT Denoise Temporal", command_buffer);
 
@@ -96,8 +97,8 @@ impl DenoisePass {
                 &pc,
             );
 
-            let x = (renderer.swap_chain.extent.width / 16) + 1;
-            let y = (renderer.swap_chain.extent.height / 16) + 1;
+            let x = (viewport.0 / 16) + 1;
+            let y = (viewport.1 / 16) + 1;
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
 
@@ -175,17 +176,8 @@ impl DenoisePass {
 
             command_buffer.bind_compute_pipeline(pipeline);
 
-            let (width, height) = if renderer.quality.half_res {
-                (
-                    renderer.swap_chain.extent.width / 2,
-                    renderer.swap_chain.extent.height / 2,
-                )
-            } else {
-                (renderer.swap_chain.extent.width, renderer.swap_chain.extent.height)
-            };
-
-            let x = (width / 16) + 1;
-            let y = (height / 16) + 1;
+            let x = (viewport.0 / 16) + 1;
+            let y = (viewport.1 / 16) + 1;
 
             unsafe {
                 for level in 0..4_i32 {
@@ -316,8 +308,8 @@ impl DenoisePass {
             self.device.end_label(command_buffer);
         } else {
             let extent_3d = vk::Extent3D {
-                width: renderer.swap_chain.extent.width,
-                height: renderer.swap_chain.extent.height,
+                width: viewport.0,
+                height: viewport.1,
                 depth: 1,
             };
 
@@ -326,10 +318,6 @@ impl DenoisePass {
                 mip_level: 0,
                 base_array_layer: 0,
                 layer_count: 1,
-            };
-            let image_depth_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::DEPTH,
-                ..image_color_res
             };
 
             unsafe {

@@ -205,7 +205,7 @@ impl App {
             self.scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
             self.scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
 
-            let context = FrameContext {
+            let mut context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
                 clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
@@ -277,6 +277,9 @@ impl App {
                     ui.input_float3("Camera rotation", self.scene.camera.rotation.as_mut())
                         .build();
                     ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
+                    if ui.slider("Render scale", 0.01, 1.0, &mut self.renderer.render_scale) {
+                        context.clear_taa = true;
+                    }
                 });
             let draw_data = self.imgui.render();
 

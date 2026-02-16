@@ -1,6 +1,6 @@
+use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
-use crate::renderer::VulkanRenderer;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -24,7 +24,12 @@ impl TonemapPass {
             .with_sampled()
     }
 
-    pub fn record(&self, command_buffer: &CommandBuffer, renderer: &VulkanRenderer) -> Result<(), VulkanError> {
+    pub fn record(
+        &self,
+        command_buffer: &CommandBuffer,
+        renderer: &VulkanRenderer,
+        viewport: (u32, u32),
+    ) -> Result<(), VulkanError> {
         self.device.begin_label("PostProcessing", command_buffer);
 
         let attachments = [vk::RenderingAttachmentInfo {
@@ -114,6 +119,14 @@ impl TonemapPass {
                 .inner
                 .cmd_draw_indexed(command_buffer.inner, renderer.fs_quad.index_count as u32, 1, 0, 0, 0);
         }
+
+        let viewport = vk::Viewport {
+            width: renderer.swap_chain.extent.width as f32,
+            height: renderer.swap_chain.extent.height as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+        command_buffer.set_viewport(viewport);
 
         command_buffer.end_rendering();
 

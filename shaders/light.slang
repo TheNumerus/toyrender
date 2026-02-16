@@ -77,11 +77,8 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
     uint y = tid.y;
 
-    int width;
-    int height;
-    storages[pc.out_idx].GetDimensions(width, height);
-
     float2 uv = (float2(x, y) + 0.5) / float2(global.res_x, global.res_y);
+    float2 drawUv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 
     float3 light_dir = env.sun_dir_sun_angle.xyz;
 
@@ -91,7 +88,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 normal = images[pc.normal_idx].Sample(uv).xyz * 2.0 - 1.0;
     float depth = 1.0 - images[pc.depth_idx].Sample(uv).x;
 
-    float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, depth, 1.0));
+    float4 per_pos = mul(vp.proj_inverse, float4(drawUv * 2.0 - 1.0, depth, 1.0));
     per_pos /= per_pos.w;
     float3 vertPos = mul(vp.view_inverse, per_pos).xyz;
     float3 loc = transpose(vp.view_inverse)[3].xyz;
@@ -106,7 +103,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float3 sky_col = sky_color(view_dir, pc.sky_idx) * pow(2.0, global.exposure) * env.sun_color_sky_int.w;
 
-    if (x <= width && y <= height) {
+    if (x < global.draw_res_x && y < global.draw_res_y) {
         storages[pc.out_idx].Store(int2(x, y), float4(lerp(sky_col, lighted, color.a), 1.0));
     }
 }

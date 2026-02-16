@@ -1,7 +1,7 @@
 use crate::vulkan::{
-    CommandBuffer, DEFERRED_HOST_OPS_EXTENSION, DYN_RENDER_EXTENSION, Instance, IntoVulkanError,
-    RT_ACCELERATION_EXTENSION, RT_PIPELINE_EXTENSION, RT_POSITION_FETCH_EXTENSION, SHADER_CLOCK_EXTENSION,
-    SWAPCHAIN_EXTENSION, Surface, VulkanError,
+    CommandBuffer, DEFERRED_HOST_OPS_EXTENSION, Instance, IntoVulkanError, RT_ACCELERATION_EXTENSION,
+    RT_PIPELINE_EXTENSION, RT_POSITION_FETCH_EXTENSION, SHADER_CLOCK_EXTENSION, SWAPCHAIN_EXTENSION, Surface,
+    VulkanError,
 };
 use ash::Device as RawDevice;
 use ash::ext::debug_utils::Device as DebugUtils;

@@ -5,9 +5,10 @@ public struct Global {
     public int debug;
     public float res_x;
     public float res_y;
+    public float draw_res_x;
+    public float draw_res_y;
     public float time;
     public int frame_index;
-    public int half_res;
     public float2 curr_jitter;
     public float2 prev_jitter;
 };

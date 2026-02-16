@@ -25,8 +25,12 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
+float2 uv_to_abs(float2 uv) {
+    return float2(uv.x * (global.draw_res_x / global.res_x), uv.y * (global.draw_res_y / global.res_y));
+}
+
 float get_linear_depth(Sampler2D depth, float2 uv) {
-    float curr_depth = depth.Sample(uv).x;
+    float curr_depth = depth.Sample(uv_to_abs(uv)).x;
 
     float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, curr_depth, 1.0));
     per_pos /= per_pos.w;
@@ -37,7 +41,7 @@ float get_linear_depth(Sampler2D depth, float2 uv) {
 }
 
 bool reproject(float2 uv_in, out float2 uv_out, int2 size) {
-    float curr_depth = images[pc.curr_depth_idx].Sample(uv_in).x;
+    float curr_depth = images[pc.curr_depth_idx].Sample(uv_to_abs(uv_in)).x;
 
     float4 per_pos = mul(vp.proj_inverse, float4(uv_in * 2.0 - 1.0, curr_depth, 1.0));
     per_pos /= per_pos.w;
@@ -95,10 +99,10 @@ float luminance(float3 color) {
 }
 
 float compute_spatial_variance(int2 uv_int, float luma_base, int2 size) {
-    float2 uv = (float2(uv_int) + 0.5) / float2(global.res_x, global.res_y);
-    float3 base_normal = normalize(images[pc.normal_idx].Sample(uv).xyz * 2.0 - 1.0);
+    float2 uv = (float2(uv_int) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
+    float3 base_normal = normalize(images[pc.normal_idx].Sample(uv_to_abs(uv)).xyz * 2.0 - 1.0);
 
-    if (images[pc.curr_depth_idx].Sample(uv).x == 0.0) {
+    if (images[pc.curr_depth_idx].Sample(uv_to_abs(uv)).x == 0.0) {
         return 0.0;
     }
 
@@ -112,11 +116,11 @@ float compute_spatial_variance(int2 uv_int, float luma_base, int2 size) {
         for (int y = -3; y <= 3; y++) {
             int2 uv = uv_int + int2(x, y);
             if (uv.x >= 0 || uv.y >= 0 || uv.x < size.x || uv.y < size.y) {
-                float2 texture_uv = (float2(uv) + 0.5) / float2(global.res_x, global.res_y);
+                float2 texture_uv = (float2(uv) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 
                 float4 current = storages[pc.curr_idx].Load(uv);
                 float luma_sample = luminance(current.xyz);
-                float3 normal_sample = normalize(images[pc.normal_idx].Sample(texture_uv).xyz * 2.0 - 1.0);
+                float3 normal_sample = normalize(images[pc.normal_idx].Sample(uv_to_abs(texture_uv)).xyz * 2.0 - 1.0);
                 float depth_sample = get_linear_depth(images[pc.curr_depth_idx], texture_uv);
                 float sample_dist = distance(texture_uv, uv);
 
@@ -145,22 +149,20 @@ void main(uint3 tid: SV_DispatchThreadID) {
     uint x = tid.x;
     uint y = tid.y;
 
-    int width;
-    int height;
-    storages[pc.out_idx].GetDimensions(width, height);
-    int2 size = int2(width, height);
+    int2 size = int2(int(global.res_x), int(global.res_y));
+    int2 drawSize = int2(int(global.draw_res_x), int(global.draw_res_y));
 
     float blend_factor = 0.1;
     if (pc.clear == 1) {
         blend_factor = 1.0;
     }
 
-    if (x <= size.x && y <= size.y) {
-        float2 uv = (float2(x, y) + 0.5) / float2(global.res_x, global.res_y);
+    if (x <= drawSize.x && y <= drawSize.y) {
+        float2 uv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 
         float3 current = storages[pc.curr_idx].Load(int2(x, y)).xyz;
 
-        float variance = compute_spatial_variance(int2(x, y), luminance(current), size);
+        float variance = compute_spatial_variance(int2(x, y), luminance(current), drawSize);
 
         if (global.debug == DebugMode::DirectVariance || global.debug == DebugMode::IndirectVariance) {
             storages[pc.out_idx].Store(int2(x, y), float4(float3(variance * 5.0), 1.0));
@@ -168,11 +170,11 @@ void main(uint3 tid: SV_DispatchThreadID) {
         }
 
         float2 uv_reprojected;
-        if (!reproject(uv, uv_reprojected, size)) {
+        if (!reproject(uv, uv_reprojected, drawSize)) {
             blend_factor = 1.0;
         }
 
-        float4 prev = max(images[pc.prev_idx].Sample(uv_reprojected), float4(0.000001));
+        float4 prev = max(images[pc.prev_idx].Sample(uv_to_abs(uv_reprojected)), float4(0.000001));
         storages[pc.out_idx].Store(int2(x, y), lerp(prev, float4(current, variance), blend_factor));
     }
 }

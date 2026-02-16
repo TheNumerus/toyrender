@@ -24,8 +24,12 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
+float2 uv_to_abs(float2 uv) {
+    return float2(uv.x * (global.draw_res_x / global.res_x), uv.y * (global.draw_res_y / global.res_y));
+}
+
 float get_linear_depth(Sampler2D depth, float2 uv) {
-    float curr_depth = depth.Sample(uv).x;
+    float curr_depth = depth.Sample(uv_to_abs(uv)).x;
 
     float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, curr_depth, 1.0));
     per_pos /= per_pos.w;
@@ -36,7 +40,7 @@ float get_linear_depth(Sampler2D depth, float2 uv) {
 }
 
 bool reproject(float2 uv_in, out float2 uv_out, int2 size) {
-    float curr_depth = images[pc.curr_depth_idx].Sample(uv_in).x;
+    float curr_depth = images[pc.curr_depth_idx].Sample(uv_to_abs(uv_in)).x;
 
     float4 per_pos = mul(vp.proj_inverse, float4(uv_in * 2.0 - 1.0, curr_depth, 1.0));
     per_pos /= per_pos.w;
@@ -68,31 +72,30 @@ void main(uint3 tid: SV_DispatchThreadID) {
     uint x = tid.x;
     uint y = tid.y;
 
-    int width;
-    int height;
-    storages[pc.out_idx].GetDimensions(width, height);
-    int2 size = int2(width, height);
+    int2 size = int2(int(global.res_x), int(global.res_y));
+    int2 drawSize = int2(int(global.res_x), int(global.res_y));
 
     float blend_factor = 0.1;
     if (pc.clear == 1) {
         blend_factor = 1.0;
     }
 
-    if (x <= width && y <= height) {
+    if (x <= global.res_x && y <= global.res_y) {
         float2 uv = (float2(x, y) + 0.5) / float2(global.res_x, global.res_y);
+        float2 sampleUv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 
         float4 current = images[pc.curr_idx].Sample(uv);
 
         for (int offset_x = -1; offset_x <= 1; offset_x ++) {
             for (int offset_y = -1; offset_y <= 1; offset_y ++) {
-                float2 uv_sample = (float2(x + offset_x, y + offset_y) + 0.5) / float2(global.res_x, global.res_y);
+                float2 uv_sample = (float2(x + offset_x, y + offset_y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
                 uv_sample.x = clamp(uv_sample.x, 0.0, 1.0);
                 uv_sample.y = clamp(uv_sample.y, 0.0, 1.0);
             }
         }
 
         float2 uv_reprojected;
-        if (!reproject(uv, uv_reprojected, size)) {
+        if (!reproject(sampleUv, uv_reprojected, drawSize)) {
             blend_factor = 1.0;
         }
 
@@ -103,19 +106,19 @@ void main(uint3 tid: SV_DispatchThreadID) {
             return;
         }
 
-        float4 prev = images[pc.prev_idx].Sample(uv_reprojected);
+        float4 prev = images[pc.prev_idx].Sample(uv_to_abs(uv_reprojected));
 
         float4 min_color = float4(1.0);
         float4 max_color = float4(0.0);
 
         for (int offset_x = -1; offset_x <= 1; offset_x ++) {
             for (int offset_y = -1; offset_y <= 1; offset_y ++) {
-                float2 uv_sample = (float2(x + offset_x, y + offset_y) + 0.5) / float2(global.res_x, global.res_y);
+                float2 uv_sample = (float2(x + offset_x, y + offset_y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 
                 uv_sample.x = clamp(uv_sample.x, 0.0, 1.0);
                 uv_sample.y = clamp(uv_sample.y, 0.0, 1.0);
 
-                float4 sample_color = images[pc.curr_idx].Sample(uv_sample);
+                float4 sample_color = images[pc.curr_idx].Sample(uv_to_abs(uv_sample));
                 min_color = min(min_color, sample_color);
                 max_color = max(max_color, sample_color);
             }

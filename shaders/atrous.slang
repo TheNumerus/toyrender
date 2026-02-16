@@ -42,8 +42,12 @@ float get_gauss_3x3_weight(int offset) {
     return gauss_3x3[abs(offset)];
 }
 
+float2 uv_to_abs(float2 uv) {
+    return float2(uv.x * (global.draw_res_x / global.res_x), uv.y * (global.draw_res_y / global.res_y));
+}
+
 float get_linear_depth(Sampler2D depth, float2 uv) {
-    float curr_depth = depth.Sample(uv).x;
+    float curr_depth = depth.Sample(uv_to_abs(uv)).x;
 
     float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, curr_depth, 1.0));
     per_pos /= per_pos.w;
@@ -118,12 +122,10 @@ void main(uint3 tid: SV_DispatchThreadID) {
     uint x_base = tid.x;
     uint y_base = tid.y;
 
-    int width;
-    int height;
-    storages[pc.src_idx].GetDimensions(width, height);
-    int2 size = int2(width, height);
+    int2 size = int2(global.res_x, global.res_y);
+    int2 drawSize = int2(global.draw_res_x, global.draw_res_y);
 
-    if (x_base <= size.x && y_base <= size.y) {
+    if (x_base < drawSize.x && y_base < drawSize.y) {
         float4 result = storages[pc.src_idx].Load(int2(x_base, y_base));
         float4 raw = storages[pc.acc_idx].Load(int2(x_base, y_base));
 
@@ -133,29 +135,29 @@ void main(uint3 tid: SV_DispatchThreadID) {
         float new_variance_sum = 0.0;
         float new_variance_weight_sum = 0.0;
 
-        float2 uv = float2((x_base + 0.5) / size.x, (y_base + 0.5) / size.y);
+        float2 uv = float2((x_base + 0.5) / drawSize.x, (y_base + 0.5) / drawSize.y);
 
-        if (images[pc.depth_idx].Sample(uv).x == 0.0) {
+        if (images[pc.depth_idx].Sample(uv_to_abs(uv)).x == 0.0) {
             return;
         }
 
         float luma_base = luminance(raw.xyz);
-        float3 normal_base = normalize(images[pc.normal_idx].Sample(uv).xyz * 2.0 - 1.0);
+        float3 normal_base = normalize(images[pc.normal_idx].Sample(uv_to_abs(uv)).xyz * 2.0 - 1.0);
         float depth_base = get_linear_depth(images[pc.depth_idx], uv);
-        float gradient = get_depth_gradient(x_base, y_base, images[pc.depth_idx], size);
-        float blurred_variance = get_blurred_variance(int2(x_base, y_base), size);
+        float gradient = get_depth_gradient(x_base, y_base, images[pc.depth_idx], drawSize);
+        float blurred_variance = get_blurred_variance(int2(x_base, y_base), drawSize);
 
         for (int y = -2; y <= 2; y++) {
             for (int x = -2; x <= 2; x++) {
                 int x_final = int(x_base) + x * stride(pc.level);
                 int y_final = int(y_base) + y * stride(pc.level);
 
-                if (x_final >= size.x || x_final < 0 || y_final >= size.y || y_final < 0) {
+                if (x_final >= drawSize.x || x_final < 0 || y_final >= drawSize.y || y_final < 0) {
                     continue;
                 }
 
-                float2 sample_uv = float2((x_final + 0.5) / size.x, (y_final + 0.5) / size.y);
-                float3 sample_normal = normalize(images[pc.normal_idx].Sample(sample_uv).xyz * 2.0 - 1.0);
+                float2 sample_uv = float2((x_final + 0.5) / drawSize.x, (y_final + 0.5) / drawSize.y);
+                float3 sample_normal = normalize(images[pc.normal_idx].Sample(uv_to_abs(sample_uv)).xyz * 2.0 - 1.0);
                 float sample_depth = get_linear_depth(images[pc.depth_idx], sample_uv);
                 float sample_dist = distance(sample_uv, uv);
 

@@ -135,6 +135,12 @@ float3 sky_color(float3 view_dir) {
 void raygen() {
     uint3 launch_idx = DispatchRaysIndex();
 
+    int2 size = int2(int(global.res_x), int(global.res_y));
+
+    if (launch_idx.x >= size.x || launch_idx.y >= size.y) {
+        return;
+    }
+
     Payload payload;
 
     payload.isMiss = false;
@@ -142,10 +148,8 @@ void raygen() {
 
     uint start = getRealtimeClockLow().x;
 
+    float2 sampleUv = (float2(launch_idx.xy) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
     float2 uv = (float2(launch_idx.xy) + 0.5) / float2(global.res_x, global.res_y);
-    if (global.half_res == 1) {
-        uv = (float2(launch_idx.xy) + 0.5) / float2(global.res_x/2, global.res_y/2);
-    }
 
     float depth = images[pc.depth_idx].Sample(uv).x;
 
@@ -163,7 +167,8 @@ void raygen() {
 
     float3 normal = normalize((images[pc.normal_idx].Sample(uv).xyz - 0.5) * 2.0);
 
-    float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, depth, 1.0));
+    float4 per_pos = mul(vp.proj_inverse, float4(sampleUv * 2.0 - 1.0, depth, 1.0));
+
     per_pos /= per_pos.w;
     float3 vertPos = mul(vp.view_inverse, per_pos).xyz;
 

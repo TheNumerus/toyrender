@@ -1,7 +1,6 @@
 use crate::renderer::descriptors::DescLayout;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::scene::Scene;
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -35,7 +34,7 @@ impl PathTracePass {
         &self,
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
-        scene: &Scene,
+        viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.device.begin_label("Path Tracing", command_buffer);
 
@@ -75,23 +74,14 @@ impl PathTracePass {
                 &pc,
             );
 
-            let (width, height) = if renderer.quality.half_res {
-                (
-                    renderer.swap_chain.extent.width / 2,
-                    renderer.swap_chain.extent.height / 2,
-                )
-            } else {
-                (renderer.swap_chain.extent.width, renderer.swap_chain.extent.height)
-            };
-
             renderer.rt_pipeline_ext.loader.cmd_trace_rays(
                 command_buffer.inner,
                 &renderer.shader_binding_table.raygen_region,
                 &renderer.shader_binding_table.miss_region,
                 &renderer.shader_binding_table.hit_region,
                 &renderer.shader_binding_table.call_region,
-                width,
-                height,
+                viewport.0,
+                viewport.1,
                 1,
             );
 
