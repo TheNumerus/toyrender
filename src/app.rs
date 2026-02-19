@@ -3,7 +3,7 @@ use crate::err::AppError;
 use crate::import;
 use crate::import::ImportedScene;
 use crate::input::InputMapper;
-use crate::renderer::{FrameContext, VulkanRenderer};
+use crate::renderer::{FrameContext, FrameStats, VulkanRenderer};
 use crate::scene::Scene;
 use log::{error, info};
 use sdl2::event::{Event, WindowEvent};
@@ -99,6 +99,7 @@ impl App {
         let movement_speed = 16.0;
         let mut focused = true;
         let mut taa_enable = true;
+        let mut culling = true;
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -108,6 +109,9 @@ impl App {
         let mut frame = 0;
 
         let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui);
+
+        let mut current_stats = 0;
+        let mut frame_stats = vec![FrameStats::default(); 20];
 
         'running: loop {
             let mut resized = false;
@@ -120,7 +124,6 @@ impl App {
             let mut dragging;
             let mut bounce_adjust = 0;
             let mut exposure_adjust = 0.0;
-            let mut flip_half_res = false;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
 
@@ -175,10 +178,6 @@ impl App {
                             debug_mode_flip = true;
                             clear_taa = true;
                         }
-                        Some(Keycode::H) => {
-                            flip_half_res = true;
-                            clear_taa = true;
-                        }
                         Some(Keycode::KpPlus) => {
                             exposure_adjust += 0.5;
                         }
@@ -210,6 +209,7 @@ impl App {
                 total_time: frame_end.duration_since(start).as_secs_f32(),
                 clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
                 frame_index: frame,
+                culling,
             };
 
             if bounce_adjust != 0 {
@@ -219,10 +219,6 @@ impl App {
             }
 
             self.scene.env.exposure = (self.scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
-
-            if flip_half_res {
-                self.renderer.quality.half_res = !self.renderer.quality.half_res;
-            }
 
             if debug_mode_flip {
                 self.renderer.debug_mode = self.renderer.debug_mode.next();
@@ -241,51 +237,82 @@ impl App {
             ui.window("toyrender controls")
                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                 .build(|| {
-                    let group = ui.begin_group();
-                    ui.text("RT Setings");
-                    ui.slider(
-                        "Direct trace distance",
-                        0.0,
-                        500.0,
-                        &mut self.renderer.quality.rt_direct_trace_disance,
-                    );
-                    ui.slider(
-                        "Indirect trace distance",
-                        0.0,
-                        500.0,
-                        &mut self.renderer.quality.rt_indirect_trace_disance,
-                    );
-                    ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces);
-                    ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
+                    if ui.collapsing_header("RT Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+                        ui.slider(
+                            "Direct trace distance",
+                            0.0,
+                            500.0,
+                            &mut self.renderer.quality.rt_direct_trace_disance,
+                        );
+                        ui.slider(
+                            "Indirect trace distance",
+                            0.0,
+                            500.0,
+                            &mut self.renderer.quality.rt_indirect_trace_disance,
+                        );
+                        ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces);
 
-                    group.end();
-                    ui.checkbox("Temporal accumulation", &mut taa_enable);
-                    ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
-                    ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
-                    ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky_intensity);
-                    ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
-                        .build();
-                    ui.slider(
-                        "Sun angle",
-                        0.0,
-                        std::f32::consts::FRAC_PI_2,
-                        &mut self.scene.env.sun_angle,
-                    );
-                    ui.color_edit3("Sun color", self.scene.env.sun_color.as_mut());
-                    ui.input_float3("Camera position", self.scene.camera.position.as_mut())
-                        .build();
-                    ui.input_float3("Camera rotation", self.scene.camera.rotation.as_mut())
-                        .build();
-                    ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
-                    if ui.slider("Render scale", 0.01, 1.0, &mut self.renderer.render_scale) {
-                        context.clear_taa = true;
+                        ui.checkbox("Temporal accumulation", &mut taa_enable);
+                        ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
+                        ui.checkbox("Culling", &mut culling);
+
+                        ui.input_float3("Camera position", self.scene.camera.position.as_mut())
+                            .build();
+                        ui.input_float3("Camera rotation", self.scene.camera.rotation.as_mut())
+                            .build();
+                        ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
+                        if ui.slider("Render scale", 0.01, 1.0, &mut self.renderer.render_scale) {
+                            context.clear_taa = true;
+                        }
+                    }
+                    if ui.collapsing_header("Environment", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+                        ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
+                        ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
+                        ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky_intensity);
+                        ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
+                            .build();
+                        ui.slider(
+                            "Sun angle",
+                            0.0,
+                            std::f32::consts::FRAC_PI_2,
+                            &mut self.scene.env.sun_angle,
+                        );
+                        ui.color_edit3("Sun color", self.scene.env.sun_color.as_mut());
+                    }
+                    if ui.collapsing_header("Stats", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+                        ui.text(format!("FPS: {:>8.3} ms", 1.0 / delta));
+                        ui.text(format!("Frame time: {:>8.3} ms", delta * 1000.0));
+                        ui.text(format!(
+                            "CPU time: {:>8.3} ms",
+                            (frame_stats.iter().fold(0.0, |a, x| a + x.cpu_time) / frame_stats.len() as f32) * 1000.0
+                        ));
+                        ui.text(format!(
+                            "Mesh prepare time: {:>8.3} ms",
+                            (frame_stats.iter().fold(0.0, |a, x| a + x.mesh_time) / frame_stats.len() as f32) * 1000.0
+                        ));
+                        ui.text(format!(
+                            "TLAS build time: {:>8.3} ms",
+                            (frame_stats.iter().fold(0.0, |a, x| a + x.tlas_time) / frame_stats.len() as f32) * 1000.0
+                        ));
+                        ui.text(format!(
+                            "Record time: {:>8.3} ms",
+                            (frame_stats.iter().fold(0.0, |a, x| a + x.record_time) / frame_stats.len() as f32)
+                                * 1000.0
+                        ));
+                        ui.text(format!("Draw calls: {}", frame_stats[current_stats].draw_calls));
+                        ui.text(format!(
+                            "Drawn objects: {}",
+                            frame_stats[current_stats].objects_rendered
+                        ));
                     }
                 });
             let draw_data = self.imgui.render();
 
-            let cpu_time =
+            frame_stats[current_stats] =
                 self.renderer
                     .render_frame(&self.scene, self.window.drawable_size(), &context, Some(draw_data))?;
+
+            current_stats = (current_stats + 1) % frame_stats.len();
 
             if !focused {
                 let frametime_target = 1.0 / 30.0;
@@ -294,8 +321,6 @@ impl App {
                     //std::thread::sleep(Duration::from_secs_f32(frametime_target - delta));
                 }
             };
-
-            eprint!("{:03.3} FPS, CPU: {:02.3} ms\r", 1.0 / delta, cpu_time * 1000.0);
             frame += 1;
         }
         eprintln!();
@@ -363,6 +388,7 @@ impl App {
                 total_time: frame_start.duration_since(start).as_secs_f32(),
                 clear_taa: false,
                 frame_index: frame as u32,
+                culling: true,
             };
 
             self.renderer

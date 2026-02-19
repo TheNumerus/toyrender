@@ -1,6 +1,6 @@
 use crate::err::AppError;
 use crate::math;
-use crate::mesh::{Indices, MeshInstance, MeshResource};
+use crate::mesh::{Indices, MeshCullingInfo, MeshInstance, MeshResource};
 use crate::vulkan::Vertex;
 use gltf::buffer::Data;
 use gltf::json::accessor::ComponentType;
@@ -34,7 +34,7 @@ fn get_mesh_indices_type(mesh: &gltf::Mesh, buffers: &[Data]) -> Result<IndexTyp
     Ok(IndexType::U16)
 }
 
-fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Indices), AppError> {
+fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppError> {
     let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
     let gltf_normal_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
 
@@ -44,6 +44,14 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Indi
         IndexType::U16 => Indices::U16(Vec::new()),
         IndexType::U32 => Indices::U32(Vec::new()),
     };
+
+    let mut culling_info = MeshCullingInfo {
+        bb_min: vec3(0.0, 0.0, 0.0),
+        bb_max: vec3(0.0, 0.0, 0.0),
+    };
+
+    let mut min_pos: Vec3 = vec3(f32::MAX, f32::MAX, f32::MAX);
+    let mut max_pos: Vec3 = vec3(f32::MIN, f32::MIN, f32::MIN);
 
     let mut offset = 0;
 
@@ -61,6 +69,12 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Indi
                     1.0,
                 ))
             .xyz();
+            min_pos.x = min_pos.x.min(pos.x);
+            min_pos.y = min_pos.y.min(pos.y);
+            min_pos.z = min_pos.z.min(pos.z);
+            max_pos.x = max_pos.x.max(pos.x);
+            max_pos.y = max_pos.y.max(pos.y);
+            max_pos.z = max_pos.z.max(pos.z);
             let normal = (gltf_normal_convert_matrix
                 * Vec4::new(
                     accessors.normal[3 * i],
@@ -106,7 +120,10 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<(Vec<Vertex>, Indi
         offset += len as u32;
     }
 
-    Ok((vertices_total, indices_total))
+    culling_info.bb_min = min_pos;
+    culling_info.bb_max = max_pos;
+
+    Ok(MeshResource::new(vertices_total, indices_total, culling_info))
 }
 
 pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
@@ -161,9 +178,7 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
     let mut instances = Vec::new();
 
     for mesh in gltf.document.meshes() {
-        let (v, i) = extract_mesh(mesh, &buffers)?;
-
-        let m = Rc::new(MeshResource::new(v, i));
+        let m = Rc::new(extract_mesh(mesh, &buffers)?);
 
         meshes.push(m);
     }
@@ -210,6 +225,7 @@ fn extract_instances<'a, T: ExactSizeIterator<Item = gltf::Node<'a>>>(
         };
 
         ins.transform = root_transform * transform;
+        ins.inverse = ins.transform.try_inverse().unwrap();
 
         instances.push(ins);
     }

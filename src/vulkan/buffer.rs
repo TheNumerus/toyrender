@@ -1,9 +1,11 @@
 use crate::err::AppError;
 use crate::err::AppError::VulkanAllocatorError;
-use crate::vulkan::{Device, IntoVulkanError, VulkanError};
+use crate::vulkan::{DebugMarker, Device, IntoVulkanError, VulkanError};
 use ash::vk;
+use ash::vk::Handle;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
+use std::ffi::CString;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -144,5 +146,19 @@ impl Drop for Buffer {
             .free(self.allocation.take().unwrap())
             .unwrap();
         unsafe { self.device.inner.destroy_buffer(self.inner, None) }
+    }
+}
+
+impl DebugMarker for Buffer {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::BUFFER
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
     }
 }

@@ -1,15 +1,17 @@
+use crate::vulkan::device::DebugMarker;
 use crate::vulkan::{Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use ash::vk::Fence as RawFence;
 use ash::vk::Semaphore as RawSemaphore;
+use ash::vk::{Fence as RawFence, Handle};
+use std::rc::Rc;
 
 pub struct Semaphore {
     pub inner: RawSemaphore,
-    device: std::rc::Rc<Device>,
+    device: Rc<Device>,
 }
 
 impl Semaphore {
-    pub fn new(device: std::rc::Rc<Device>) -> Result<Self, VulkanError> {
+    pub fn new(device: Rc<Device>) -> Result<Self, VulkanError> {
         let info = vk::SemaphoreCreateInfo::default();
 
         let inner = unsafe {
@@ -29,13 +31,27 @@ impl Drop for Semaphore {
     }
 }
 
+impl DebugMarker for Semaphore {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::SEMAPHORE
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
+    }
+}
+
 pub struct Fence {
     pub inner: RawFence,
-    device: std::rc::Rc<Device>,
+    device: Rc<Device>,
 }
 
 impl Fence {
-    pub fn new(device: std::rc::Rc<Device>) -> Result<Self, VulkanError> {
+    pub fn new(device: Rc<Device>) -> Result<Self, VulkanError> {
         let info = vk::FenceCreateInfo {
             flags: vk::FenceCreateFlags::SIGNALED,
             ..Default::default()
@@ -73,5 +89,19 @@ impl Fence {
 impl Drop for Fence {
     fn drop(&mut self) {
         unsafe { self.device.inner.destroy_fence(self.inner, None) }
+    }
+}
+
+impl DebugMarker for Fence {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::FENCE
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
     }
 }

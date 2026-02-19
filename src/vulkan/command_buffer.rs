@@ -1,6 +1,8 @@
-use crate::vulkan::{Compute, Device, Graphics, IntoVulkanError, Pipeline, Rt, VertexIndexBuffer, VulkanError};
+use crate::vulkan::{
+    Compute, DebugMarker, Device, Graphics, IntoVulkanError, Pipeline, Rt, VertexIndexBuffer, VulkanError,
+};
 use ash::vk;
-use ash::vk::{CommandBuffer as RawCommandBuffer, Rect2D, Viewport};
+use ash::vk::{CommandBuffer as RawCommandBuffer, Handle, Rect2D, Viewport};
 use std::rc::Rc;
 
 pub struct CommandBuffer {
@@ -104,5 +106,19 @@ impl CommandBuffer {
                 .end_command_buffer(self.inner)
                 .map_to_err("cannot end command buffer")
         }
+    }
+}
+
+impl DebugMarker for CommandBuffer {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::COMMAND_BUFFER
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
     }
 }

@@ -454,3 +454,23 @@ pub struct RtProperties {
     pub max_recursion: u32,
     pub min_bvh_scratch_alignment: u32,
 }
+
+pub trait DebugMarker {
+    fn device(&self) -> &Rc<Device>;
+    fn object_type(&self) -> vk::ObjectType;
+    fn handle(&self) -> u64;
+    fn name(&self, name: impl AsRef<str>) -> Result<(), VulkanError> {
+        let name = CString::new(name.as_ref()).unwrap();
+
+        let name_info = vk::DebugUtilsObjectNameInfoEXT {
+            object_type: self.object_type(),
+            object_handle: self.handle(),
+            p_object_name: name.as_ptr(),
+            ..Default::default()
+        };
+
+        self.device().name_object(name_info)?;
+
+        Ok(())
+    }
+}

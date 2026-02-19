@@ -1,24 +1,31 @@
 use crate::vulkan::Vertex;
 use ash::vk;
-use nalgebra_glm::{vec2, vec3, vec4, Mat4};
+use nalgebra_glm::{Mat4, Vec3, vec2, vec3, vec4};
 use std::borrow::Cow;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static MESH_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+pub struct MeshCullingInfo {
+    pub bb_min: Vec3,
+    pub bb_max: Vec3,
+}
+
 pub struct MeshResource {
     pub id: u64,
     pub vertices: Vec<Vertex>,
     pub indices: Indices,
+    pub culling_info: MeshCullingInfo,
 }
 
 impl MeshResource {
-    pub fn new(vertices: Vec<Vertex>, indices: Indices) -> Self {
+    pub fn new(vertices: Vec<Vertex>, indices: Indices, culling_info: MeshCullingInfo) -> Self {
         Self {
             id: MESH_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
             vertices,
             indices,
+            culling_info,
         }
     }
 }
@@ -56,6 +63,7 @@ impl From<&Indices> for vk::IndexType {
 pub struct MeshInstance {
     pub resource: Rc<MeshResource>,
     pub transform: Mat4,
+    pub inverse: Mat4,
 }
 
 impl MeshInstance {
@@ -63,6 +71,7 @@ impl MeshInstance {
         Self {
             resource,
             transform: Mat4::identity(),
+            inverse: Mat4::identity(),
         }
     }
 }

@@ -81,11 +81,28 @@ impl TonemapPass {
 
         command_buffer.begin_rendering(&rendering_info);
 
+        let viewport = vk::Viewport {
+            width: renderer.swap_chain.extent.width as f32,
+            height: renderer.swap_chain.extent.height as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+        command_buffer.set_viewport(viewport);
+
+        command_buffer.set_scissor(vk::Rect2D {
+            offset: vk::Offset2D::default(),
+            extent: renderer.swap_chain.extent,
+        });
+
         command_buffer.bind_graphics_pipeline(pipeline);
 
         command_buffer.bind_vertex_buffers(&[&renderer.fs_quad.buf], &[0]);
 
         unsafe {
+            self.device
+                .inner
+                .cmd_set_cull_mode(command_buffer.inner, vk::CullModeFlags::NONE);
+
             self.device.inner.cmd_bind_index_buffer(
                 command_buffer.inner,
                 renderer.fs_quad.buf.inner.inner,
@@ -119,14 +136,6 @@ impl TonemapPass {
                 .inner
                 .cmd_draw_indexed(command_buffer.inner, renderer.fs_quad.index_count as u32, 1, 0, 0, 0);
         }
-
-        let viewport = vk::Viewport {
-            width: renderer.swap_chain.extent.width as f32,
-            height: renderer.swap_chain.extent.height as f32,
-            max_depth: 1.0,
-            ..Default::default()
-        };
-        command_buffer.set_viewport(viewport);
 
         command_buffer.end_rendering();
 

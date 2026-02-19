@@ -1,5 +1,5 @@
 use crate::scene::Scene;
-use nalgebra_glm::Mat4;
+use nalgebra_glm::{Mat4, vec4};
 use std::collections::BTreeMap;
 
 pub struct MeshCollector {}
@@ -16,15 +16,42 @@ pub struct CollectedResult {
 }
 
 impl MeshCollector {
-    pub fn collect_transforms(scene: &Scene) -> CollectedResult {
+    pub fn collect_transforms(scene: &Scene, culling: bool, view: &Mat4, proj: &Mat4) -> CollectedResult {
         let mut transforms = BTreeMap::new();
 
         for mesh in scene.meshes.iter() {
             let id = mesh.resource.id;
 
-            let entry = transforms.entry(id).or_insert_with(Vec::new);
+            if culling {
+                let viewmodel = view * mesh.transform;
 
-            entry.push((mesh.transform, mesh.transform.try_inverse().unwrap()));
+                let min_view_pos = viewmodel
+                    * vec4(
+                        mesh.resource.culling_info.bb_min.x,
+                        mesh.resource.culling_info.bb_min.y,
+                        mesh.resource.culling_info.bb_min.z,
+                        1.0,
+                    );
+
+                let max_view_pos = viewmodel
+                    * vec4(
+                        mesh.resource.culling_info.bb_max.x,
+                        mesh.resource.culling_info.bb_max.y,
+                        mesh.resource.culling_info.bb_max.z,
+                        1.0,
+                    );
+
+                let center = (max_view_pos + min_view_pos) * 0.5;
+                let radius = (max_view_pos - min_view_pos).magnitude();
+
+                if center.z > radius {
+                    continue;
+                }
+            }
+
+            let entry = transforms.entry(id).or_insert_with(|| Vec::with_capacity(1));
+
+            entry.push((mesh.transform, mesh.inverse));
         }
 
         let count = transforms.values().map(|v| v.len()).sum();

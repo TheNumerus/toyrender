@@ -1,10 +1,9 @@
+use super::{VALIDATION_LAYER, VulkanError};
 use crate::vulkan::{DEBUG_UTILS_EXTENSION, IntoVulkanError};
 use ash::ext::debug_utils::Instance as DebugUtils;
 use ash::{Entry, Instance as RawInstance, vk};
 use log::warn;
 use std::ffi::{CStr, CString};
-
-use super::{VALIDATION_LAYER, VulkanError};
 
 pub struct Instance {
     pub inner: RawInstance,

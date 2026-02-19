@@ -114,7 +114,7 @@ impl GBufferPass {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
+                vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
@@ -169,6 +169,10 @@ impl GBufferPass {
         });
 
         unsafe {
+            self.device
+                .inner
+                .cmd_set_cull_mode(command_buffer.inner, vk::CullModeFlags::NONE);
+
             let rect = vk::ClearRect {
                 layer_count: 1,
                 base_array_layer: 0,
@@ -216,14 +220,14 @@ impl GBufferPass {
             command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
 
             unsafe {
-                let push_consts = PushConstBuilder::new().add_u32(draw.offset).build();
-
-                self.device.inner.cmd_push_constants(
+                // Call raw function to skip the need for recasting a single push constant in a loop
+                (self.device.inner.fp_v1_0().cmd_push_constants)(
                     command_buffer.inner,
                     pipeline.layout,
                     vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
-                    &push_consts,
+                    size_of::<u32>() as u32,
+                    &draw.offset as *const u32 as *const _,
                 );
 
                 self.device.inner.cmd_bind_index_buffer(

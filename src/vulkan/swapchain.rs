@@ -163,12 +163,12 @@ impl Swapchain {
 
     fn choose_swap_present_mode(swapchain_support: &SwapChainSupport) -> PresentModeKHR {
         for present_mode in &swapchain_support.present_modes {
-            if *present_mode == PresentModeKHR::IMMEDIATE {
+            if *present_mode == PresentModeKHR::MAILBOX {
                 return *present_mode;
             }
         }
 
-        PresentModeKHR::IMMEDIATE
+        PresentModeKHR::FIFO
     }
 
     fn choose_swap_extent(swapchain_support: &SwapChainSupport, drawable_size: (u32, u32)) -> Extent2D {

@@ -213,7 +213,7 @@ void raygen() {
             )
         );
 
-        float d = 0.8 + (1.0 - 0.8) * pow(dot(-hitNormal, dir), 5.0);
+        float d = 0.8 + (1.0 - 0.8) * pow(abs(dot(-hitNormal, dir)), 5.0);
 
         if ((float((pcg_hash((2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0) > d) {
             float ddot = dot(dir, hitNormal);
