@@ -77,6 +77,10 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
     uint y = tid.y;
 
+    if (x >= global.draw_res_x || y >= global.draw_res_y) {
+        return;
+    }
+
     float2 uv = (float2(x, y) + 0.5) / float2(global.res_x, global.res_y);
     float2 drawUv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 
@@ -94,6 +98,13 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 loc = transpose(vp.view_inverse)[3].xyz;
     float3 view_dir = normalize(vertPos - loc);
 
+    float3 sky_col = sky_color(view_dir, pc.sky_idx) * pow(2.0, global.exposure) * env.sun_color_sky_int.w;
+
+    if (color.a == 0.0) {
+        storages[pc.out_idx].Store(int2(x, y), float4(sky_col, 1.0));
+        return;
+    }
+
     float3 direct = images[pc.direct_idx].Sample(uv).xyz * pow(2.0, global.exposure);
     float3 indirect = images[pc.indirect_idx].Sample(uv).xyz * pow(2.0, global.exposure);
 
@@ -101,9 +112,5 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 specular = float3(0.0);
     float3 lighted = ((diffuse_dir + specular));
 
-    float3 sky_col = sky_color(view_dir, pc.sky_idx) * pow(2.0, global.exposure) * env.sun_color_sky_int.w;
-
-    if (x < global.draw_res_x && y < global.draw_res_y) {
-        storages[pc.out_idx].Store(int2(x, y), float4(lerp(sky_col, lighted, color.a), 1.0));
-    }
+    storages[pc.out_idx].Store(int2(x, y), float4(lighted, 1.0));
 }

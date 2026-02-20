@@ -53,18 +53,40 @@ bool reproject(float2 uv_in, out float2 uv_out, int2 size) {
     prev_uv /= prev_uv.w;
     prev_uv = prev_uv * 0.5 + 0.5;
 
-    float2 snapped_uv = prev_uv.xy;
-    snapped_uv.x = (round((snapped_uv.x * size.x) - 0.5) + 0.5) / size.x;
-    snapped_uv.y = (round((snapped_uv.y * size.y) - 0.5) + 0.5) / size.y;
-
-    float prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], snapped_uv.xy);
-    uv_out = prev_uv.xy;
-
-    if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0 || abs(lin_depth - prev_lin_depth) > 0.01) {
+    if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0) {
         return false;
     }
 
-    return true;
+    // try 2x2 reproject
+    float lx = (floor((prev_uv.x * size.x) - 0.5) + 0.5) / size.x;
+    float hx = (ceil((prev_uv.x * size.x) - 0.5) + 0.5) / size.x;
+
+    float ly = (floor((prev_uv.y * size.y) - 0.5) + 0.5) / size.y;
+    float hy = (ceil((prev_uv.y * size.y) - 0.5) + 0.5) / size.y;
+
+    uv_out = prev_uv.xy;
+
+    float prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(lx, ly));
+    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+        return true;
+    }
+
+    prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(hx, ly));
+    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+        return true;
+    }
+
+    prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(lx, hy));
+    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+        return true;
+    }
+
+    prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(hx, hy));
+    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+        return true;
+    }
+
+    return false;
 }
 
 float get_depth_gradient(uint x, uint y, Sampler2D depth, int2 size) {
