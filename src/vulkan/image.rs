@@ -1,6 +1,6 @@
-use crate::vulkan::{Device, IntoVulkanError, VulkanError};
+use crate::vulkan::{DebugMarker, Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use ash::vk::Image as RawImage;
+use ash::vk::{Handle, Image as RawImage};
 use std::rc::Rc;
 
 pub struct Image {
@@ -73,5 +73,19 @@ impl Drop for Image {
             self.device.inner.destroy_image(self.inner, None);
             self.device.inner.free_memory(self.memory, None);
         }
+    }
+}
+
+impl DebugMarker for Image {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::IMAGE
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
     }
 }

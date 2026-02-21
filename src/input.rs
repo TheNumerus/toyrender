@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 
 pub struct InputMapper<K: Eq + Hash + Copy> {
-    inner_state: HashMap<K, f32>,
+    pub inner_state: HashMap<K, f32>,
     configuration: HashMap<Scancode, Vec<(K, f32)>>,
 }
 

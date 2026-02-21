@@ -4,7 +4,7 @@ use ash::vk::{Extent2D, Image, SurfaceFormatKHR, SwapchainKHR};
 use std::rc::Rc;
 use vk::PresentModeKHR;
 
-use super::{ImageView, Instance, VulkanError};
+use super::{DebugMarker, ImageView, Instance, VulkanError};
 use crate::vulkan::{Device, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
 
 pub struct Swapchain {
@@ -113,7 +113,7 @@ impl Swapchain {
             image_color_space: self.format.color_space,
             image_extent: self.extent,
             image_array_layers: 1,
-            image_usage: vk::ImageUsageFlags::TRANSFER_DST,
+            image_usage: vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT,
             image_sharing_mode: sharing_mode,
             queue_family_index_count: index_count,
             p_queue_family_indices: indices_ptr,
@@ -193,13 +193,18 @@ impl Swapchain {
     pub fn create_image_views(&self) -> Result<Vec<ImageView>, VulkanError> {
         self.images
             .iter()
-            .map(|&image| {
-                ImageView::new(
+            .enumerate()
+            .map(|(idx, &image)| {
+                let iw = ImageView::new(
                     self.device.clone(),
                     image,
                     self.format.format,
                     vk::ImageAspectFlags::COLOR,
-                )
+                )?;
+
+                iw.name(format!("swapchain view {}", idx))?;
+
+                Ok(iw)
             })
             .collect::<Result<Vec<_>, _>>()
     }

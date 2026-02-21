@@ -5,7 +5,7 @@ use ash::vk;
 use ash::vk::Handle;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
-use std::ffi::CString;
+
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 

@@ -3,23 +3,19 @@ import Common;
 [[vk::binding(0, 0)]]
 ConstantBuffer<Global> global;
 
-[[vk::binding(0, 1)]]
-Sampler2D images[];
+[[vk::binding(1, 1)]]
+RWTexture2D<float4> storages[];
 
 [[vk::binding(2, 0)]]
 ConstantBuffer<ViewProj> vp;
 
-struct VSInput {
-    float3 pos;
-    float3 normal;
-    float4 color;
-    float2 uv;
+struct PushConsts {
+    int src_idx;
+    int out_idx;
 };
 
-struct VSOutput {
-    float4 pos : SV_Position;
-    float2 uv;
-};
+[vk::push_constant]
+uniform PushConsts pc;
 
 float luminance(float3 v) {
     return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
@@ -110,27 +106,27 @@ float3 agxLook(float3 val) {
     return luma + sat * (val - luma);
 }
 
-[shader("vertex")]
-VSOutput vertMain(VSInput input, uniform int src) {
-    VSOutput output;
-    output.pos = float4(input.pos, 1.0);
-    output.uv = input.uv;
-    return output;
-}
+[numthreads(16, 16, 1)]
+[shader("compute")]
+void main(uint3 tid: SV_DispatchThreadID) {
+    uint x = tid.x;
+    uint y = tid.y;
 
-[shader("fragment")]
-float4 fragMain(VSOutput input, uniform int src) : SV_Target0 {
+    if (x >= global.draw_res_x || y >= global.draw_res_y) {
+        return;
+    }
+
+    int2 size = int2(int(global.res_x), int(global.res_y));
+    int2 drawSize = int2(int(global.res_x), int(global.res_y));
+
     float ratio = global.res_x / global.res_y;
 
     float3 sum = float3(0.0);
 
-    float3 inputColor = images[src].Sample(input.uv).rgb;
+    float3 inputColor = storages[pc.src_idx].Load(tid.xy).rgb;
 
     inputColor = agx(inputColor);
     inputColor = agxEotf(inputColor);
 
-    return float4(
-        inputColor,
-        1.0
-    );
+    storages[pc.out_idx].Store(tid.xy, float4(inputColor, 1.0));
 }

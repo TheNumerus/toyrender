@@ -86,10 +86,15 @@ impl GBufferPass {
             ..Default::default()
         };
 
+        let extent = vk::Extent2D {
+            width: viewport.0,
+            height: viewport.1,
+        };
+
         let rendering_info = vk::RenderingInfo {
             render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
-                extent: renderer.swap_chain.extent,
+                extent,
             },
             layer_count: 1,
             color_attachment_count: attachments.len() as u32,
@@ -165,7 +170,7 @@ impl GBufferPass {
         command_buffer.set_viewport(viewport);
         command_buffer.set_scissor(vk::Rect2D {
             offset: vk::Offset2D::default(),
-            extent: renderer.swap_chain.extent,
+            extent,
         });
 
         unsafe {
@@ -178,7 +183,7 @@ impl GBufferPass {
                 base_array_layer: 0,
                 rect: vk::Rect2D {
                     offset: vk::Offset2D::default(),
-                    extent: renderer.swap_chain.extent,
+                    extent,
                 },
             };
 
@@ -249,8 +254,8 @@ impl GBufferPass {
         }
 
         let viewport = vk::Viewport {
-            width: renderer.swap_chain.extent.width as f32,
-            height: renderer.swap_chain.extent.height as f32,
+            width: extent.width as f32,
+            height: extent.height as f32,
             max_depth: 1.0,
             ..Default::default()
         };

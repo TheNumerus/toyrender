@@ -3,18 +3,22 @@ use crate::err::AppError;
 use crate::import;
 use crate::import::ImportedScene;
 use crate::input::InputMapper;
-use crate::renderer::{FrameContext, FrameStats, VulkanRenderer};
+use crate::renderer::{FrameContext, FrameStats, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
 use crate::scene::Scene;
-use log::{error, info};
+use log::{error, info, log};
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
+use std::cmp::PartialEq;
+use std::rc::Rc;
 use std::time::Instant;
 
 pub struct App {
+    pub vulkan_context: Rc<VulkanContext>,
     pub renderer: VulkanRenderer,
+    pub reference_renderer: VulkanMcPathTracer,
     pub sdl_context: Sdl,
     pub window: Window,
     pub event_pump: EventPump,
@@ -45,7 +49,9 @@ impl App {
         let mut imgui = imgui::Context::create();
         Self::set_ui_style(imgui.style_mut());
 
-        let renderer = VulkanRenderer::init(&window, &mut imgui)?;
+        let vulkan_context = Rc::new(VulkanContext::init(&window, &mut imgui)?);
+        let renderer = VulkanRenderer::init(vulkan_context.clone())?;
+        let reference_renderer = VulkanMcPathTracer::init(vulkan_context.clone())?;
 
         let input_mapper = Self::setup_input_mapper();
 
@@ -56,6 +62,8 @@ impl App {
             window,
             event_pump,
             renderer,
+            reference_renderer,
+            vulkan_context,
             input_mapper,
             scene,
             imgui,
@@ -101,12 +109,16 @@ impl App {
         let mut taa_enable = true;
         let mut culling = true;
 
+        let mut selected_renderer = SelectedRenderer::Reference;
+        let mut sel_render = 0;
+        let mut renderer_changed = false;
+
         if args.benchmark {
             self.benchmark(300)?;
             return Ok(());
         }
 
-        let mut frame = 0;
+        let mut frame = 1;
 
         let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui);
 
@@ -126,6 +138,7 @@ impl App {
             let mut exposure_adjust = 0.0;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
+            let mut movement = false;
 
             for event in self.event_pump.poll_iter() {
                 platform.handle_event(&mut self.imgui, &event);
@@ -157,6 +170,7 @@ impl App {
                     }
                     Event::MouseWheel { y, .. } => {
                         mouse_scroll = y as f32 * scroll_sens;
+                        movement = true;
                     }
                     Event::MouseMotion {
                         xrel, yrel, mousestate, ..
@@ -167,6 +181,7 @@ impl App {
                         if dragging {
                             mouse.0 += xrel;
                             mouse.1 += yrel;
+                            movement = true;
                         } else {
                             self.sdl_context.mouse().show_cursor(true);
                         }
@@ -204,6 +219,18 @@ impl App {
             self.scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
             self.scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
 
+            if self.input_mapper.inner_state.values().any(|a| *a != 0.0) {
+                movement = true;
+            }
+
+            if selected_renderer == SelectedRenderer::Reference && movement {
+                clear_taa = true;
+            }
+
+            if clear_taa {
+                frame = 0;
+            }
+
             let mut context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
@@ -227,6 +254,7 @@ impl App {
 
             if resized {
                 self.renderer.resize(self.window.drawable_size())?;
+                self.reference_renderer.resize(self.window.drawable_size())?;
             }
 
             frame_end = Instant::now();
@@ -237,20 +265,41 @@ impl App {
             ui.window("toyrender controls")
                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                 .build(|| {
+                    if ui.combo("Renderer", &mut sel_render, &["Realtime", "Reference"], |a| {
+                        std::borrow::Cow::Borrowed(a)
+                    }) {
+                        selected_renderer = match sel_render {
+                            0 => SelectedRenderer::Realtime,
+                            1 => SelectedRenderer::Reference,
+                            _ => unreachable!(),
+                        };
+                        renderer_changed = true;
+                    } else {
+                        renderer_changed = false;
+                    }
+
                     if ui.collapsing_header("RT Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
-                        ui.slider(
+                        if ui.slider(
                             "Direct trace distance",
                             0.0,
                             500.0,
-                            &mut self.renderer.quality.rt_direct_trace_disance,
-                        );
-                        ui.slider(
+                            &mut self.renderer.quality.rt_direct_trace_distance,
+                        ) {
+                            self.reference_renderer.quality.rt_direct_trace_distance =
+                                self.renderer.quality.rt_direct_trace_distance;
+                        }
+                        if (ui.slider(
                             "Indirect trace distance",
                             0.0,
                             500.0,
-                            &mut self.renderer.quality.rt_indirect_trace_disance,
-                        );
-                        ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces);
+                            &mut self.renderer.quality.rt_indirect_trace_distance,
+                        )) {
+                            self.reference_renderer.quality.rt_indirect_trace_distance =
+                                self.renderer.quality.rt_indirect_trace_distance;
+                        }
+                        if (ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces)) {
+                            self.reference_renderer.quality.pt_bounces = self.renderer.quality.pt_bounces;
+                        }
 
                         ui.checkbox("Temporal accumulation", &mut taa_enable);
                         ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
@@ -263,6 +312,7 @@ impl App {
                         ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
                         if ui.slider("Render scale", 0.01, 1.0, &mut self.renderer.render_scale) {
                             context.clear_taa = true;
+                            self.reference_renderer.render_scale = self.renderer.render_scale;
                         }
                     }
                     if ui.collapsing_header("Environment", imgui::TreeNodeFlags::DEFAULT_OPEN) {
@@ -308,9 +358,26 @@ impl App {
                 });
             let draw_data = self.imgui.render();
 
-            frame_stats[current_stats] =
-                self.renderer
-                    .render_frame(&self.scene, self.window.drawable_size(), &context, Some(draw_data))?;
+            if renderer_changed {
+                self.vulkan_context.device.wait_idle()?;
+
+                context.clear_taa = true;
+                context.frame_index = 0;
+                frame = 0;
+            }
+
+            frame_stats[current_stats] = match selected_renderer {
+                SelectedRenderer::Realtime => {
+                    self.renderer
+                        .render_frame(&self.scene, self.window.drawable_size(), &context, Some(draw_data))?
+                }
+                SelectedRenderer::Reference => self.reference_renderer.render_frame(
+                    &self.scene,
+                    self.window.drawable_size(),
+                    &context,
+                    Some(draw_data),
+                )?,
+            };
 
             current_stats = (current_stats + 1) % frame_stats.len();
 
@@ -425,4 +492,10 @@ pub enum InputAxes {
     Forward,
     Right,
     Up,
+}
+
+#[derive(PartialEq)]
+enum SelectedRenderer {
+    Realtime,
+    Reference,
 }

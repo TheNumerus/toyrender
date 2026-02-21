@@ -1,6 +1,6 @@
-use crate::vulkan::{Device, IntoVulkanError, VulkanError};
+use crate::vulkan::{DebugMarker, Device, IntoVulkanError, VulkanError};
 use ash::vk;
-use ash::vk::{Image, ImageView as RawImageView};
+use ash::vk::{Handle, Image, ImageView as RawImageView};
 use std::rc::Rc;
 
 pub struct ImageView {
@@ -44,5 +44,19 @@ impl ImageView {
 impl Drop for ImageView {
     fn drop(&mut self) {
         unsafe { self.device.inner.destroy_image_view(self.inner, None) }
+    }
+}
+
+impl DebugMarker for ImageView {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::IMAGE_VIEW
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
     }
 }

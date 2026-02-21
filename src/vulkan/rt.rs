@@ -10,7 +10,6 @@ use ash::vk;
 use ash::vk::{AccelerationStructureKHR, Packed24_8};
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::Allocator;
-use log::info;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -101,7 +100,7 @@ impl ShaderBindingTable {
 
         let buf_size = raygen_region.size + miss_region.size + call_region.size + hit_region.size;
 
-        let mut buffer = Buffer::new(
+        let mut buffer = Buffer::new_with_alignment(
             device.clone(),
             allocator.clone(),
             MemoryLocation::CpuToGpu,
@@ -109,6 +108,7 @@ impl ShaderBindingTable {
                 | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             buf_size,
+            device.rt_properties.shader_group_base_alignment as u64,
         )?;
 
         let addr = buffer.get_device_addr();

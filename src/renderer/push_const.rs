@@ -9,6 +9,12 @@ impl PushConstBuilder {
         Self { storage: Vec::new() }
     }
 
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            storage: Vec::with_capacity(capacity),
+        }
+    }
+
     pub fn add_u32(mut self, value: u32) -> Self {
         self.storage.extend(value.to_le_bytes());
         self

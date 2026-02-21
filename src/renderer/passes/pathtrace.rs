@@ -62,8 +62,8 @@ impl PathTracePass {
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
                 .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
-                .add_f32(renderer.quality.rt_direct_trace_disance)
-                .add_f32(renderer.quality.rt_indirect_trace_disance)
+                .add_f32(renderer.quality.rt_direct_trace_distance)
+                .add_f32(renderer.quality.rt_indirect_trace_distance)
                 .build();
 
             self.device.inner.cmd_push_constants(
@@ -74,7 +74,7 @@ impl PathTracePass {
                 &pc,
             );
 
-            renderer.rt_pipeline_ext.loader.cmd_trace_rays(
+            renderer.context.rt_pipeline_ext.loader.cmd_trace_rays(
                 command_buffer.inner,
                 &renderer.shader_binding_table.raygen_region,
                 &renderer.shader_binding_table.miss_region,

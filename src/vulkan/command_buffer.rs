@@ -107,6 +107,25 @@ impl CommandBuffer {
                 .map_to_err("cannot end command buffer")
         }
     }
+
+    pub fn bind_descriptor_sets(
+        &self,
+        bind_point: vk::PipelineBindPoint,
+        layout: vk::PipelineLayout,
+        sets: impl AsRef<[vk::DescriptorSet]>,
+    ) {
+        unsafe {
+            self.device
+                .inner
+                .cmd_bind_descriptor_sets(self.inner, bind_point, layout, 0, sets.as_ref(), &[]);
+        }
+    }
+
+    pub fn dispatch(&self, groups_x: u32, groups_y: u32, groups_z: u32) {
+        unsafe {
+            self.device.inner.cmd_dispatch(self.inner, groups_x, groups_y, groups_z);
+        }
+    }
 }
 
 impl DebugMarker for CommandBuffer {

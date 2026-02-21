@@ -1,6 +1,7 @@
-use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::DescLayout;
+use crate::renderer::push_const::PushConstBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::renderer::{VulkanMcPathTracer, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -13,15 +14,13 @@ pub(crate) struct TonemapPass {
 
 impl TonemapPass {
     pub const TARGET_FORMATS: [vk::Format; 1] = [vk::Format::A2B10G10R10_UNORM_PACK32];
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Image];
+    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
 
     pub fn render_target_def() -> RenderTargetBuilder {
-        RenderTargetBuilder::new("tonemap_test")
-            .with_color_attachment()
+        RenderTargetBuilder::new("tonemap_out")
             .with_storage()
             .with_transfer()
             .with_format(Self::TARGET_FORMATS[0])
-            .with_sampled()
     }
 
     pub fn record(
@@ -32,38 +31,19 @@ impl TonemapPass {
     ) -> Result<(), VulkanError> {
         self.device.begin_label("PostProcessing", command_buffer);
 
-        let attachments = [vk::RenderingAttachmentInfo {
-            image_view: self.render_target.borrow().view.inner,
-            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            load_op: vk::AttachmentLoadOp::DONT_CARE,
-            store_op: vk::AttachmentStoreOp::STORE,
-            ..Default::default()
-        }];
-
-        let rendering_info = vk::RenderingInfo {
-            render_area: vk::Rect2D {
-                offset: vk::Offset2D::default(),
-                extent: renderer.swap_chain.extent,
-            },
-            layer_count: 1,
-            color_attachment_count: attachments.len() as u32,
-            p_color_attachments: attachments.as_ptr(),
-            ..Default::default()
-        };
-
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
                 &[vk::ImageMemoryBarrier {
                     src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
-                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_WRITE,
                     old_layout: vk::ImageLayout::UNDEFINED,
-                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    new_layout: vk::ImageLayout::GENERAL,
                     image: self.render_target.borrow().image.inner,
                     subresource_range: vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -77,81 +57,122 @@ impl TonemapPass {
             );
         }
 
-        let pipeline = renderer.pipeline_builder.get_graphics("tonemap").unwrap();
+        let pipeline = renderer.pipeline_builder.get_compute("tonemap").unwrap();
 
-        command_buffer.begin_rendering(&rendering_info);
+        command_buffer.bind_compute_pipeline(pipeline);
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            [
+                renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
+                renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
+            ],
+        );
 
-        let viewport = vk::Viewport {
-            width: renderer.swap_chain.extent.width as f32,
-            height: renderer.swap_chain.extent.height as f32,
-            max_depth: 1.0,
-            ..Default::default()
-        };
-        command_buffer.set_viewport(viewport);
-
-        command_buffer.set_scissor(vk::Rect2D {
-            offset: vk::Offset2D::default(),
-            extent: renderer.swap_chain.extent,
-        });
-
-        command_buffer.bind_graphics_pipeline(pipeline);
-
-        command_buffer.bind_vertex_buffers(&[&renderer.fs_quad.buf], &[0]);
+        let pc = PushConstBuilder::with_capacity(2 * size_of::<u32>())
+            .add_u32(*renderer.descriptors.borrow().storages.get("taa_target").unwrap() as u32)
+            .add_u32(*renderer.descriptors.borrow().storages.get("tonemap_out").unwrap() as u32)
+            .build();
 
         unsafe {
-            self.device
-                .inner
-                .cmd_set_cull_mode(command_buffer.inner, vk::CullModeFlags::NONE);
-
-            self.device.inner.cmd_bind_index_buffer(
-                command_buffer.inner,
-                renderer.fs_quad.buf.inner.inner,
-                renderer.fs_quad.indices_offset,
-                vk::IndexType::UINT32,
-            );
-
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                0,
-                &[
-                    renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                    renderer.descriptors.borrow().image_sets[renderer.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let constants = (*renderer.descriptors.borrow().samplers.get("taa_target").unwrap() as u32).to_le_bytes();
-
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
                 pipeline.layout,
-                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                vk::ShaderStageFlags::COMPUTE,
                 0,
-                &constants,
+                &pc,
             );
-
-            self.device
-                .inner
-                .cmd_draw_indexed(command_buffer.inner, renderer.fs_quad.index_count as u32, 1, 0, 0, 0);
         }
 
-        command_buffer.end_rendering();
+        let x = viewport.0 / 16 + 1;
+        let y = viewport.1 / 16 + 1;
+
+        command_buffer.dispatch(x, y, 1);
 
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
                 &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
                     dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    new_layout: vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    image: self.render_target.borrow().image.inner,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                }],
+            );
+        }
+
+        self.device.end_label(command_buffer);
+
+        Ok(())
+    }
+
+    pub fn record_reference(
+        &self,
+        command_buffer: &CommandBuffer,
+        renderer: &VulkanMcPathTracer,
+        viewport: (u32, u32),
+    ) -> Result<(), VulkanError> {
+        self.device.begin_label("PostProcessing", command_buffer);
+
+        let pipeline = renderer.pipeline_builder.get_compute("tonemap").unwrap();
+
+        command_buffer.bind_compute_pipeline(pipeline);
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            [
+                renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
+                renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
+            ],
+        );
+
+        let pc = PushConstBuilder::with_capacity(2 * size_of::<u32>())
+            .add_u32(*renderer.descriptors.borrow().storages.get("acc_out").unwrap() as u32)
+            .add_u32(*renderer.descriptors.borrow().storages.get("tonemap_out").unwrap() as u32)
+            .build();
+
+        unsafe {
+            self.device.inner.cmd_push_constants(
+                command_buffer.inner,
+                pipeline.layout,
+                vk::ShaderStageFlags::COMPUTE,
+                0,
+                &pc,
+            );
+        }
+
+        let x = viewport.0 / 16 + 1;
+        let y = viewport.1 / 16 + 1;
+
+        command_buffer.dispatch(x, y, 1);
+
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    dst_access_mask: vk::AccessFlags::TRANSFER_READ,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
                     image: self.render_target.borrow().image.inner,
                     subresource_range: vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
