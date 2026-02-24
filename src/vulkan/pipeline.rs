@@ -1,4 +1,4 @@
-use crate::vulkan::{Device, IntoVulkanError, RayTracingPipeline, Vertex, VulkanError};
+use crate::vulkan::{DebugMarker, Device, IntoVulkanError, RayTracingPipeline, Vertex, VulkanError};
 use ash::vk;
 use ash::vk::{Handle, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
 use std::ffi::CString;
@@ -14,20 +14,6 @@ pub struct Pipeline<T> {
     pub layout: PipelineLayout,
     device: Rc<Device>,
     _marker: PhantomData<T>,
-}
-
-impl<T> Pipeline<T> {
-    pub fn set_name(&self, name: String) -> Result<(), VulkanError> {
-        let name_ptr = CString::new(name).unwrap();
-        let name_info = vk::DebugUtilsObjectNameInfoEXT {
-            object_type: vk::ObjectType::PIPELINE,
-            object_handle: self.inner.as_raw(),
-            p_object_name: name_ptr.as_ptr(),
-            ..Default::default()
-        };
-
-        self.device.name_object(name_info)
-    }
 }
 
 impl Pipeline<Graphics> {
@@ -217,7 +203,9 @@ impl Pipeline<Rt> {
         let ranges = [vk::PushConstantRange {
             offset: 0,
             size: push_consts_size,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR,
+            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
+                | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                | vk::ShaderStageFlags::MISS_KHR,
         }];
 
         let layout = create_layout(&device, &ranges, descriptor_layouts)?;
@@ -305,6 +293,20 @@ impl<T> Drop for Pipeline<T> {
             self.device.inner.destroy_pipeline_layout(self.layout, None);
             self.device.inner.destroy_pipeline(self.inner, None);
         }
+    }
+}
+
+impl<T> DebugMarker for Pipeline<T> {
+    fn device(&self) -> &Rc<Device> {
+        &self.device
+    }
+
+    fn object_type(&self) -> vk::ObjectType {
+        vk::ObjectType::PIPELINE
+    }
+
+    fn handle(&self) -> u64 {
+        self.inner.as_raw()
     }
 }
 

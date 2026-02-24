@@ -1,12 +1,14 @@
 use crate::vulkan::{
-    CommandBuffer, DEFERRED_HOST_OPS_EXTENSION, Instance, IntoVulkanError, RT_ACCELERATION_EXTENSION,
+    CommandBuffer, DEFERRED_HOST_OPS_EXTENSION, Fence, Instance, IntoVulkanError, RT_ACCELERATION_EXTENSION,
     RT_PIPELINE_EXTENSION, RT_POSITION_FETCH_EXTENSION, SHADER_CLOCK_EXTENSION, SWAPCHAIN_EXTENSION, Surface,
     VulkanError,
 };
 use ash::Device as RawDevice;
 use ash::ext::debug_utils::Device as DebugUtils;
 use ash::vk;
-use ash::vk::{ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, SurfaceCapabilitiesKHR, SurfaceFormatKHR};
+use ash::vk::{
+    ExtensionProperties, PhysicalDevice, PresentModeKHR, Queue, Semaphore, SurfaceCapabilitiesKHR, SurfaceFormatKHR,
+};
 use log::info;
 use std::collections::HashSet;
 use std::ffi::{CStr, CString};
@@ -403,6 +405,34 @@ impl Device {
                 .cmd_end_debug_utils_label(command_buffer.inner);
         }
     }
+
+    pub fn queue_submit<'a>(&'a self, info: SubmitInfo<'a>) -> Result<(), VulkanError> {
+        let submit_info = vk::SubmitInfo {
+            wait_semaphore_count: info.wait_semaphores.len() as u32,
+            p_wait_semaphores: info.wait_semaphores.as_ptr(),
+            p_wait_dst_stage_mask: &info.wait_stages,
+            command_buffer_count: info.command_buffers.len() as u32,
+            p_command_buffers: info.command_buffers.as_ptr(),
+            signal_semaphore_count: info.signal_semaphores.len() as u32,
+            p_signal_semaphores: info.signal_semaphores.as_ptr(),
+            ..Default::default()
+        };
+
+        unsafe {
+            self.inner
+                .queue_submit(*info.queue, &[submit_info], info.fence.inner)
+                .map_to_err("Failed to submit to queue")
+        }
+    }
+}
+
+pub struct SubmitInfo<'a> {
+    pub queue: &'a Queue,
+    pub fence: &'a Fence,
+    pub wait_semaphores: &'a [Semaphore],
+    pub signal_semaphores: &'a [Semaphore],
+    pub command_buffers: &'a [vk::CommandBuffer],
+    pub wait_stages: vk::PipelineStageFlags,
 }
 
 impl Drop for Device {

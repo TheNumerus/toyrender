@@ -13,6 +13,7 @@ struct Payload {
     float dist;
     float3 normal;
     float3 color;
+    float3 hit;
 };
 
 [[vk::binding(0, 0)]]
@@ -46,10 +47,14 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
-uint pcg_hash(uint i) {
-    uint state = i * 747796405u + 2891336453u;
+static uint hash_state;
+
+float pcg_hash() {
+    uint state = hash_state;
+    hash_state = hash_state * 747796405u + 2891336453u;
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
+    uint res = (word >> 22u) ^ word;
+    return float(res % 4096) / 4096.0;
 }
 
 void compute_default_basis(const float3 normal, out float3 x, out float3 y) {
@@ -155,6 +160,26 @@ float3 generatePinholeRay(int2 pixel, int width, int height) {
     return normalize(float3(float2(2 * (pixel.x + global.curr_jitter.x) - width, -2 * (pixel.y + global.curr_jitter.y) + height) * tanHalfAngle / width, -1));
 }
 
+constexpr static float origin = 1.0f / 32.0f;
+constexpr static float float_scale = 1.0f / 65536.0f;
+constexpr static float int_scale = 256.0f;
+
+float3 offset_ray(const float3 p, const float3 n) {
+    int3 of_i = int3(int(int_scale * n.x), int(int_scale * n.y), int(int_scale * n.z));
+
+    float3 p_i = float3(
+        asfloat(asint(p.x) + ((p.x < 0) ? -of_i.x : of_i.x)),
+        asfloat(asint(p.y) + ((p.y < 0) ? -of_i.y : of_i.y)),
+        asfloat(asint(p.z) + ((p.z < 0) ? -of_i.z : of_i.z))
+    );
+
+    return float3(
+        abs(p.x) < origin ? p.x + float_scale * n.x : p_i.x,
+        abs(p.y) < origin ? p.y + float_scale * n.y : p_i.y,
+        abs(p.z) < origin ? p.z + float_scale * n.z : p_i.z
+    );
+}
+
 
 [shader("raygeneration")]
 void raygen() {
@@ -177,10 +202,10 @@ void raygen() {
 
     float3 tangent, bitangent;
 
-    float2 rand = float2(
-        float((pcg_hash((2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x)))) % 1024) / 1024.0,
-        float((pcg_hash((2 + 1 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x)))) % 1024) / 1024.0
-    );
+    // setup hasher with min index 1 so that even first sample is noisy
+    hash_state = (launch_idx.x + launch_idx.y * uint(global.res_x)) * (global.frame_index + 1);
+
+    float2 rand = float2(pcg_hash(), pcg_hash());
 
     float3 sphere = rand_sphere(rand) * 0.1;
 
@@ -204,13 +229,13 @@ void raygen() {
 
     tracePrimary(pos, dir, payload);
 
-    pos += dir * payload.dist;
+    pos = payload.hit;
 
     if (payload.isMiss) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                sky_color(dir) * env.sun_color_sky_int.w,
+                sky_color(dir) * env.sun_color_sky_int.w * pow(2.0, global.exposure),
                 0.0
             )
         );
@@ -231,24 +256,16 @@ void raygen() {
     for (int i = 0; i < pc.bounces; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
-        float3 hemi = rand_hemi(
-            float2(
-                float((pcg_hash((int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0,
-                float((pcg_hash((1 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0
-            )
-        );
+        float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
 
         float d = 0.8 + (1.0 - 0.8) * pow(abs(dot(-hitNormal, dir)), 5.0);
 
-        if ((float((pcg_hash((2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0) > d) {
+        if (pcg_hash() > d) {
             float ddot = dot(dir, hitNormal);
             dir = dir - 2.0 * hitNormal * (ddot);
             compute_default_basis(dir, tangent, bitangent);
 
-            float2 new_rand = float2(
-                float((pcg_hash((4 + pc.sample * 2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0,
-                float((pcg_hash((3 + pc.sample * 2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0
-            );
+            float2 new_rand = float2(pcg_hash(), pcg_hash());
 
             float3 cone = rand_cone(new_rand, cos(ddot * 0.3));
             dir = cone.x * tangent + cone.y * bitangent + cone.z * dir;
@@ -256,7 +273,7 @@ void raygen() {
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
-        trace(pos, dir, payload);
+        trace(offset_ray(pos, hitNormal), dir, payload);
 
         // sky
         if (payload.isMiss) {
@@ -266,7 +283,7 @@ void raygen() {
             break;
         } else {
             // try shadow on new position
-            pos += dir * payload.dist;
+            pos = payload.hit;
             hitNormal = payload.normal;
 
             // flip on backface hit
@@ -281,7 +298,7 @@ void raygen() {
                 continue;
             }
 
-            traceShadow(pos, ray_shadow_dir, payload);
+            traceShadow(offset_ray(pos, hitNormal), ray_shadow_dir, payload);
 
             // sun boounce
             if (payload.isMiss) {
@@ -333,11 +350,15 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
     float3x4 otw = ObjectToWorld();
 
-    float3 vertPos0 = mul(otw, float4(HitTriangleVertexPosition(0), 0.0));
-    float3 vertPos1 = mul(otw, float4(HitTriangleVertexPosition(1), 0.0));
-    float3 vertPos2 = mul(otw, float4(HitTriangleVertexPosition(2), 0.0));
+    float3 vertPos0 = mul(otw, float4(HitTriangleVertexPosition(0), 1.0));
+    float3 vertPos1 = mul(otw, float4(HitTriangleVertexPosition(1), 1.0));
+    float3 vertPos2 = mul(otw, float4(HitTriangleVertexPosition(2), 1.0));
 
-    float3 normal = cross(vertPos1 - vertPos0, vertPos2 - vertPos0);
+    float3 edgeA = vertPos1 - vertPos0;
+    float3 edgeB = vertPos2 - vertPos0;
+
+    float3 normal = cross(edgeA, edgeB);
 
     payload.normal = normalize(normal);
+    payload.hit = attr.barycentrics.x * edgeA + attr.barycentrics.y * edgeB + vertPos0;
 }

@@ -1,4 +1,6 @@
+use crate::err::AppError;
 use crate::renderer::descriptors::DescLayout;
+use crate::renderer::pipeline_builder::PipelineHandle;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Device, VulkanError};
@@ -10,6 +12,7 @@ pub(crate) struct PathTracePass {
     pub device: Rc<Device>,
     pub direct_render_target: Rc<RefCell<RenderTarget>>,
     pub indirect_render_target: Rc<RefCell<RenderTarget>>,
+    pub pipeline: PipelineHandle,
 }
 
 impl PathTracePass {
@@ -35,37 +38,33 @@ impl PathTracePass {
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
         viewport: (u32, u32),
-    ) -> Result<(), VulkanError> {
+    ) -> Result<(), AppError> {
         self.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_rt("pt").unwrap();
+        let pipeline = renderer.pipeline_builder.get_rt(&self.pipeline)?;
 
         command_buffer.bind_rt_pipeline(pipeline);
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::RAY_TRACING_KHR,
+            pipeline.layout,
+            [
+                renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
+                renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
+            ],
+        );
+
+        let pc = PushConstBuilder::with_capacity(8 * size_of::<u32>())
+            .add_u32(renderer.quality.pt_bounces as u32)
+            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
+            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
+            .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
+            .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
+            .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
+            .add_f32(renderer.quality.rt_direct_trace_distance)
+            .add_f32(renderer.quality.rt_indirect_trace_distance)
+            .build();
 
         unsafe {
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline.layout,
-                0,
-                &[
-                    renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                    renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let pc = PushConstBuilder::new()
-                .add_u32(renderer.quality.pt_bounces as u32)
-                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
-                .add_f32(renderer.quality.rt_direct_trace_distance)
-                .add_f32(renderer.quality.rt_indirect_trace_distance)
-                .build();
-
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
                 pipeline.layout,
@@ -97,20 +96,14 @@ impl PathTracePass {
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 image,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
                 ..Default::default()
             });
 
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],

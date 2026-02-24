@@ -126,6 +126,12 @@ impl CommandBuffer {
             self.device.inner.cmd_dispatch(self.inner, groups_x, groups_y, groups_z);
         }
     }
+
+    pub fn push_constants(&self, stages: vk::ShaderStageFlags, layout: vk::PipelineLayout, pc: &[u8]) {
+        unsafe {
+            self.device.inner.cmd_push_constants(self.inner, layout, stages, 0, pc);
+        }
+    }
 }
 
 impl DebugMarker for CommandBuffer {

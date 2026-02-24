@@ -2,7 +2,8 @@ use crate::err::AppError;
 use crate::renderer::render_target::RenderTargets;
 use crate::vulkan::{DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, VulkanError};
 use ash::vk;
-use std::collections::HashMap;
+use rspirv_reflect::DescriptorInfo;
+use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::rc::Rc;
 
@@ -157,6 +158,31 @@ impl RendererDescriptors {
         }
 
         Ok(writes)
+    }
+
+    pub fn guess_layout_from_reflection(
+        &self,
+        info: &BTreeMap<u32, DescriptorInfo>,
+    ) -> Result<vk::DescriptorSetLayout, AppError> {
+        for layout in [DescLayout::Global, DescLayout::Compute, DescLayout::Image] {
+            let mut matches = true;
+            let binds = layout.get_bindings();
+
+            for (index, bind) in binds.iter().enumerate() {
+                if let Some(di) = info.get(&(index as u32))
+                    && di.ty.0 != bind.descriptor_type.as_raw() as u32
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if matches {
+                return Ok(self.layouts[&layout].inner);
+            }
+        }
+
+        Err(AppError::Import(String::from("Unknown layout defined")))
     }
 }
 

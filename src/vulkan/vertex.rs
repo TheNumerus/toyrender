@@ -1,5 +1,5 @@
 use crate::err::AppError;
-use crate::vulkan::{Buffer, CommandPool, Device, IntoVulkanError};
+use crate::vulkan::{Buffer, CommandPool, DebugMarker, Device, IntoVulkanError};
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::Allocator;
@@ -88,6 +88,7 @@ impl VertexIndexBuffer {
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             data.len() as u64,
         )?;
+        inner.name("Mesh data")?;
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
         cmd_buf.begin_one_time()?;

@@ -67,6 +67,13 @@ impl Fence {
         Ok(Self { inner, device })
     }
 
+    pub fn null(device: Rc<Device>) -> Self {
+        Self {
+            inner: vk::Fence::null(),
+            device,
+        }
+    }
+
     pub fn wait(&self) -> Result<(), VulkanError> {
         unsafe {
             self.device
@@ -88,7 +95,11 @@ impl Fence {
 
 impl Drop for Fence {
     fn drop(&mut self) {
-        unsafe { self.device.inner.destroy_fence(self.inner, None) }
+        unsafe {
+            if self.inner != vk::Fence::null() {
+                self.device.inner.destroy_fence(self.inner, None)
+            }
+        }
     }
 }
 

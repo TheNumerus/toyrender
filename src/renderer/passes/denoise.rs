@@ -48,47 +48,31 @@ impl DenoisePass {
 
         let pipeline = renderer.pipeline_builder.get_compute("denoise_temporal").unwrap();
 
+        let desc_ref = renderer.descriptors.borrow();
+
         command_buffer.bind_compute_pipeline(pipeline);
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            [
+                desc_ref.global_sets[renderer.current_frame].inner,
+                desc_ref.compute_sets[renderer.current_frame].inner,
+            ],
+        );
+
+        let clear = if clear { 1 } else { 0 };
+
+        let mut pc = PushConstBuilder::with_capacity(7 * size_of::<u32>())
+            .add_u32(clear as u32)
+            .add_u32(*desc_ref.storages.get("denoise_direct_acc").unwrap() as u32)
+            .add_u32(*desc_ref.samplers.get("gbuffer_depth").unwrap() as u32)
+            .add_u32(*desc_ref.samplers.get("last_depth").unwrap() as u32)
+            .add_u32(*desc_ref.storages.get("rt_direct").unwrap() as u32)
+            .add_u32(*desc_ref.samplers.get("denoise_direct_history").unwrap() as u32)
+            .add_u32(*desc_ref.samplers.get("gbuffer_normal").unwrap() as u32)
+            .build();
 
         unsafe {
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[
-                    renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                    renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let clear = if clear { 1 } else { 0 };
-
-            let mut pc = PushConstBuilder::new()
-                .add_u32(clear as u32)
-                .add_u32(
-                    *renderer
-                        .descriptors
-                        .borrow()
-                        .storages
-                        .get("denoise_direct_acc")
-                        .unwrap() as u32,
-                )
-                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().samplers.get("last_depth").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
-                .add_u32(
-                    *renderer
-                        .descriptors
-                        .borrow()
-                        .samplers
-                        .get("denoise_direct_history")
-                        .unwrap() as u32,
-                )
-                .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
-                .build();
-
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
                 pipeline.layout,
@@ -102,27 +86,10 @@ impl DenoisePass {
 
             self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
 
-            pc[4..8].copy_from_slice(
-                &(*renderer
-                    .descriptors
-                    .borrow()
-                    .storages
-                    .get("denoise_indirect_acc")
-                    .unwrap() as u32)
-                    .to_le_bytes(),
-            );
-            pc[16..20].copy_from_slice(
-                &(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32).to_le_bytes(),
-            );
-            pc[20..24].copy_from_slice(
-                &(*renderer
-                    .descriptors
-                    .borrow()
-                    .samplers
-                    .get("denoise_indirect_history")
-                    .unwrap() as u32)
-                    .to_le_bytes(),
-            );
+            pc[4..8].copy_from_slice(&(*desc_ref.storages.get("denoise_indirect_acc").unwrap() as u32).to_le_bytes());
+            pc[16..20].copy_from_slice(&(*desc_ref.storages.get("rt_indirect").unwrap() as u32).to_le_bytes());
+            pc[20..24]
+                .copy_from_slice(&(*desc_ref.samplers.get("denoise_indirect_history").unwrap() as u32).to_le_bytes());
 
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
@@ -132,7 +99,7 @@ impl DenoisePass {
                 &pc,
             );
 
-            self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
+            command_buffer.dispatch(x, y, 1);
 
             let barriers = [
                 self.direct_render_target_acc.borrow().image.inner,
@@ -146,13 +113,7 @@ impl DenoisePass {
                 src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 image,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
                 ..Default::default()
             });
 
@@ -185,41 +146,20 @@ impl DenoisePass {
 
                     let mut pc = [0_u8; 5 * size_of::<f32>()];
                     pc[0..4].copy_from_slice(&level);
-                    pc[4..8].copy_from_slice(
-                        &(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32).to_le_bytes(),
-                    );
-                    pc[8..12].copy_from_slice(
-                        &(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes(),
-                    );
-                    pc[12..16].copy_from_slice(
-                        &(*renderer
-                            .descriptors
-                            .borrow()
-                            .storages
-                            .get("denoise_direct_out")
-                            .unwrap() as u32)
-                            .to_le_bytes(),
-                    );
-                    pc[16..20].copy_from_slice(
-                        &(*renderer
-                            .descriptors
-                            .borrow()
-                            .storages
-                            .get("denoise_direct_acc")
-                            .unwrap() as u32)
-                            .to_le_bytes(),
-                    );
+                    pc[4..8].copy_from_slice(&(*desc_ref.samplers.get("gbuffer_normal").unwrap() as u32).to_le_bytes());
+                    pc[8..12].copy_from_slice(&(*desc_ref.samplers.get("gbuffer_depth").unwrap() as u32).to_le_bytes());
+                    pc[12..16]
+                        .copy_from_slice(&(*desc_ref.storages.get("denoise_direct_out").unwrap() as u32).to_le_bytes());
+                    pc[16..20]
+                        .copy_from_slice(&(*desc_ref.storages.get("denoise_direct_acc").unwrap() as u32).to_le_bytes());
 
-                    self.device.inner.cmd_bind_descriptor_sets(
-                        command_buffer.inner,
+                    command_buffer.bind_descriptor_sets(
                         vk::PipelineBindPoint::COMPUTE,
                         pipeline.layout,
-                        0,
-                        &[
-                            renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                            renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
+                        [
+                            desc_ref.global_sets[renderer.current_frame].inner,
+                            desc_ref.compute_sets[renderer.current_frame].inner,
                         ],
-                        &[],
                     );
 
                     self.device.inner.cmd_push_constants(
@@ -230,25 +170,13 @@ impl DenoisePass {
                         &pc,
                     );
 
-                    self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
+                    command_buffer.dispatch(x, y, 1);
 
                     pc[12..16].copy_from_slice(
-                        &(*renderer
-                            .descriptors
-                            .borrow()
-                            .storages
-                            .get("denoise_indirect_out")
-                            .unwrap() as u32)
-                            .to_le_bytes(),
+                        &(*desc_ref.storages.get("denoise_indirect_out").unwrap() as u32).to_le_bytes(),
                     );
                     pc[16..20].copy_from_slice(
-                        &(*renderer
-                            .descriptors
-                            .borrow()
-                            .storages
-                            .get("denoise_indirect_acc")
-                            .unwrap() as u32)
-                            .to_le_bytes(),
+                        &(*desc_ref.storages.get("denoise_indirect_acc").unwrap() as u32).to_le_bytes(),
                     );
 
                     self.device.inner.cmd_push_constants(
@@ -259,7 +187,7 @@ impl DenoisePass {
                         &pc,
                     );
 
-                    self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
+                    command_buffer.dispatch(x, y, 1);
 
                     let barriers = [
                         renderer
@@ -283,13 +211,7 @@ impl DenoisePass {
                         src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                         dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                         image,
-                        subresource_range: vk::ImageSubresourceRange {
-                            aspect_mask: vk::ImageAspectFlags::COLOR,
-                            base_mip_level: 0,
-                            level_count: 1,
-                            base_array_layer: 0,
-                            layer_count: 1,
-                        },
+                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
                         ..Default::default()
                     });
 

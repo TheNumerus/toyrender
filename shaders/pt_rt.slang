@@ -47,10 +47,14 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
-uint pcg_hash(uint i) {
-    uint state = i * 747796405u + 2891336453u;
+static uint hash_state;
+
+float pcg_hash() {
+    uint state = hash_state;
+    hash_state = hash_state * 747796405u + 2891336453u;
     uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    return (word >> 22u) ^ word;
+    uint res = (word >> 22u) ^ word;
+    return float(res % 4096) / 4096.0;
 }
 
 void compute_default_basis(const float3 normal, out float3 x, out float3 y) {
@@ -183,10 +187,10 @@ void raygen() {
 
     float3 tangent, bitangent;
 
-    float2 rand = float2(
-        float((pcg_hash((2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x)))) % 1024) / 1024.0,
-        float((pcg_hash((2 + 1 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x)))) % 1024) / 1024.0
-    );
+    // setup hasher with min index 1 so that even first sample is noisy
+    hash_state = (launch_idx.x + launch_idx.y * uint(global.res_x)) * (global.frame_index + 1);
+
+    float2 rand = float2(pcg_hash(), pcg_hash());
 
     float3 sphere = rand_sphere(rand) * 0.1;
 
@@ -206,24 +210,16 @@ void raygen() {
     for (int i = 0; i < samples; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
-        float3 hemi = rand_hemi(
-            float2(
-                float((pcg_hash((int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0,
-                float((pcg_hash((1 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0
-            )
-        );
+        float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
 
         float d = 0.8 + (1.0 - 0.8) * pow(abs(dot(-hitNormal, dir)), 5.0);
 
-        if ((float((pcg_hash((2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0) > d) {
+        if (pcg_hash() > d) {
             float ddot = dot(dir, hitNormal);
             dir = dir - 2.0 * hitNormal * (ddot);
             compute_default_basis(dir, tangent, bitangent);
 
-            float2 new_rand = float2(
-                float((pcg_hash((4 + samples * 2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0,
-                float((pcg_hash((3 + samples * 2 + int(global.frame_index)) * (launch_idx.x + launch_idx.y * uint(global.res_x) + i))) % 1024) / 1024.0
-            );
+            float2 new_rand = float2(pcg_hash(), pcg_hash());
 
             float3 cone = rand_cone(new_rand, cos(ddot * 0.3));
             dir = cone.x * tangent + cone.y * bitangent + cone.z * dir;

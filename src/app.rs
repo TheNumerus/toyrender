@@ -5,7 +5,7 @@ use crate::import::ImportedScene;
 use crate::input::InputMapper;
 use crate::renderer::{FrameContext, FrameStats, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
 use crate::scene::Scene;
-use log::{error, info, log};
+use log::{error, info};
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
@@ -99,8 +99,15 @@ impl App {
             }
         }
 
+        if args.benchmark {
+            self.benchmark(300)?;
+            return Ok(());
+        }
+
         let start = Instant::now();
         let mut frame_end = Instant::now();
+
+        let mut state = AppState::new();
 
         let mouse_sens = 0.002;
         let scroll_sens = 2.5;
@@ -109,14 +116,8 @@ impl App {
         let mut taa_enable = true;
         let mut culling = true;
 
-        let mut selected_renderer = SelectedRenderer::Reference;
-        let mut sel_render = 0;
+        let mut sel_render = 1;
         let mut renderer_changed = false;
-
-        if args.benchmark {
-            self.benchmark(300)?;
-            return Ok(());
-        }
 
         let mut frame = 1;
 
@@ -223,7 +224,7 @@ impl App {
                 movement = true;
             }
 
-            if selected_renderer == SelectedRenderer::Reference && movement {
+            if state.selected_renderer == SelectedRenderer::Reference && movement {
                 clear_taa = true;
             }
 
@@ -268,7 +269,7 @@ impl App {
                     if ui.combo("Renderer", &mut sel_render, &["Realtime", "Reference"], |a| {
                         std::borrow::Cow::Borrowed(a)
                     }) {
-                        selected_renderer = match sel_render {
+                        state.selected_renderer = match sel_render {
                             0 => SelectedRenderer::Realtime,
                             1 => SelectedRenderer::Reference,
                             _ => unreachable!(),
@@ -366,7 +367,7 @@ impl App {
                 frame = 0;
             }
 
-            frame_stats[current_stats] = match selected_renderer {
+            frame_stats[current_stats] = match state.selected_renderer {
                 SelectedRenderer::Realtime => {
                     self.renderer
                         .render_frame(&self.scene, self.window.drawable_size(), &context, Some(draw_data))?
@@ -484,6 +485,18 @@ impl App {
         style.frame_rounding = 4.0;
 
         style.colors[imgui::StyleColor::WindowBg as usize] = [0.02, 0.02, 0.02, 0.9];
+    }
+}
+
+pub struct AppState {
+    selected_renderer: SelectedRenderer,
+}
+
+impl AppState {
+    pub fn new() -> Self {
+        Self {
+            selected_renderer: SelectedRenderer::Reference,
+        }
     }
 }
 

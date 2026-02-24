@@ -29,8 +29,6 @@ impl TonemapPass {
         renderer: &VulkanRenderer,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
-        self.device.begin_label("PostProcessing", command_buffer);
-
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
@@ -56,6 +54,8 @@ impl TonemapPass {
                 }],
             );
         }
+
+        self.device.begin_label("PostProcessing", command_buffer);
 
         let pipeline = renderer.pipeline_builder.get_compute("tonemap").unwrap();
 
@@ -145,15 +145,7 @@ impl TonemapPass {
             .add_u32(*renderer.descriptors.borrow().storages.get("tonemap_out").unwrap() as u32)
             .build();
 
-        unsafe {
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &pc,
-            );
-        }
+        command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc);
 
         let x = viewport.0 / 16 + 1;
         let y = viewport.1 / 16 + 1;

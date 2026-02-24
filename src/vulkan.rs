@@ -25,7 +25,7 @@ pub use buffer::Buffer;
 pub use command_buffer::CommandBuffer;
 pub use command_pool::CommandPool;
 pub use descriptor::{DescriptorPool, DescriptorSet, DescriptorSetLayout};
-pub use device::{DebugMarker, Device, DeviceQueryResult, SwapChainSupport};
+pub use device::{DebugMarker, Device, DeviceQueryResult, SubmitInfo, SwapChainSupport};
 pub use image::Image;
 pub use image_view::ImageView;
 pub use instance::Instance;
@@ -35,7 +35,7 @@ pub use rt::{AccelerationStructure, RayTracingAs, RayTracingPipeline, ShaderBind
 pub use sampler::Sampler;
 pub use shader::{ShaderModule, ShaderStage};
 pub use surface::Surface;
-pub use swapchain::Swapchain;
+pub use swapchain::{PresentInfo, Swapchain};
 pub use sync::{Fence, Semaphore};
 pub use vertex::{Vertex, VertexIndexBuffer};
 

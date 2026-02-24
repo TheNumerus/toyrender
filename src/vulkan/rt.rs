@@ -2,7 +2,7 @@ use crate::err::AppError;
 use crate::renderer::TlasIndex;
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, DebugMarker, Device, Fence, Instance, IntoVulkanError, Pipeline, Rt,
-    VulkanError,
+    SubmitInfo, VulkanError,
 };
 use ash::khr::acceleration_structure::Device as AccelerationStructureLoader;
 use ash::khr::ray_tracing_pipeline::Device as RayTracingPipelineLoader;
@@ -110,6 +110,7 @@ impl ShaderBindingTable {
             buf_size,
             device.rt_properties.shader_group_base_alignment as u64,
         )?;
+        buffer.name("SBT")?;
 
         let addr = buffer.get_device_addr();
         raygen_region.device_address = addr;
@@ -206,6 +207,7 @@ impl AccelerationStructure {
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             size,
         )?;
+        buf.name("BLAS")?;
 
         let create_info = vk::AccelerationStructureCreateInfoKHR {
             create_flags: Default::default(),
@@ -425,6 +427,7 @@ impl TopLevelAs {
 
         let fence = Fence::new(device.clone())?;
         fence.name("TLAS prepare fence")?;
+        fence.reset()?;
 
         unsafe {
             cmd_buf.begin_one_time()?;
@@ -445,22 +448,18 @@ impl TopLevelAs {
             device
                 .inner
                 .cmd_copy_buffer(cmd_buf.inner, stage_buf.inner, src_buf.inner, &[region]);
-
-            fence.reset()?;
-
-            cmd_buf.end()?;
-
-            let submit_info = vk::SubmitInfo {
-                command_buffer_count: 1,
-                p_command_buffers: &cmd_buf.inner,
-                ..Default::default()
-            };
-
-            device
-                .inner
-                .queue_submit(device.compute_queue, &[submit_info], fence.inner)
-                .map_to_err("Cannot submit queue")?;
         }
+
+        cmd_buf.end()?;
+
+        device.queue_submit(SubmitInfo {
+            queue: &device.compute_queue,
+            fence: &fence,
+            wait_semaphores: &[],
+            signal_semaphores: &[],
+            command_buffers: &[cmd_buf.inner],
+            wait_stages: vk::PipelineStageFlags::TRANSFER,
+        })?;
 
         let addr = src_buf.get_device_addr();
 
@@ -516,7 +515,7 @@ impl TopLevelAs {
             vk::BufferUsageFlags::ACCELERATION_STRUCTURE_STORAGE_KHR | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             size_info.acceleration_structure_size,
         )?;
-        scratch_buf.name("TLAS storage buf")?;
+        buf.name("TLAS storage buf")?;
 
         let create_info = vk::AccelerationStructureCreateInfoKHR {
             create_flags: Default::default(),

@@ -4,8 +4,9 @@ use ash::vk::{Extent2D, Image, SurfaceFormatKHR, SwapchainKHR};
 use std::rc::Rc;
 use vk::PresentModeKHR;
 
-use super::{DebugMarker, ImageView, Instance, VulkanError};
-use crate::vulkan::{Device, IntoVulkanError, Semaphore, Surface, SwapChainSupport};
+use crate::vulkan::{
+    DebugMarker, Device, ImageView, Instance, IntoVulkanError, Semaphore, Surface, SwapChainSupport, VulkanError,
+};
 
 pub struct Swapchain {
     pub swapchain: SwapchainKHR,
@@ -208,10 +209,32 @@ impl Swapchain {
             })
             .collect::<Result<Vec<_>, _>>()
     }
+
+    pub fn present(&self, present_info: PresentInfo) -> Result<bool, VulkanError> {
+        let present_info = vk::PresentInfoKHR {
+            wait_semaphore_count: present_info.wait_semaphores.len() as u32,
+            p_wait_semaphores: present_info.wait_semaphores.as_ptr(),
+            swapchain_count: 1,
+            p_swapchains: &self.swapchain,
+            p_image_indices: &present_info.image_index,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.loader
+                .queue_present(self.device.present_queue, &present_info)
+                .map_to_err("Cannot present swapchain")
+        }
+    }
 }
 
 impl Drop for Swapchain {
     fn drop(&mut self) {
         unsafe { self.loader.destroy_swapchain(self.swapchain, None) };
     }
+}
+
+pub struct PresentInfo<'a> {
+    pub wait_semaphores: &'a [ash::vk::Semaphore],
+    pub image_index: u32,
 }

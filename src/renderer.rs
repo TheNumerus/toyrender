@@ -4,7 +4,8 @@ use crate::mesh::{MeshCullingInfo, MeshResource};
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
     AccelerationStructure, Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence,
-    IntoVulkanError, Sampler, Semaphore, ShaderBindingTable, TopLevelAs, Vertex, VulkanError, VulkanMesh,
+    IntoVulkanError, PresentInfo, Sampler, Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError,
+    VulkanMesh,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
@@ -47,7 +48,7 @@ mod debug;
 use debug::DebugMode;
 
 mod push_const;
-use push_const::PushConstBuilder;
+pub use push_const::PushConstBuilder;
 
 mod shader_loader;
 use shader_loader::ShaderLoader;
@@ -181,11 +182,6 @@ impl VulkanRenderer {
         };
 
         let mut pt_pass_targets = PathTracePass::render_target_defs().map(|a| Some(render_targets.add(a)));
-        let pt_pass = PathTracePass {
-            device: device.clone(),
-            direct_render_target: pt_pass_targets[0].take().unwrap()?,
-            indirect_render_target: pt_pass_targets[1].take().unwrap()?,
-        };
 
         let mut denoise_pass_targets = DenoisePass::render_target_defs().map(|a| Some(render_targets.add(a)));
         let denoise_pass = DenoisePass {
@@ -208,84 +204,34 @@ impl VulkanRenderer {
             render_target_history: taa_pass_targets[1].take().unwrap(),
         };
 
-        pipeline_builder.build_compute(
-            "tonemap",
-            "tonemap|main",
-            &TonemapPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 2) as u32,
-        )?;
+        pipeline_builder.build_compute("tonemap", "tonemap|main", descriptors.borrow())?;
         pipeline_builder.build_graphics(
             "deferred",
             "deferred|vertMain",
             "deferred|fragMain",
-            &GBufferPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
+            descriptors.borrow(),
             &GBufferPass::PIPELINE_TARGET_FORMATS,
-            size_of::<u32>() as u32,
             true,
         )?;
-        pipeline_builder.build_compute(
-            "light",
-            "light|main",
-            &ShadingPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 7) as u32,
-        )?;
-
-        pipeline_builder.build_compute(
-            "sky",
-            "sky|main",
-            &SkyPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 1) as u32,
-        )?;
-        pipeline_builder.build_compute(
-            "taa",
-            "taa|main",
-            &TaaPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 6) as u32,
-        )?;
-        pipeline_builder.build_compute(
-            "atrous",
-            "atrous|main",
-            &DenoisePass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 5) as u32,
-        )?;
-        pipeline_builder.build_compute(
-            "denoise_temporal",
-            "denoise_temporal|main",
-            &DenoisePass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 7) as u32,
-        )?;
-        pipeline_builder.build_rt(
-            "pt",
+        pipeline_builder.build_compute("light", "light|main", descriptors.borrow())?;
+        pipeline_builder.build_compute("sky", "sky|main", descriptors.borrow())?;
+        pipeline_builder.build_compute("taa", "taa|main", descriptors.borrow())?;
+        pipeline_builder.build_compute("atrous", "atrous|main", descriptors.borrow())?;
+        pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptors.borrow())?;
+        let rt_pipeline = pipeline_builder.build_rt(
+            "pt_rt",
             "pt_rt|raygen",
             "pt_rt|miss",
             "pt_rt|chit",
-            &PathTracePass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 8) as u32,
+            descriptors.borrow(),
         )?;
+
+        let pt_pass = PathTracePass {
+            device: device.clone(),
+            direct_render_target: pt_pass_targets[0].take().unwrap()?,
+            indirect_render_target: pt_pass_targets[1].take().unwrap()?,
+            pipeline: rt_pipeline,
+        };
 
         render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
@@ -293,7 +239,7 @@ impl VulkanRenderer {
             device.clone(),
             context.allocator.clone(),
             &context.rt_pipeline_ext,
-            pipeline_builder.get_rt("pt").unwrap(),
+            pipeline_builder.get_rt(&rt_pipeline)?,
             1,
             1,
         )?;
@@ -641,7 +587,11 @@ impl VulkanRenderer {
 
         let start = Instant::now();
 
-        self.prepare_meshes(scene)?;
+        if self.prepare_meshes(scene)? {
+            info!("Mesh first prepare time: {:.3}s", start.elapsed().as_secs_f32());
+        }
+
+        let prepare_end = start.elapsed().as_secs_f32();
 
         let tlas_start = Instant::now();
 
@@ -701,7 +651,7 @@ impl VulkanRenderer {
         let collected_meshes =
             MeshCollector::collect_transforms(scene, context.culling, &view_proj.view, &view_proj.projection);
 
-        let mesh_time = mesh_start.elapsed().as_secs_f32();
+        let mesh_time = mesh_start.elapsed().as_secs_f32() + prepare_end;
 
         let globals = Globals {
             exposure: scene.env.exposure,
@@ -779,62 +729,30 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_rendering();
-
         command_buffer.end()?;
 
         let record_time = record_start.elapsed().as_secs_f32();
 
-        let wait_semaphores = [
-            self.img_available[self.current_frame].inner,
-            self.gbuf_done.inner,
-            self.sky_done.inner,
-        ];
-        let wait_stages = [vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR];
-        let signal_semaphores = [self.render_finished[image_index as usize].inner];
-
-        let submit_info = vk::SubmitInfo {
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: wait_stages.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &command_buffer.inner,
-            signal_semaphore_count: 1,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-            ..Default::default()
-        };
-
         let end = Instant::now();
 
-        unsafe {
-            self.device
-                .inner
-                .queue_submit(
-                    self.device.graphics_queue,
-                    &[submit_info],
-                    self.in_flight[self.current_frame].inner,
-                )
-                .expect("failed to submit to queue")
-        };
+        let signal_semaphores = [self.render_finished[image_index as usize].inner];
+        self.context.device.queue_submit(SubmitInfo {
+            queue: &self.context.device.graphics_queue,
+            fence: &self.in_flight[self.current_frame],
+            wait_semaphores: &[
+                self.img_available[self.current_frame].inner,
+                self.gbuf_done.inner,
+                self.sky_done.inner,
+            ],
+            signal_semaphores: &signal_semaphores,
+            command_buffers: &[command_buffer.inner],
+            wait_stages: vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+        })?;
 
-        let is_suboptimal = {
-            let present_info = vk::PresentInfoKHR {
-                wait_semaphore_count: 1,
-                p_wait_semaphores: signal_semaphores.as_ptr(),
-                swapchain_count: 1,
-                p_swapchains: &self.context.swap_chain.borrow().swapchain,
-                p_image_indices: &image_index,
-                ..Default::default()
-            };
-
-            unsafe {
-                self.context
-                    .swap_chain
-                    .borrow()
-                    .loader
-                    .queue_present(self.device.present_queue, &present_info)
-                    .expect("cannot present")
-            }
-        };
+        let is_suboptimal = self.context.swap_chain.borrow().present(PresentInfo {
+            wait_semaphores: &signal_semaphores,
+            image_index,
+        })?;
 
         if is_suboptimal {
             self.resize(drawable_size)?;
@@ -859,16 +777,6 @@ impl VulkanRenderer {
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), AppError> {
         self.device.wait_idle()?;
         self.context.recreate_swapchain(drawable_size)?;
-
-        // need to drop before creating new ones
-        /*
-        self.context.swap_chain_image_views.clear();
-
-        self.context
-            .swap_chain
-            .recreate(self.device.clone(), drawable_size, &self.context.surface)?;
-
-        self.context.swap_chain_image_views = self.context.swap_chain.create_image_views()?;*/
 
         let extent_3d = vk::Extent3D {
             width: drawable_size.0,
@@ -919,33 +827,20 @@ impl VulkanRenderer {
         context: &FrameContext,
         draw_data: &Vec<DrawData>,
         viewport_size: (u32, u32),
-    ) -> Result<(), VulkanError> {
+    ) -> Result<(), AppError> {
         self.gbuffer_pass
             .record(raster_command_buffer, self, draw_data, viewport_size)?;
 
         raster_command_buffer.end()?;
 
-        let wait_semaphores = [];
-        let signal_semaphores = [self.gbuf_done.inner];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
-
-        let submit_info = vk::SubmitInfo {
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: wait_stages.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &raster_command_buffer.inner,
-            signal_semaphore_count: signal_semaphores.len() as u32,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-            ..Default::default()
-        };
-
-        unsafe {
-            self.device
-                .inner
-                .queue_submit(self.device.graphics_queue, &[submit_info], vk::Fence::null())
-                .expect("failed to submit to queue")
-        };
+        self.context.device.queue_submit(SubmitInfo {
+            queue: &self.context.device.graphics_queue,
+            fence: &Fence::null(self.context.device.clone()),
+            wait_semaphores: &[],
+            signal_semaphores: &[self.gbuf_done.inner],
+            command_buffers: &[raster_command_buffer.inner],
+            wait_stages: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        })?;
 
         compute_command_buffer.begin()?;
 
@@ -954,28 +849,15 @@ impl VulkanRenderer {
 
         compute_command_buffer.end()?;
 
-        let wait_semaphores = [];
-        let signal_semaphores = [self.sky_done.inner];
-        let wait_stages =
-            [vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR];
-
-        let submit_info = vk::SubmitInfo {
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: wait_stages.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &compute_command_buffer.inner,
-            signal_semaphore_count: signal_semaphores.len() as u32,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-            ..Default::default()
-        };
-
-        unsafe {
-            self.device
-                .inner
-                .queue_submit(self.device.compute_queue, &[submit_info], vk::Fence::null())
-                .expect("failed to submit to queue")
-        };
+        self.context.device.queue_submit(SubmitInfo {
+            queue: &self.context.device.compute_queue,
+            fence: &Fence::null(self.context.device.clone()),
+            wait_semaphores: &[],
+            signal_semaphores: &[self.sky_done.inner],
+            command_buffers: &[compute_command_buffer.inner],
+            wait_stages: vk::PipelineStageFlags::COMPUTE_SHADER
+                | vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+        })?;
 
         command_buffer.begin()?;
         self.pt_pass.record(command_buffer, self, viewport_size)?;
@@ -1103,13 +985,13 @@ impl VulkanRenderer {
         }
     }
 
-    fn prepare_meshes(&mut self, scene: &Scene) -> Result<(), AppError> {
+    fn prepare_meshes(&mut self, scene: &Scene) -> Result<bool, AppError> {
         let mut changed = false;
 
         for instance in &scene.meshes {
             if let std::collections::btree_map::Entry::Vacant(e) = self.meshes.entry(instance.resource.id) {
                 let mesh = VulkanMesh::new(
-                    self.device.clone(),
+                    self.context.device.clone(),
                     self.context.allocator.clone(),
                     &self.context.graphics_command_pool,
                     &instance.resource,
@@ -1166,7 +1048,7 @@ impl VulkanRenderer {
             }
 
             let batch = AccelerationStructure::batch_bottom_build(
-                self.device.clone(),
+                self.context.device.clone(),
                 self.context.allocator.clone(),
                 self.context.rt_acc_struct_ext.clone(),
                 &self.context.compute_command_pool,
@@ -1179,7 +1061,7 @@ impl VulkanRenderer {
             self.blases = batch;
         }
 
-        Ok(())
+        Ok(changed)
     }
 
     fn build_tlas_index(&self, scene: &Scene) -> TlasIndex {

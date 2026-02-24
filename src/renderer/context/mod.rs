@@ -6,6 +6,7 @@ use crate::vulkan::{
 use ash::Entry;
 use ash::vk::Handle;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
+use log::debug;
 use sdl2::video::Window;
 use std::cell::RefCell;
 use std::fmt::Write;
@@ -13,9 +14,6 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 pub struct VulkanContext {
-    pub instance: Rc<Instance>,
-    pub device: Rc<Device>,
-    pub allocator: Arc<Mutex<Allocator>>,
     pub swap_chain: RefCell<Swapchain>,
     pub swap_chain_image_views: RefCell<Vec<ImageView>>,
     pub surface: Surface,
@@ -24,6 +22,10 @@ pub struct VulkanContext {
     pub graphics_command_pool: CommandPool,
     pub compute_command_pool: CommandPool,
     pub imgui_renderer: RefCell<imgui_rs_vulkan_renderer::Renderer>,
+    pub allocator: Arc<Mutex<Allocator>>,
+    // Needs to be dropped last
+    pub device: Rc<Device>,
+    pub instance: Rc<Instance>,
 }
 
 impl VulkanContext {
@@ -83,7 +85,7 @@ impl VulkanContext {
 
         Ok(Self {
             instance,
-            device: device.clone(),
+            device,
             allocator,
             surface,
             rt_pipeline_ext,

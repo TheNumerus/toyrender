@@ -14,6 +14,8 @@ pub enum AppError {
     #[error("{0}")]
     Import(String),
     #[error("{0}")]
+    InvalidKey(String),
+    #[error("{0}")]
     Other(String),
 }
 

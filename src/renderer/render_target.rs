@@ -99,7 +99,6 @@ impl RenderTarget {
 #[derive(Copy, Clone)]
 pub enum RenderTargetSize {
     Window,
-    Scaled(f32),
     Custom(u32, u32),
 }
 
@@ -262,11 +261,6 @@ impl RenderTargets {
         for (_name, target) in &mut self.targets {
             let extent = match target.size {
                 RenderTargetSize::Window => self.default_extent,
-                RenderTargetSize::Scaled(scale_factor) => Extent3D {
-                    width: (self.default_extent.width as f32 * scale_factor) as u32,
-                    height: (self.default_extent.height as f32 * scale_factor) as u32,
-                    depth: 1,
-                },
                 _ => continue,
             };
 
@@ -279,18 +273,6 @@ impl RenderTargets {
     fn build(&self, builder: RenderTargetBuilder) -> Result<RenderTarget, AppError> {
         let extent = match builder.size {
             RenderTargetSize::Window => self.default_extent,
-            RenderTargetSize::Scaled(scale_factor) => {
-                if scale_factor <= 0.0 {
-                    return Err(AppError::Other(format!(
-                        "Invalid scale factor for render target: '{scale_factor}'"
-                    )));
-                }
-                Extent3D {
-                    width: (self.default_extent.width as f32 * scale_factor) as u32,
-                    height: (self.default_extent.height as f32 * scale_factor) as u32,
-                    depth: 1,
-                }
-            }
             RenderTargetSize::Custom(x, y) => Extent3D {
                 width: x,
                 height: y,

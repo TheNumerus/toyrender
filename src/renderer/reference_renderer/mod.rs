@@ -1,9 +1,12 @@
+mod pt;
+use pt::ReferencePathtracePass;
+
 use crate::err::AppError;
 use crate::math;
 use crate::renderer::buffers::global::Globals;
 use crate::renderer::buffers::view_proj::ViewProj;
 use crate::renderer::descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
-use crate::renderer::passes::{PathTracePass, SkyPass, TonemapPass};
+use crate::renderer::passes::{SkyPass, TonemapPass};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::push_const::PushConstBuilder;
 use crate::renderer::quality::QualitySettings;
@@ -14,8 +17,8 @@ use crate::renderer::{
 };
 use crate::scene::Scene;
 use crate::vulkan::{
-    AccelerationStructure, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Device, Fence, Sampler, Semaphore,
-    ShaderBindingTable, TopLevelAs, Vertex, VulkanError, VulkanMesh,
+    AccelerationStructure, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore,
+    ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
@@ -29,7 +32,6 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 pub struct VulkanMcPathTracer {
     pub context: Rc<VulkanContext>,
-    pub device: Rc<Device>,
     pub render_targets: RenderTargets,
     pub pipeline_builder: PipelineBuilder,
     pub shader_binding_table: ShaderBindingTable,
@@ -41,7 +43,6 @@ pub struct VulkanMcPathTracer {
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
-    pub mesh_bufs: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub render_scale: f32,
@@ -53,6 +54,7 @@ pub struct VulkanMcPathTracer {
     frames_in_flight: usize,
     sky_pass: SkyPass,
     tonemap_pass: TonemapPass,
+    pt_pass: ReferencePathtracePass,
 }
 
 impl VulkanMcPathTracer {
@@ -124,13 +126,6 @@ impl VulkanMcPathTracer {
             render_target: render_targets.add(TonemapPass::render_target_def())?,
         };
 
-        render_targets.add(
-            RenderTargetBuilder::new("rt_out")
-                .with_storage()
-                .with_transfer()
-                .with_format(vk::Format::R16G16B16A16_SFLOAT),
-        )?;
-
         // need full fat buffer for increased precision
         render_targets.add(
             RenderTargetBuilder::new("acc_out")
@@ -139,53 +134,28 @@ impl VulkanMcPathTracer {
                 .with_format(vk::Format::R32G32B32A32_SFLOAT),
         )?;
 
-        pipeline_builder.build_compute(
-            "sky",
-            "sky|main",
-            &SkyPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 1) as u32,
-        )?;
-
-        pipeline_builder.build_compute(
-            "accumulator",
-            "accumulator|main",
-            &SkyPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 4) as u32,
-        )?;
-
-        pipeline_builder.build_compute(
-            "tonemap",
-            "tonemap|main",
-            &TonemapPass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 2) as u32,
-        )?;
-
-        pipeline_builder.build_rt(
+        pipeline_builder.build_compute("sky", "sky|main", descriptors.borrow())?;
+        pipeline_builder.build_compute("accumulator", "accumulator|main", descriptors.borrow())?;
+        pipeline_builder.build_compute("tonemap", "tonemap|main", descriptors.borrow())?;
+        let pt_pipeline = pipeline_builder.build_rt(
             "pt",
             "pt_reference|raygen",
             "pt_reference|miss",
             "pt_reference|chit",
-            &PathTracePass::DESC_LAYOUTS
-                .iter()
-                .map(|l| descriptors.borrow().layouts.get(l).unwrap().inner)
-                .collect::<Vec<_>>(),
-            (size_of::<i32>() * 9) as u32,
+            descriptors.borrow(),
         )?;
+
+        let pt_pass = ReferencePathtracePass {
+            context: context.clone(),
+            pipeline_handle: pt_pipeline,
+        };
+        render_targets.add(ReferencePathtracePass::render_target_def())?;
 
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
             context.allocator.clone(),
             &context.rt_pipeline_ext,
-            pipeline_builder.get_rt("pt").unwrap(),
+            pipeline_builder.get_rt(&pt_pipeline).unwrap(),
             1,
             1,
         )?;
@@ -201,7 +171,6 @@ impl VulkanMcPathTracer {
         let mut uniform_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-        let mut mesh_bufs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let mut writes = Vec::new();
         let mut tlases = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -281,7 +250,6 @@ impl VulkanMcPathTracer {
 
         Ok(Self {
             context: context.clone(),
-            device: device.clone(),
             render_targets,
             pipeline_builder,
             shader_binding_table,
@@ -295,7 +263,6 @@ impl VulkanMcPathTracer {
             uniform_buffers,
             uniform_buffers_globals,
             env_uniforms,
-            mesh_bufs,
             in_flight,
             meshes: BTreeMap::new(),
             quality: QualitySettings::new(),
@@ -305,6 +272,7 @@ impl VulkanMcPathTracer {
             sky_pass,
             tonemap_pass,
             render_scale: 1.0,
+            pt_pass,
         })
     }
 
@@ -379,14 +347,18 @@ impl VulkanMcPathTracer {
 
         let start = Instant::now();
 
-        self.prepare_meshes(scene)?;
+        if self.prepare_meshes(scene)? {
+            info!("Mesh first prepare time: {:.3}s", start.elapsed().as_secs_f32());
+        }
+
+        let mesh_time = start.elapsed().as_secs_f32();
 
         let tlas_start = Instant::now();
 
         let tlas_index = self.build_tlas_index(scene);
 
         self.tlases[self.current_frame] = TopLevelAs::prepare(
-            self.device.clone(),
+            self.context.device.clone(),
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
             &self.context.compute_command_pool.allocate_cmd_buffers(1)?[0],
@@ -405,7 +377,7 @@ impl VulkanMcPathTracer {
         let fov_rad = math::deg_to_rad(scene.camera.fov);
         let fovy = math::fovx_to_fovy(fov_rad, aspect_ratio);
 
-        let mut offset = math::halton(context.frame_index % 16 + 1);
+        let mut offset = math::halton(context.frame_index + 1);
         if context.clear_taa {
             offset = (0.5, 0.5);
         }
@@ -431,10 +403,6 @@ impl VulkanMcPathTracer {
             view_inverse: scene.camera.view().try_inverse().unwrap(),
             projection_inverse: proj.try_inverse().unwrap(),
         };
-
-        let mesh_start = Instant::now();
-
-        let mesh_time = mesh_start.elapsed().as_secs_f32();
 
         let globals = Globals {
             exposure: scene.env.exposure,
@@ -464,7 +432,7 @@ impl VulkanMcPathTracer {
             ));
         }
 
-        DescriptorWriter::batch_write(&self.device, writes);
+        DescriptorWriter::batch_write(&self.context.device, writes);
 
         command_buffer.begin()?;
 
@@ -511,7 +479,7 @@ impl VulkanMcPathTracer {
         command_buffer.end_rendering();
 
         unsafe {
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::ALL_GRAPHICS,
                 vk::PipelineStageFlags::TRANSFER,
@@ -524,13 +492,7 @@ impl VulkanMcPathTracer {
                     old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
                     image: self.context.swap_chain.borrow().images[image_index as usize],
-                    subresource_range: vk::ImageSubresourceRange {
-                        base_mip_level: 0,
-                        level_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
                     ..Default::default()
                 }],
             );
@@ -540,53 +502,23 @@ impl VulkanMcPathTracer {
 
         let record_time = record_start.elapsed().as_secs_f32();
 
-        let wait_semaphores = [self.img_available[self.current_frame].inner];
-        let wait_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
         let signal_semaphores = [self.render_finished[image_index as usize].inner];
-
-        let submit_info = vk::SubmitInfo {
-            wait_semaphore_count: wait_semaphores.len() as u32,
-            p_wait_semaphores: wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: wait_stages.as_ptr(),
-            command_buffer_count: 1,
-            p_command_buffers: &command_buffer.inner,
-            signal_semaphore_count: 1,
-            p_signal_semaphores: signal_semaphores.as_ptr(),
-            ..Default::default()
-        };
 
         let end = Instant::now();
 
-        unsafe {
-            self.device
-                .inner
-                .queue_submit(
-                    self.device.graphics_queue,
-                    &[submit_info],
-                    self.in_flight[self.current_frame].inner,
-                )
-                .expect("failed to submit to queue")
-        };
+        self.context.device.queue_submit(SubmitInfo {
+            queue: &self.context.device.graphics_queue,
+            fence: &self.in_flight[self.current_frame],
+            wait_semaphores: &[self.img_available[self.current_frame].inner],
+            signal_semaphores: &signal_semaphores,
+            command_buffers: &[command_buffer.inner],
+            wait_stages: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+        })?;
 
-        let is_suboptimal = {
-            let present_info = vk::PresentInfoKHR {
-                wait_semaphore_count: 1,
-                p_wait_semaphores: signal_semaphores.as_ptr(),
-                swapchain_count: 1,
-                p_swapchains: &self.context.swap_chain.borrow().swapchain,
-                p_image_indices: &image_index,
-                ..Default::default()
-            };
-
-            unsafe {
-                self.context
-                    .swap_chain
-                    .borrow()
-                    .loader
-                    .queue_present(self.device.present_queue, &present_info)
-                    .expect("cannot present")
-            }
-        };
+        let is_suboptimal = self.context.swap_chain.borrow().present(PresentInfo {
+            wait_semaphores: &signal_semaphores,
+            image_index,
+        })?;
 
         if is_suboptimal {
             self.resize(drawable_size)?;
@@ -608,8 +540,7 @@ impl VulkanMcPathTracer {
     }
 
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), AppError> {
-        self.device.wait_idle()?;
-
+        self.context.device.wait_idle()?;
         self.context.recreate_swapchain(drawable_size)?;
 
         let extent_3d = vk::Extent3D {
@@ -624,7 +555,7 @@ impl VulkanMcPathTracer {
         let mut desc_borrow = self.descriptors.borrow_mut();
         let writes = desc_borrow.update_resources(&self.render_targets)?;
 
-        DescriptorWriter::batch_write(&self.device, writes);
+        DescriptorWriter::batch_write(&self.context.device, writes);
 
         drop(desc_borrow);
 
@@ -638,19 +569,22 @@ impl VulkanMcPathTracer {
         context: &FrameContext,
         viewport_size: (u32, u32),
         fov: f32,
-    ) -> Result<(), VulkanError> {
+    ) -> Result<(), AppError> {
         self.tlases[self.current_frame].build(command_buffer)?;
+
+        self.init_frame_images(command_buffer);
+
         self.sky_pass.record_reference(command_buffer, self)?;
 
         unsafe {
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
                 vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                 vk::DependencyFlags::empty(),
                 &[vk::MemoryBarrier {
                     src_access_mask: vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
                     ..Default::default()
                 }],
                 &[],
@@ -658,139 +592,46 @@ impl VulkanMcPathTracer {
             );
         }
 
-        self.record_pt(command_buffer, context, viewport_size, fov)?;
-
+        self.pt_pass
+            .record_pt(command_buffer, self, context, viewport_size, fov)?;
         self.record_accumulate(command_buffer, context, viewport_size)?;
-
         self.tonemap_pass
             .record_reference(command_buffer, self, viewport_size)?;
-
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
         Ok(())
     }
 
-    pub fn record_pt(
-        &self,
-        command_buffer: &CommandBuffer,
-        context: &FrameContext,
-        viewport: (u32, u32),
-        fov: f32,
-    ) -> Result<(), VulkanError> {
-        self.device.begin_label("Path Tracing", command_buffer);
-
-        let pipeline = self.pipeline_builder.get_rt("pt").unwrap();
-
-        command_buffer.bind_rt_pipeline(pipeline);
+    pub fn init_frame_images(&self, command_buffer: &CommandBuffer) {
+        let barriers = [
+            self.render_targets.get("rt_out").unwrap().borrow().image.inner,
+            self.render_targets.get("acc_out").unwrap().borrow().image.inner,
+            self.render_targets.get("tonemap_out").unwrap().borrow().image.inner,
+            self.render_targets.get("sky").unwrap().borrow().image.inner,
+        ]
+        .map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::NONE,
+            dst_access_mask: vk::AccessFlags::SHADER_WRITE,
+            old_layout: vk::ImageLayout::UNDEFINED,
+            new_layout: vk::ImageLayout::GENERAL,
+            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        });
 
         unsafe {
-            let barriers = [
-                self.render_targets.get("rt_out").unwrap().borrow().image.inner,
-                self.render_targets.get("acc_out").unwrap().borrow().image.inner,
-                self.render_targets.get("tonemap_out").unwrap().borrow().image.inner,
-            ]
-            .map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::NONE,
-                dst_access_mask: vk::AccessFlags::SHADER_WRITE,
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            });
-
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline.layout,
-                0,
-                &[
-                    self.descriptors.borrow().global_sets[self.current_frame].inner,
-                    self.descriptors.borrow().compute_sets[self.current_frame].inner,
-                ],
-                &[],
-            );
-
-            let pc = PushConstBuilder::new()
-                .add_u32(context.frame_index)
-                .add_u32(self.quality.pt_bounces as u32)
-                .add_u32(*self.descriptors.borrow().storages.get("rt_out").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().samplers.get("sky").unwrap() as u32)
-                .add_f32(self.quality.rt_direct_trace_distance)
-                .add_f32(self.quality.rt_indirect_trace_distance)
-                .add_f32(fov)
-                .build();
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::RAYGEN_KHR,
-                0,
-                &pc,
-            );
-
-            self.context.rt_pipeline_ext.loader.cmd_trace_rays(
-                command_buffer.inner,
-                &self.shader_binding_table.raygen_region,
-                &self.shader_binding_table.miss_region,
-                &self.shader_binding_table.hit_region,
-                &self.shader_binding_table.call_region,
-                viewport.0,
-                viewport.1,
-                1,
-            );
-
-            let barriers =
-                [self.render_targets.get("rt_out").unwrap().borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                });
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
                 &barriers,
             );
         }
-
-        self.device.end_label(command_buffer);
-
-        Ok(())
     }
 
     fn record_accumulate(
@@ -813,22 +654,13 @@ impl VulkanMcPathTracer {
             ],
         );
 
-        unsafe {
-            let pc = PushConstBuilder::with_capacity(4 * size_of::<u32>())
-                .add_u32(context.frame_index)
-                .add_u32(if context.clear_taa { 1 } else { 0 })
-                .add_u32(*self.descriptors.borrow().storages.get("rt_out").unwrap() as u32)
-                .add_u32(*self.descriptors.borrow().storages.get("acc_out").unwrap() as u32)
-                .build();
+        let pc = PushConstBuilder::with_capacity(4 * size_of::<u32>())
+            .add_u32(context.frame_index)
+            .add_u32(if context.clear_taa { 1 } else { 0 })
+            .add_u32(*self.descriptors.borrow().storages.get("rt_out").unwrap() as u32)
+            .add_u32(*self.descriptors.borrow().storages.get("acc_out").unwrap() as u32);
 
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &pc,
-            );
-        }
+        command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc.build());
 
         let x = viewport_size.0 / 16 + 1;
         let y = viewport_size.1 / 16 + 1;
@@ -843,18 +675,12 @@ impl VulkanMcPathTracer {
             src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
             dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
             image: acc_image,
-            subresource_range: vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            },
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
             ..Default::default()
         };
 
         unsafe {
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -889,7 +715,7 @@ impl VulkanMcPathTracer {
                 z: 1,
             };
 
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
                 vk::PipelineStageFlags::TRANSFER,
@@ -902,43 +728,34 @@ impl VulkanMcPathTracer {
                     old_layout: vk::ImageLayout::UNDEFINED,
                     new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     image: *target,
-                    subresource_range: vk::ImageSubresourceRange {
-                        base_mip_level: 0,
-                        level_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
                     ..Default::default()
                 }],
             );
 
-            self.device.inner.cmd_blit_image(
+            let subresource = vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+
+            self.context.device.inner.cmd_blit_image(
                 command_buffer.inner,
                 src_image,
                 vk::ImageLayout::GENERAL,
                 *target,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[vk::ImageBlit {
-                    src_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    src_subresource: subresource,
                     src_offsets: [offset_min, offset_src_max],
-                    dst_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    dst_subresource: subresource,
                     dst_offsets: [offset_min, offset_dst_max],
                 }],
                 vk::Filter::LINEAR,
             );
 
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::ALL_GRAPHICS,
@@ -951,13 +768,7 @@ impl VulkanMcPathTracer {
                     old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     image: *target,
-                    subresource_range: vk::ImageSubresourceRange {
-                        base_mip_level: 0,
-                        level_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
                     ..Default::default()
                 }],
             );
@@ -966,13 +777,13 @@ impl VulkanMcPathTracer {
         Ok(())
     }
 
-    fn prepare_meshes(&mut self, scene: &Scene) -> Result<(), AppError> {
+    fn prepare_meshes(&mut self, scene: &Scene) -> Result<bool, AppError> {
         let mut changed = false;
 
         for instance in &scene.meshes {
             if let std::collections::btree_map::Entry::Vacant(e) = self.meshes.entry(instance.resource.id) {
                 let mesh = VulkanMesh::new(
-                    self.device.clone(),
+                    self.context.device.clone(),
                     self.context.allocator.clone(),
                     &self.context.graphics_command_pool,
                     &instance.resource,
@@ -1029,7 +840,7 @@ impl VulkanMcPathTracer {
             }
 
             let batch = AccelerationStructure::batch_bottom_build(
-                self.device.clone(),
+                self.context.device.clone(),
                 self.context.allocator.clone(),
                 self.context.rt_acc_struct_ext.clone(),
                 &self.context.compute_command_pool,
@@ -1042,11 +853,11 @@ impl VulkanMcPathTracer {
             self.blases = batch;
         }
 
-        Ok(())
+        Ok(changed)
     }
 
     fn build_tlas_index(&self, scene: &Scene) -> TlasIndex {
-        let mut index = Vec::new();
+        let mut index = Vec::with_capacity(scene.meshes.len());
 
         for mesh in &scene.meshes {
             let transform = mesh.transform;

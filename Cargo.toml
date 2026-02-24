@@ -23,6 +23,7 @@ zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
 imgui = "0.12.0"
 imgui-sdl2-support = { version = "0.13.0" }
 imgui-rs-vulkan-renderer = { version = "~1.16.0", features = ["gpu-allocator", "dynamic-rendering"] }
+rspirv-reflect = "0.9.0"
 
 [build-dependencies]
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
