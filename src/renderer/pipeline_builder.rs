@@ -1,6 +1,6 @@
+use crate::app::shader_loader::ShaderLoader;
 use crate::err::AppError;
 use crate::renderer::descriptors::RendererDescriptors;
-use crate::renderer::shader_loader::ShaderLoader;
 use crate::vulkan::{
     Compute, DebugMarker, Device, Graphics, Pipeline, RayTracingPipeline, Rt, ShaderModule, ShaderStage,
 };
@@ -20,9 +20,9 @@ pub struct PipelineBuilder {
     shader_loader: ShaderLoader,
     device: Rc<Device>,
     rt_pipeline_ext: Rc<RayTracingPipeline>,
-    graphic_pipelines: HashMap<String, Pipeline<Graphics>>,
-    rt_pipelines: HashMap<PipelineHandle, Pipeline<Rt>>,
-    compute_pipelines: HashMap<String, Pipeline<Compute>>,
+    graphic_pipelines: HashMap<PipelineHandle, Rc<Pipeline<Graphics>>>,
+    rt_pipelines: HashMap<PipelineHandle, Rc<Pipeline<Rt>>>,
+    compute_pipelines: HashMap<PipelineHandle, Rc<Pipeline<Compute>>>,
 }
 
 impl PipelineBuilder {
@@ -45,7 +45,7 @@ impl PipelineBuilder {
         descriptors: Ref<RendererDescriptors>,
         attachment_formats: &[vk::Format],
         use_depth: bool,
-    ) -> Result<(), AppError> {
+    ) -> Result<Rc<Pipeline<Graphics>>, AppError> {
         let vert_name = vert_name.as_ref();
         let frag_name = frag_name.as_ref();
 
@@ -90,9 +90,11 @@ impl PipelineBuilder {
         )?;
         pipeline.name(name.as_ref())?;
 
-        self.graphic_pipelines.insert(name.as_ref().to_owned(), pipeline);
+        let pipeline = Rc::new(pipeline);
+        let id = PIPELINE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        self.graphic_pipelines.insert(PipelineHandle(id), pipeline.clone());
 
-        Ok(())
+        Ok(pipeline)
     }
 
     pub fn build_compute(
@@ -100,7 +102,7 @@ impl PipelineBuilder {
         name: impl AsRef<str>,
         compute_name: impl AsRef<str>,
         descriptors: Ref<RendererDescriptors>,
-    ) -> Result<(), AppError> {
+    ) -> Result<Rc<Pipeline<Compute>>, AppError> {
         let compute_name = compute_name.as_ref();
         let (module, refl) = self.get_shader(compute_name, ShaderStage::Compute)?;
         module.set_name(compute_name.to_owned())?;
@@ -125,17 +127,24 @@ impl PipelineBuilder {
         let desc_layouts = Self::get_desc_layouts(descriptors, desc_sets_info)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
+        let workgroup_size = refl
+            .get_compute_group_size()
+            .ok_or_else(|| AppError::Import(format!("Error getting workgroup size for '{}'", name.as_ref())))?;
+
         let pipeline = Pipeline::new_compute(
             self.device.clone(),
             module.stage_info(),
             &desc_layouts,
             push_consts_size,
+            workgroup_size,
         )?;
         pipeline.name(name.as_ref())?;
 
-        self.compute_pipelines.insert(name.as_ref().to_owned(), pipeline);
+        let pipeline = Rc::new(pipeline);
+        let id = PIPELINE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
+        self.compute_pipelines.insert(PipelineHandle(id), pipeline.clone());
 
-        Ok(())
+        Ok(pipeline.clone())
     }
 
     pub fn build_rt(
@@ -145,7 +154,7 @@ impl PipelineBuilder {
         name_miss: impl AsRef<str>,
         name_hit: impl AsRef<str>,
         descriptors: Ref<RendererDescriptors>,
-    ) -> Result<PipelineHandle, AppError> {
+    ) -> Result<Rc<Pipeline<Rt>>, AppError> {
         let raygen_name = name_raygen.as_ref();
         let (raygen_module, refl) = self.get_shader(raygen_name, ShaderStage::RayGen)?;
         raygen_module.set_name(raygen_name.to_owned())?;
@@ -193,24 +202,16 @@ impl PipelineBuilder {
         )?;
         pipeline.name(name.as_ref())?;
 
+        let pipeline = Rc::new(pipeline);
+
         let id = PIPELINE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
 
-        self.rt_pipelines.insert(PipelineHandle(id), pipeline);
-        Ok(PipelineHandle(id))
+        self.rt_pipelines.insert(PipelineHandle(id), pipeline.clone());
+        Ok(pipeline)
     }
 
-    pub fn get_graphics(&self, key: &str) -> Option<&Pipeline<Graphics>> {
-        self.graphic_pipelines.get(key)
-    }
-
-    pub fn get_compute(&self, key: &str) -> Option<&Pipeline<Compute>> {
-        self.compute_pipelines.get(key)
-    }
-
-    pub fn get_rt(&self, key: &PipelineHandle) -> Result<&Pipeline<Rt>, AppError> {
-        self.rt_pipelines
-            .get(key)
-            .ok_or_else(|| AppError::InvalidKey(format!("RT pipeline not found: {:?}", key)))
+    pub fn get_pipeline_count(&self) -> usize {
+        self.rt_pipelines.len() + self.compute_pipelines.len() + self.graphic_pipelines.len()
     }
 
     fn get_shader(&self, shader_name: &str, shader_stage: ShaderStage) -> Result<(ShaderModule, Reflection), AppError> {

@@ -224,7 +224,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform int out_idx) {
         float4 color = float4(0.0);
 
         float vert = (float(x) / float(size.x)) * 2.0 * PI;
-        float hor = (float(y) / float(size.y)) * 2.0 - 1.0;
+        float hor = (1.0 - (float(y) / float(size.y))) * 2.0 - 1.0;
         hor = sin(hor * (PI / 2.0));
         hor = hor * hor * sign(hor);
         float vert_intensity = sqrt(1.0 - (hor * hor));

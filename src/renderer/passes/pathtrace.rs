@@ -1,22 +1,43 @@
 use crate::err::AppError;
-use crate::renderer::descriptors::DescLayout;
-use crate::renderer::pipeline_builder::PipelineHandle;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::vulkan::{CommandBuffer, Device, Pipeline, Rt};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct PathTracePass {
-    pub device: Rc<Device>,
-    pub direct_render_target: Rc<RefCell<RenderTarget>>,
-    pub indirect_render_target: Rc<RefCell<RenderTarget>>,
-    pub pipeline: PipelineHandle,
+    device: Rc<Device>,
+    direct_render_target: Rc<RefCell<RenderTarget>>,
+    indirect_render_target: Rc<RefCell<RenderTarget>>,
+    pub pipeline_handle: Rc<Pipeline<Rt>>,
 }
 
 impl PathTracePass {
     pub const TARGET_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
+
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let [a, b] = Self::render_target_defs();
+        let direct_render_target = render_targets.add(a)?;
+        let indirect_render_target = render_targets.add(b)?;
+
+        let pipeline_handle =
+            pipeline_builder.build_rt("pt_rt", "pt_rt|raygen", "pt_rt|miss", "pt_rt|chit", descriptors)?;
+
+        Ok(Self {
+            device,
+            direct_render_target,
+            indirect_render_target,
+            pipeline_handle,
+        })
+    }
 
     pub fn render_target_defs() -> [RenderTargetBuilder; 2] {
         [
@@ -31,8 +52,6 @@ impl PathTracePass {
         ]
     }
 
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
-
     pub fn record(
         &self,
         command_buffer: &CommandBuffer,
@@ -41,7 +60,7 @@ impl PathTracePass {
     ) -> Result<(), AppError> {
         self.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_rt(&self.pipeline)?;
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_rt_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
@@ -53,8 +72,9 @@ impl PathTracePass {
             ],
         );
 
-        let pc = PushConstBuilder::with_capacity(8 * size_of::<u32>())
+        let pc = PushConstBuilder::with_capacity(9 * size_of::<u32>())
             .add_u32(renderer.quality.pt_bounces as u32)
+            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_color").unwrap() as u32)
             .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
             .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
             .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)

@@ -1,12 +1,13 @@
+use crate::app::shader_loader::ShaderLoader;
 use crate::err::AppError;
 use crate::renderer::MAX_FRAMES_IN_FLIGHT;
+use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::vulkan::{
     CommandPool, Device, DeviceQueryResult, ImageView, Instance, RayTracingAs, RayTracingPipeline, Surface, Swapchain,
 };
 use ash::Entry;
 use ash::vk::Handle;
 use gpu_allocator::vulkan::{Allocator, AllocatorCreateDesc};
-use log::debug;
 use sdl2::video::Window;
 use std::cell::RefCell;
 use std::fmt::Write;
@@ -14,6 +15,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 pub struct VulkanContext {
+    pub pipeline_builder: RefCell<PipelineBuilder>,
     pub swap_chain: RefCell<Swapchain>,
     pub swap_chain_image_views: RefCell<Vec<ImageView>>,
     pub surface: Surface,
@@ -25,11 +27,11 @@ pub struct VulkanContext {
     pub allocator: Arc<Mutex<Allocator>>,
     // Needs to be dropped last
     pub device: Rc<Device>,
-    pub instance: Rc<Instance>,
+    pub _instance: Rc<Instance>,
 }
 
 impl VulkanContext {
-    pub fn init(window: &Window, imgui: &mut imgui::Context) -> Result<Self, AppError> {
+    pub fn init(window: &Window, imgui: &mut imgui::Context, shader_loader: ShaderLoader) -> Result<Self, AppError> {
         let entry = unsafe { Entry::load().expect("cannot load vulkan entry") };
 
         let instance = Rc::new(Instance::new(&entry, &window.vulkan_instance_extensions().unwrap())?);
@@ -83,8 +85,10 @@ impl VulkanContext {
         )
         .map_err(|e| AppError::Other(format!("Failed to create imgui renderer: {}", e)))?;
 
+        let pipeline_builder = PipelineBuilder::new(shader_loader, device.clone(), rt_pipeline_ext.clone());
+
         Ok(Self {
-            instance,
+            _instance: instance,
             device,
             allocator,
             surface,
@@ -95,6 +99,7 @@ impl VulkanContext {
             graphics_command_pool,
             compute_command_pool,
             imgui_renderer: RefCell::new(imgui_renderer),
+            pipeline_builder: RefCell::new(pipeline_builder),
         })
     }
 

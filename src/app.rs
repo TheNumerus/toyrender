@@ -12,8 +12,14 @@ use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 use std::cmp::PartialEq;
+use std::fs::File;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
+use zip::ZipArchive;
+
+pub(crate) mod shader_loader;
+use shader_loader::ShaderLoader;
 
 pub struct App {
     pub vulkan_context: Rc<VulkanContext>,
@@ -49,7 +55,9 @@ impl App {
         let mut imgui = imgui::Context::create();
         Self::set_ui_style(imgui.style_mut());
 
-        let vulkan_context = Rc::new(VulkanContext::init(&window, &mut imgui)?);
+        let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
+
+        let vulkan_context = Rc::new(VulkanContext::init(&window, &mut imgui, shader_loader)?);
         let renderer = VulkanRenderer::init(vulkan_context.clone())?;
         let reference_renderer = VulkanMcPathTracer::init(vulkan_context.clone())?;
 
@@ -98,6 +106,11 @@ impl App {
                 self.scene.camera.rotation = camera.rotation;
             }
         }
+
+        info!(
+            "{} pipelines created",
+            self.vulkan_context.pipeline_builder.borrow().get_pipeline_count()
+        );
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -289,16 +302,16 @@ impl App {
                             self.reference_renderer.quality.rt_direct_trace_distance =
                                 self.renderer.quality.rt_direct_trace_distance;
                         }
-                        if (ui.slider(
+                        if ui.slider(
                             "Indirect trace distance",
                             0.0,
                             500.0,
                             &mut self.renderer.quality.rt_indirect_trace_distance,
-                        )) {
+                        ) {
                             self.reference_renderer.quality.rt_indirect_trace_distance =
                                 self.renderer.quality.rt_indirect_trace_distance;
                         }
-                        if (ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces)) {
+                        if ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces) {
                             self.reference_renderer.quality.pt_bounces = self.renderer.quality.pt_bounces;
                         }
 
@@ -355,6 +368,18 @@ impl App {
                             "Drawn objects: {}",
                             frame_stats[current_stats].objects_rendered
                         ));
+                    }
+                    if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty()) {
+                        for (index, mesh) in &mut self.scene.meshes.iter_mut().enumerate() {
+                            ui.text(format!("'{}'", mesh.resource.name));
+                            ui.same_line();
+                            ui.checkbox(format!("{}, visible", index), &mut mesh.visible);
+                            ui.same_line();
+                            ui.text(format!(
+                                "'{:?}'",
+                                mesh.resource.culling_info.bb_max - mesh.resource.culling_info.bb_min
+                            ));
+                        }
                     }
                 });
             let draw_data = self.imgui.render();
@@ -486,6 +511,21 @@ impl App {
 
         style.colors[imgui::StyleColor::WindowBg as usize] = [0.02, 0.02, 0.02, 0.9];
     }
+}
+
+fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError> {
+    let mut base =
+        std::env::current_exe().map_err(|_| AppError::Other("Cannot get current path to executable".into()))?;
+
+    base.pop();
+    base.push(path);
+
+    info!("Loading shaders from {:?}", base);
+
+    let file = File::open(&base).map_err(|e| AppError::Other(format!("Cannot open shaders library: {e}")))?;
+    let arch = ZipArchive::new(file).map_err(|e| AppError::Other(format!("Cannot read shaders library: {e}")))?;
+
+    Ok(arch)
 }
 
 pub struct AppState {

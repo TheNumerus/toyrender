@@ -31,7 +31,7 @@ FSInput vertMain(VSInput input, uint inst: SV_InstanceID, uniform uint first) {
     FSInput output;
 
     output.pos = mul(vp.proj[0], mul(vp.view[0], mul(mesh[inst + first].model, float4(input.pos, 1.0))));
-    output.color = float3(1.0);
+    output.color = float3(0.7);
     output.worldPos = mul(mesh[inst + first].model, float4(input.pos, 1.0)).xyz;
     output.normal = normalize(mul(float3x3(transpose(mesh[inst + first].inverse)), input.normal));
     output.uv = input.uv;

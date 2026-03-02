@@ -1,5 +1,5 @@
 use crate::scene::Scene;
-use nalgebra_glm::{Mat4, vec4};
+use nalgebra_glm::{Mat4, Vec3, vec3, vec4};
 use std::collections::BTreeMap;
 
 pub struct MeshCollector {}
@@ -16,36 +16,33 @@ pub struct CollectedResult {
 }
 
 impl MeshCollector {
-    pub fn collect_transforms(scene: &Scene, culling: bool, view: &Mat4, proj: &Mat4) -> CollectedResult {
+    pub fn collect_transforms(scene: &Scene, culling: bool, view: &Mat4, proj_inverse: &Mat4) -> CollectedResult {
         let mut transforms = BTreeMap::new();
 
-        for mesh in scene.meshes.iter() {
+        let frustum_normals = Self::compute_frustum_normals(proj_inverse);
+
+        'mesh: for mesh in scene.meshes.iter() {
             let id = mesh.resource.id;
+
+            if !mesh.visible {
+                continue 'mesh;
+            }
 
             if culling {
                 let viewmodel = view * mesh.transform;
 
-                let min_view_pos = viewmodel
-                    * vec4(
-                        mesh.resource.culling_info.bb_min.x,
-                        mesh.resource.culling_info.bb_min.y,
-                        mesh.resource.culling_info.bb_min.z,
-                        1.0,
-                    );
-
-                let max_view_pos = viewmodel
-                    * vec4(
-                        mesh.resource.culling_info.bb_max.x,
-                        mesh.resource.culling_info.bb_max.y,
-                        mesh.resource.culling_info.bb_max.z,
-                        1.0,
-                    );
+                let min_view_pos = (viewmodel * mesh.resource.culling_info.bb_min.insert_row(3, 1.0)).xyz();
+                let max_view_pos = (viewmodel * mesh.resource.culling_info.bb_max.insert_row(3, 1.0)).xyz();
 
                 let center = (max_view_pos + min_view_pos) * 0.5;
                 let radius = (max_view_pos - min_view_pos).magnitude();
 
-                if center.z > radius {
-                    continue;
+                for norm in &frustum_normals {
+                    let dist = norm.dot(&center);
+
+                    if dist > radius {
+                        continue 'mesh;
+                    }
                 }
             }
 
@@ -79,5 +76,26 @@ impl MeshCollector {
         }
 
         CollectedResult { data, draws }
+    }
+
+    fn compute_frustum_normals(proj_inverse: &Mat4) -> [Vec3; 4] {
+        let corner = vec4(-1.0, -1.0, 1.0, 1.0);
+        let corner_mapped = proj_inverse * corner;
+        let corner_mapped = corner_mapped.xyz() * corner_mapped.w;
+
+        // corners are symmetrical in view space, this way only one matrix multiply needs to be done
+        let mapped_corners = [
+            corner_mapped,
+            vec3(-corner_mapped.x, corner_mapped.y, corner_mapped.z),
+            vec3(-corner_mapped.x, -corner_mapped.y, corner_mapped.z),
+            vec3(corner_mapped.x, -corner_mapped.y, corner_mapped.z),
+        ];
+
+        [
+            mapped_corners[1].cross(&mapped_corners[0]).normalize(),
+            mapped_corners[2].cross(&mapped_corners[1]).normalize(),
+            mapped_corners[3].cross(&mapped_corners[2]).normalize(),
+            mapped_corners[0].cross(&mapped_corners[3]).normalize(),
+        ]
     }
 }

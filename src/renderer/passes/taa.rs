@@ -1,22 +1,44 @@
-use crate::renderer::descriptors::DescLayout;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::err::AppError;
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct TaaPass {
     pub device: Rc<Device>,
     pub render_target: Rc<RefCell<RenderTarget>>,
     pub render_target_history: Rc<RefCell<RenderTarget>>,
+    pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
 impl TaaPass {
     pub const TARGET_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
 
-    pub fn render_target_defs() -> [RenderTargetBuilder; 2] {
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let [a, b] = Self::render_target_defs();
+        let render_target = render_targets.add(a)?;
+        let render_target_history = render_targets.add(b)?;
+
+        let pipeline_handle = pipeline_builder.build_compute("taa", "taa|main", descriptors)?;
+
+        Ok(Self {
+            device,
+            render_target,
+            render_target_history,
+            pipeline_handle,
+        })
+    }
+
+    fn render_target_defs() -> [RenderTargetBuilder; 2] {
         [
             RenderTargetBuilder::new("taa_target")
                 .with_transfer()
@@ -42,7 +64,7 @@ impl TaaPass {
     ) -> Result<(), VulkanError> {
         self.device.begin_label("TAA Resolve", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_compute("taa").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_compute_pipeline(pipeline);
 

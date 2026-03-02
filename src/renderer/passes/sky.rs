@@ -1,35 +1,54 @@
-use crate::renderer::descriptors::DescLayout;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargetSampler, RenderTargetSize};
+use crate::err::AppError;
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::render_target::{
+    RenderTarget, RenderTargetBuilder, RenderTargetSampler, RenderTargetSize, RenderTargets,
+};
 use crate::renderer::{PushConstBuilder, VulkanMcPathTracer, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct SkyPass {
-    pub device: Rc<Device>,
-    pub render_target: Rc<RefCell<RenderTarget>>,
-    pub is_init: RefCell<bool>,
+    device: Rc<Device>,
+    render_target: Rc<RefCell<RenderTarget>>,
+    is_init: RefCell<bool>,
+    pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
 impl SkyPass {
     pub const SKY_SIZE: [u32; 2] = [256, 128];
-    pub const TARGET_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
 
-    pub fn render_target_def() -> RenderTargetBuilder {
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let pipeline = pipeline_builder.build_compute("sky", "sky|main", descriptors)?;
+
+        Ok(Self {
+            device,
+            render_target: render_targets.add(Self::render_target_def())?,
+            is_init: RefCell::new(false),
+            pipeline_handle: pipeline,
+        })
+    }
+
+    fn render_target_def() -> RenderTargetBuilder {
         RenderTargetBuilder::new("sky")
             .with_storage()
             .with_sampled()
             .with_sampler(RenderTargetSampler::RepeatXOnly)
-            .with_format(Self::TARGET_FORMAT)
+            .with_format(vk::Format::R16G16B16A16_SFLOAT)
             .with_size(RenderTargetSize::Custom(Self::SKY_SIZE[0], Self::SKY_SIZE[1]))
     }
 
     pub fn record(&self, command_buffer: &CommandBuffer, renderer: &VulkanRenderer) -> Result<(), VulkanError> {
         self.device.begin_label("Sky", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_compute("sky").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         if !*self.is_init.borrow() {
             let barrier = vk::ImageMemoryBarrier {
@@ -135,7 +154,7 @@ impl SkyPass {
     ) -> Result<(), VulkanError> {
         self.device.begin_label("Sky", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_compute("sky").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_compute_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
@@ -153,8 +172,8 @@ impl SkyPass {
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc);
 
-        let x = Self::SKY_SIZE[0] / 16;
-        let y = Self::SKY_SIZE[1] / 16;
+        let x = Self::SKY_SIZE[0] / pipeline.reflect_data.workgroup_size.0;
+        let y = Self::SKY_SIZE[1] / pipeline.reflect_data.workgroup_size.1;
 
         command_buffer.dispatch(x, y, 1);
 

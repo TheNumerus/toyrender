@@ -1,10 +1,12 @@
-use crate::renderer::descriptors::DescLayout;
+use crate::err::AppError;
+use crate::renderer::VulkanRenderer;
+use crate::renderer::descriptors::RendererDescriptors;
 use crate::renderer::mesh_collector::DrawData;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
-use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
+use crate::vulkan::{CommandBuffer, Device, Graphics, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct GBufferPass {
@@ -12,6 +14,7 @@ pub(crate) struct GBufferPass {
     pub render_target_color: Rc<RefCell<RenderTarget>>,
     pub render_target_normal: Rc<RefCell<RenderTarget>>,
     pub render_target_depth: Rc<RefCell<RenderTarget>>,
+    pub pipeline_handle: Rc<Pipeline<Graphics>>,
 }
 
 impl GBufferPass {
@@ -24,7 +27,35 @@ impl GBufferPass {
         vk::Format::A2B10G10R10_UNORM_PACK32,
         vk::Format::A2B10G10R10_UNORM_PACK32,
     ];
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Image];
+
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let pipeline_handle = pipeline_builder.build_graphics(
+            "deferred",
+            "deferred|vertMain",
+            "deferred|fragMain",
+            descriptors,
+            &Self::PIPELINE_TARGET_FORMATS,
+            true,
+        )?;
+
+        let [a, b, c] = Self::render_target_defs();
+        let render_target_color = render_targets.add(a)?;
+        let render_target_normal = render_targets.add(b)?;
+        let render_target_depth = render_targets.add(c)?;
+
+        Ok(Self {
+            device,
+            render_target_color,
+            render_target_normal,
+            render_target_depth,
+            pipeline_handle,
+        })
+    }
 
     pub fn render_target_defs() -> [RenderTargetBuilder; 3] {
         [
@@ -164,7 +195,7 @@ impl GBufferPass {
             ..Default::default()
         };
 
-        let pipeline = renderer.pipeline_builder.get_graphics("deferred").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_graphics_pipeline(pipeline);
         command_buffer.set_viewport(viewport);

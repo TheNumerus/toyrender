@@ -1,27 +1,42 @@
+use crate::err::AppError;
 use crate::renderer::VulkanRenderer;
-use crate::renderer::descriptors::DescLayout;
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::push_const::PushConstBuilder;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
+use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct ShadingPass {
-    pub device: Rc<Device>,
-    pub render_target: Rc<RefCell<RenderTarget>>,
+    device: Rc<Device>,
+    render_target: Rc<RefCell<RenderTarget>>,
+    pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
 impl ShadingPass {
-    pub const TARGET_FORMATS: [vk::Format; 1] = [vk::Format::R16G16B16A16_SFLOAT];
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let pipeline = pipeline_builder.build_compute("light", "light|main", descriptors)?;
 
-    pub fn render_target_def() -> RenderTargetBuilder {
+        Ok(Self {
+            device,
+            render_target: render_targets.add(Self::render_target_def())?,
+            pipeline_handle: pipeline,
+        })
+    }
+
+    fn render_target_def() -> RenderTargetBuilder {
         RenderTargetBuilder::new("tonemap")
             .with_color_attachment()
             .with_storage()
             .with_transfer()
-            .with_format(Self::TARGET_FORMATS[0])
+            .with_format(vk::Format::R16G16B16A16_SFLOAT)
             .with_sampled()
     }
 
@@ -59,7 +74,7 @@ impl ShadingPass {
             );
         }
 
-        let pipeline = renderer.pipeline_builder.get_compute("light").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_compute_pipeline(pipeline);
 

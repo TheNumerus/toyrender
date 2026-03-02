@@ -1,26 +1,43 @@
-use crate::renderer::descriptors::DescLayout;
+use crate::err::AppError;
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::push_const::PushConstBuilder;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{VulkanMcPathTracer, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct TonemapPass {
-    pub device: Rc<Device>,
+    device: Rc<Device>,
     pub render_target: Rc<RefCell<RenderTarget>>,
+    pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
 impl TonemapPass {
-    pub const TARGET_FORMATS: [vk::Format; 1] = [vk::Format::A2B10G10R10_UNORM_PACK32];
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let render_target = render_targets.add(Self::render_target_def())?;
 
-    pub fn render_target_def() -> RenderTargetBuilder {
+        let pipeline_handle = pipeline_builder.build_compute("tonemap", "tonemap|main", descriptors)?;
+
+        Ok(Self {
+            device,
+            render_target,
+            pipeline_handle,
+        })
+    }
+
+    fn render_target_def() -> RenderTargetBuilder {
         RenderTargetBuilder::new("tonemap_out")
             .with_storage()
             .with_transfer()
-            .with_format(Self::TARGET_FORMATS[0])
+            .with_format(vk::Format::A2B10G10R10_UNORM_PACK32)
     }
 
     pub fn record(
@@ -57,7 +74,7 @@ impl TonemapPass {
 
         self.device.begin_label("PostProcessing", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_compute("tonemap").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_compute_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
@@ -84,8 +101,8 @@ impl TonemapPass {
             );
         }
 
-        let x = viewport.0 / 16 + 1;
-        let y = viewport.1 / 16 + 1;
+        let x = viewport.0 / pipeline.reflect_data.workgroup_size.0 + 1;
+        let y = viewport.1 / pipeline.reflect_data.workgroup_size.1 + 1;
 
         command_buffer.dispatch(x, y, 1);
 
@@ -128,7 +145,7 @@ impl TonemapPass {
     ) -> Result<(), VulkanError> {
         self.device.begin_label("PostProcessing", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_compute("tonemap").unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_compute_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
@@ -147,8 +164,8 @@ impl TonemapPass {
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc);
 
-        let x = viewport.0 / 16 + 1;
-        let y = viewport.1 / 16 + 1;
+        let x = viewport.0 / pipeline.reflect_data.workgroup_size.0 + 1;
+        let y = viewport.1 / pipeline.reflect_data.workgroup_size.1 + 1;
 
         command_buffer.dispatch(x, y, 1);
 

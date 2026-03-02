@@ -1,6 +1,5 @@
 use crate::err::AppError;
 use crate::math;
-use crate::mesh::{MeshCullingInfo, MeshResource};
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
     AccelerationStructure, Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence,
@@ -10,18 +9,14 @@ use crate::vulkan::{
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
-use nalgebra_glm::{Mat4, vec3};
+use nalgebra_glm::Mat4;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::File;
-use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
-use zip::ZipArchive;
 
 mod buffers;
-use buffers::global::Globals;
-use buffers::view_proj::ViewProj;
+use buffers::{Globals, ViewProj};
 
 mod context;
 pub use context::VulkanContext;
@@ -36,7 +31,6 @@ mod passes;
 use passes::{DenoisePass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
 
 mod pipeline_builder;
-use pipeline_builder::PipelineBuilder;
 
 mod quality;
 use quality::QualitySettings;
@@ -50,10 +44,6 @@ use debug::DebugMode;
 mod push_const;
 pub use push_const::PushConstBuilder;
 
-mod shader_loader;
-use shader_loader::ShaderLoader;
-pub use shader_loader::ShaderLoaderError;
-
 mod reference_renderer;
 pub use reference_renderer::VulkanMcPathTracer;
 
@@ -63,11 +53,10 @@ pub struct VulkanRenderer {
     pub context: Rc<VulkanContext>,
     pub device: Rc<Device>,
     pub render_targets: RenderTargets,
-    pub pipeline_builder: PipelineBuilder,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
     pub blases: BTreeMap<u64, AccelerationStructure>,
-    pub descriptor_pool: DescriptorPool,
+    pub _descriptor_pool: DescriptorPool,
     pub raster_command_buffers: Vec<CommandBuffer>,
     pub command_buffers: Vec<CommandBuffer>,
     pub compute_command_buffers: Vec<CommandBuffer>,
@@ -81,7 +70,6 @@ pub struct VulkanRenderer {
     pub debug_mode: DebugMode,
     pub render_scale: f32,
     meshes: BTreeMap<u64, VulkanMesh>,
-    fs_quad: VulkanMesh,
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     gbuf_done: Semaphore,
@@ -102,8 +90,6 @@ pub struct VulkanRenderer {
 impl VulkanRenderer {
     pub fn init(context: Rc<VulkanContext>) -> Result<Self, AppError> {
         let device = context.device.clone();
-
-        let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
         let default_sampler = Rc::new(Sampler::new(device.clone())?);
         let repeat_sampler = Rc::new(Sampler::new_repeat(device.clone())?);
@@ -155,83 +141,55 @@ impl VulkanRenderer {
             repeat_sampler,
             repeat_x_only_sampler,
         );
-        let mut pipeline_builder = PipelineBuilder::new(shader_loader, device.clone(), context.rt_pipeline_ext.clone());
 
-        let sky_pass = SkyPass {
-            device: device.clone(),
-            render_target: render_targets.add(SkyPass::render_target_def())?,
-            is_init: RefCell::new(false),
-        };
-
-        let mut gbuf_targets = GBufferPass::render_target_defs().map(|a| Some(render_targets.add(a)));
-        let gbuffer_pass = GBufferPass {
-            device: device.clone(),
-            render_target_color: gbuf_targets[0].take().unwrap()?,
-            render_target_normal: gbuf_targets[1].take().unwrap()?,
-            render_target_depth: gbuf_targets[2].take().unwrap()?,
-        };
-
-        let tonemap_pass = TonemapPass {
-            device: device.clone(),
-            render_target: render_targets.add(TonemapPass::render_target_def())?,
-        };
-
-        let shading_pass = ShadingPass {
-            device: device.clone(),
-            render_target: render_targets.add(ShadingPass::render_target_def())?,
-        };
-
-        let mut pt_pass_targets = PathTracePass::render_target_defs().map(|a| Some(render_targets.add(a)));
-
-        let mut denoise_pass_targets = DenoisePass::render_target_defs().map(|a| Some(render_targets.add(a)));
-        let denoise_pass = DenoisePass {
-            device: device.clone(),
-            direct_render_target: denoise_pass_targets[0].take().unwrap()?,
-            direct_render_target_acc: denoise_pass_targets[1].take().unwrap()?,
-            direct_render_target_history: denoise_pass_targets[2].take().unwrap()?,
-            indirect_render_target: denoise_pass_targets[3].take().unwrap()?,
-            indirect_render_target_acc: denoise_pass_targets[4].take().unwrap()?,
-            indirect_render_target_history: denoise_pass_targets[5].take().unwrap()?,
-        };
-
-        let taa_pass_targets = TaaPass::render_target_defs();
-        let mut taa_pass_targets = match taa_pass_targets {
-            [a, b] => [Some(render_targets.add(a)?), Some(render_targets.add(b)?)],
-        };
-        let taa_pass = TaaPass {
-            device: device.clone(),
-            render_target: taa_pass_targets[0].take().unwrap(),
-            render_target_history: taa_pass_targets[1].take().unwrap(),
-        };
-
-        pipeline_builder.build_compute("tonemap", "tonemap|main", descriptors.borrow())?;
-        pipeline_builder.build_graphics(
-            "deferred",
-            "deferred|vertMain",
-            "deferred|fragMain",
-            descriptors.borrow(),
-            &GBufferPass::PIPELINE_TARGET_FORMATS,
-            true,
-        )?;
-        pipeline_builder.build_compute("light", "light|main", descriptors.borrow())?;
-        pipeline_builder.build_compute("sky", "sky|main", descriptors.borrow())?;
-        pipeline_builder.build_compute("taa", "taa|main", descriptors.borrow())?;
-        pipeline_builder.build_compute("atrous", "atrous|main", descriptors.borrow())?;
-        pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptors.borrow())?;
-        let rt_pipeline = pipeline_builder.build_rt(
-            "pt_rt",
-            "pt_rt|raygen",
-            "pt_rt|miss",
-            "pt_rt|chit",
+        let sky_pass = SkyPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
             descriptors.borrow(),
         )?;
 
-        let pt_pass = PathTracePass {
-            device: device.clone(),
-            direct_render_target: pt_pass_targets[0].take().unwrap()?,
-            indirect_render_target: pt_pass_targets[1].take().unwrap()?,
-            pipeline: rt_pipeline,
-        };
+        let gbuffer_pass = GBufferPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let tonemap_pass = TonemapPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let shading_pass = ShadingPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let denoise_pass = DenoisePass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let taa_pass = TaaPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let pt_pass = PathTracePass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
 
         render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
@@ -239,7 +197,7 @@ impl VulkanRenderer {
             device.clone(),
             context.allocator.clone(),
             &context.rt_pipeline_ext,
-            pipeline_builder.get_rt(&rt_pipeline)?,
+            &pt_pass.pipeline_handle,
             1,
             1,
         )?;
@@ -261,21 +219,6 @@ impl VulkanRenderer {
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut mesh_bufs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
-
-        let (fs_quad_v, fs_quad_i) = crate::mesh::fs_triangle();
-        let fs_quad = VulkanMesh::new(
-            device.clone(),
-            context.allocator.clone(),
-            &context.graphics_command_pool,
-            &MeshResource::new(
-                fs_quad_v.to_vec(),
-                crate::mesh::Indices::U32(fs_quad_i.to_vec()),
-                MeshCullingInfo {
-                    bb_min: vec3(0.0, 0.0, 0.0),
-                    bb_max: vec3(1.0, 1.0, 1.0),
-                },
-            ),
-        )?;
 
         Self::init_history_images(
             &context.device,
@@ -389,12 +332,10 @@ impl VulkanRenderer {
             context,
             device: device.clone(),
             render_targets,
-            pipeline_builder,
             shader_binding_table,
             tlases,
             blases: BTreeMap::new(),
-            fs_quad,
-            descriptor_pool,
+            _descriptor_pool: descriptor_pool,
             raster_command_buffers,
             compute_command_buffers,
             command_buffers,
@@ -649,7 +590,7 @@ impl VulkanRenderer {
         let mesh_start = Instant::now();
 
         let collected_meshes =
-            MeshCollector::collect_transforms(scene, context.culling, &view_proj.view, &view_proj.projection);
+            MeshCollector::collect_transforms(scene, context.culling, &view_proj.view, &view_proj.projection_inverse);
 
         let mesh_time = mesh_start.elapsed().as_secs_f32() + prepare_end;
 
@@ -1071,6 +1012,10 @@ impl VulkanRenderer {
             let transform = mesh.transform;
             let id = mesh.resource.id;
 
+            if !mesh.visible {
+                continue;
+            }
+
             index.push((id, transform));
         }
 
@@ -1088,21 +1033,6 @@ pub struct FrameContext {
     pub clear_taa: bool,
     pub culling: bool,
     pub frame_index: u32,
-}
-
-fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError> {
-    let mut base =
-        std::env::current_exe().map_err(|_| AppError::Other("Cannot get current path to executable".into()))?;
-
-    base.pop();
-    base.push(path);
-
-    info!("Loading shaders from {:?}", base);
-
-    let file = File::open(&base).map_err(|e| AppError::Other(format!("Cannot open shaders library: {e}")))?;
-    let arch = ZipArchive::new(file).map_err(|e| AppError::Other(format!("Cannot read shaders library: {e}")))?;
-
-    Ok(arch)
 }
 
 #[repr(C)]

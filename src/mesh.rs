@@ -17,15 +17,17 @@ pub struct MeshResource {
     pub vertices: Vec<Vertex>,
     pub indices: Indices,
     pub culling_info: MeshCullingInfo,
+    pub name: String,
 }
 
 impl MeshResource {
-    pub fn new(vertices: Vec<Vertex>, indices: Indices, culling_info: MeshCullingInfo) -> Self {
+    pub fn new(vertices: Vec<Vertex>, indices: Indices, culling_info: MeshCullingInfo, name: impl AsRef<str>) -> Self {
         Self {
             id: MESH_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
             vertices,
             indices,
             culling_info,
+            name: name.as_ref().to_owned(),
         }
     }
 }
@@ -64,6 +66,7 @@ pub struct MeshInstance {
     pub resource: Rc<MeshResource>,
     pub transform: Mat4,
     pub inverse: Mat4,
+    pub visible: bool,
 }
 
 impl MeshInstance {
@@ -72,6 +75,7 @@ impl MeshInstance {
             resource,
             transform: Mat4::identity(),
             inverse: Mat4::identity(),
+            visible: true,
         }
     }
 }

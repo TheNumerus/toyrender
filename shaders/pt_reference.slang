@@ -1,10 +1,10 @@
 import Common;
 import Sampling;
+import Sky;
 
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_shader_realtime_clock : enable
 #extension GL_EXT_nonuniform_qualifier : enable
-
 
 #define PI 3.141569
 
@@ -127,34 +127,6 @@ uint time_diff(uint startTime, uint endTime) {
     return endTime >= startTime ? (endTime-startTime) : (~0u-(startTime-endTime));
 }
 
-float3 sky_color(float3 view_dir) {
-    float2 dir = normalize(view_dir.xy);
-
-    float u = 0.0;
-    if (dir.y >= 0.0) {
-        u = acos(dir.x);
-    } else {
-        u = -acos(dir.x);
-    }
-
-    u = (u + PI) / (2.0 * PI);
-    if (isnan(u) || isinf(u)) {
-        u = 0.0;
-    }
-
-    float v = ((asin(view_dir.z) / (PI / 2.0)) * 0.5) + 0.5;
-
-    if (isnan(v) || isinf(v)) {
-        v = 0.0;
-    }
-
-    u = clamp(u, 0.0, 1.0);
-    v = clamp(v, 0.0, 1.0);
-    v = (sqrt(abs((v - 0.5) * 2.0)) * sign(v - 0.5)) * 0.5 + 0.5;
-
-    return images[pc.sky_idx].Sample(float2(u, v)).xyz;
-}
-
 float3 generatePinholeRay(int2 pixel, int width, int height) {
     float tanHalfAngle = tan(pc.fov / 2.f);
     return normalize(float3(float2(2 * (pixel.x + global.curr_jitter.x) - width, -2 * (pixel.y + global.curr_jitter.y) + height) * tanHalfAngle / width, -1));
@@ -199,6 +171,7 @@ void raygen() {
     uint start = getRealtimeClockLow().x;
 
     float3 indirect = float3(0.0);
+    float3 direct = float3(0.0);
 
     float3 tangent, bitangent;
 
@@ -214,8 +187,8 @@ void raygen() {
     float3 cone = rand_cone(rand, cos(env.sun_dir_sun_angle.w));
     float3 ray_shadow_dir = cone.x * tangent + cone.y * bitangent + cone.z * env.sun_dir_sun_angle.xyz;
 
-    float intensity_indirect = 1.0;
-    float total_intensity_indirect = 1.0;
+    // scale of energy for subsequent bounces
+    float3 intensity_indirect = 1.0;
 
     float3 dir = generatePinholeRay(int2(launch_idx.x, launch_idx.y), int(global.draw_res_x), int(global.draw_res_y));
 
@@ -229,13 +202,15 @@ void raygen() {
 
     tracePrimary(pos, dir, payload);
 
+    float3 primaryColor = payload.color;
+
     pos = payload.hit;
 
     if (payload.isMiss) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                sky_color(dir) * env.sun_color_sky_int.w * pow(2.0, global.exposure),
+                Toyrender::Sky::sample_distorted(dir, images[pc.sky_idx]) * env.sun_color_sky_int.w * pow(2.0, global.exposure),
                 0.0
             )
         );
@@ -251,25 +226,41 @@ void raygen() {
         primaryNormal = hitNormal;
     }
 
+    // TODO model proper energy passing from material
     float bounce_energy = 0.95;
+
+    float roughness = 0.3;
+
+    // current surface_color
+    float3 current_color = payload.color;
 
     for (int i = 0; i < pc.bounces; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
-        float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
-
-        float d = 0.8 + (1.0 - 0.8) * pow(abs(dot(-hitNormal, dir)), 5.0);
+        float d = roughness + (1.0 - roughness) * pow(abs(dot(-hitNormal, dir)), 5.0);
 
         if (pcg_hash() > d) {
+            // specular ray
             float ddot = dot(dir, hitNormal);
             dir = dir - 2.0 * hitNormal * (ddot);
-            compute_default_basis(dir, tangent, bitangent);
 
             float2 new_rand = float2(pcg_hash(), pcg_hash());
 
-            float3 cone = rand_cone(new_rand, cos(ddot * 0.3));
-            dir = cone.x * tangent + cone.y * bitangent + cone.z * dir;
+            float3 ggx_half_vector = ggx(new_rand, roughness);
+
+            float3 new_norm = ggx_half_vector.x * tangent + ggx_half_vector.y * bitangent + ggx_half_vector.z * hitNormal;
+
+            // TODO fix this monstrosity
+            dir = reflect(dir, new_norm);
+            dir = reflect(dir, hitNormal);
+
+            if (dot(dir, hitNormal) <= 0.0) {
+                break;
+            }
+            // if tracing specular, reset color - not true for metals
+            current_color = float3(1.0);
         } else {
+            float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
@@ -277,9 +268,8 @@ void raygen() {
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * sky_color(dir) * env.sun_color_sky_int.w;
-            intensity_indirect *= bounce_energy;
-            total_intensity_indirect += intensity_indirect;
+            indirect += intensity_indirect * bounce_energy * payload.color * env.sun_color_sky_int.w * current_color;
+            intensity_indirect *= bounce_energy * current_color;
             break;
         } else {
             // try shadow on new position
@@ -293,26 +283,23 @@ void raygen() {
 
             // ignore shadow rays from unreachable normals
             if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_int == 0.0) {
-                intensity_indirect *= 0.9;
-                total_intensity_indirect += intensity_indirect;
+                intensity_indirect *= bounce_energy * current_color;
+                current_color = payload.color;
                 continue;
             }
 
+            float3 hit_color = payload.color;
+
             traceShadow(offset_ray(pos, hitNormal), ray_shadow_dir, payload);
 
-            // sun boounce
+            // sun bounce
             if (payload.isMiss) {
-                indirect += intensity_indirect * bounce_energy * env.sun_color_sky_int.xyz * env.sun_int;
-            } else {
-                indirect += intensity_indirect * bounce_energy * payload.color;
+                direct += intensity_indirect * bounce_energy * env.sun_color_sky_int.xyz * env.sun_int * current_color * hit_color;
             }
+            current_color = hit_color;
+            intensity_indirect *= bounce_energy * current_color * payload.color;
         }
-
-        intensity_indirect *= bounce_energy;
-        total_intensity_indirect += intensity_indirect;
     }
-
-    indirect /= total_intensity_indirect;
 
     payload.isMiss = false;
 
@@ -322,7 +309,7 @@ void raygen() {
     }
 
     float shadow = float(payload.isMiss) * dot(ray_shadow_dir, primaryNormal);
-    float3 direct = shadow * env.sun_color_sky_int.xyz * env.sun_int;
+    direct += shadow * env.sun_color_sky_int.xyz * env.sun_int * primaryColor;
 
     uint end = getRealtimeClockLow().x;
 
@@ -338,8 +325,8 @@ void raygen() {
 
 [shader("miss")]
 void miss(inout Payload payload) {
+    payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
     payload.isMiss = true;
-    payload.color = float3(0.0);
 }
 
 
@@ -361,4 +348,9 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
     payload.normal = normalize(normal);
     payload.hit = attr.barycentrics.x * edgeA + attr.barycentrics.y * edgeB + vertPos0;
+
+    //hash_state = InstanceIndex() * 4096;
+    //payload.color = pow(float3(pcg_hash(), pcg_hash(), pcg_hash()), 2.2);
+
+    payload.color = float3(0.7);
 }

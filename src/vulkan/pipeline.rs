@@ -1,19 +1,19 @@
 use crate::vulkan::{DebugMarker, Device, IntoVulkanError, RayTracingPipeline, Vertex, VulkanError};
 use ash::vk;
 use ash::vk::{Handle, Pipeline as RawPipeline, PipelineLayout, PipelineShaderStageCreateInfo};
-use std::ffi::CString;
-use std::marker::PhantomData;
 use std::rc::Rc;
 
 pub struct Graphics;
 pub struct Rt;
-pub struct Compute;
+pub struct Compute {
+    pub workgroup_size: (u32, u32, u32),
+}
 
 pub struct Pipeline<T> {
     pub inner: RawPipeline,
     pub layout: PipelineLayout,
+    pub reflect_data: T,
     device: Rc<Device>,
-    _marker: PhantomData<T>,
 }
 
 impl Pipeline<Graphics> {
@@ -154,7 +154,7 @@ impl Pipeline<Graphics> {
             device,
             inner: pipeline,
             layout,
-            _marker: PhantomData,
+            reflect_data: Graphics,
         })
     }
 }
@@ -241,7 +241,7 @@ impl Pipeline<Rt> {
             inner: pipeline,
             layout,
             device,
-            _marker: PhantomData,
+            reflect_data: Rt,
         })
     }
 }
@@ -252,6 +252,7 @@ impl Pipeline<Compute> {
         stage: PipelineShaderStageCreateInfo,
         descriptor_layouts: &[vk::DescriptorSetLayout],
         push_consts_size: u32,
+        workgroup_size: (u32, u32, u32),
     ) -> Result<Self, VulkanError> {
         let ranges = [vk::PushConstantRange {
             offset: 0,
@@ -282,7 +283,7 @@ impl Pipeline<Compute> {
             inner: pipeline,
             layout,
             device,
-            _marker: PhantomData,
+            reflect_data: Compute { workgroup_size },
         })
     }
 }

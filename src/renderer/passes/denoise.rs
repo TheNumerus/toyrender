@@ -1,9 +1,11 @@
-use crate::renderer::descriptors::DescLayout;
-use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder};
+use crate::err::AppError;
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub(crate) struct DenoisePass {
@@ -14,27 +16,44 @@ pub(crate) struct DenoisePass {
     pub indirect_render_target: Rc<RefCell<RenderTarget>>,
     pub indirect_render_target_acc: Rc<RefCell<RenderTarget>>,
     pub indirect_render_target_history: Rc<RefCell<RenderTarget>>,
+    temporal_pipeline: Rc<Pipeline<Compute>>,
+    spatial_pipeline: Rc<Pipeline<Compute>>,
 }
 
 impl DenoisePass {
-    pub const TARGET_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
-    pub const DESC_LAYOUTS: [DescLayout; 2] = [DescLayout::Global, DescLayout::Compute];
+    pub fn create(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let denoise_pass_target = Self::render_target_def();
 
-    pub fn render_target_defs() -> [RenderTargetBuilder; 6] {
-        let builder = RenderTargetBuilder::new("denoise_direct_out")
-            .with_format(Self::TARGET_FORMAT)
+        let spatial_pipeline = pipeline_builder.build_compute("atrous", "atrous|main", Ref::clone(&descriptors))?;
+        let temporal_pipeline =
+            pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptors)?;
+
+        Ok(Self {
+            device,
+            direct_render_target: render_targets.add(denoise_pass_target.duplicate("denoise_direct_out"))?,
+            direct_render_target_acc: render_targets.add(denoise_pass_target.duplicate("denoise_direct_acc"))?,
+            direct_render_target_history: render_targets
+                .add(denoise_pass_target.duplicate("denoise_direct_history"))?,
+            indirect_render_target: render_targets.add(denoise_pass_target.duplicate("denoise_indirect_out"))?,
+            indirect_render_target_acc: render_targets.add(denoise_pass_target.duplicate("denoise_indirect_acc"))?,
+            indirect_render_target_history: render_targets
+                .add(denoise_pass_target.duplicate("denoise_indirect_history"))?,
+            spatial_pipeline,
+            temporal_pipeline,
+        })
+    }
+
+    fn render_target_def() -> RenderTargetBuilder {
+        RenderTargetBuilder::new("denoise_direct_out")
+            .with_format(vk::Format::R16G16B16A16_SFLOAT)
             .with_transfer()
             .with_storage()
-            .with_sampled();
-
-        [
-            builder.duplicate("denoise_direct_out"),
-            builder.duplicate("denoise_direct_acc"),
-            builder.duplicate("denoise_direct_history"),
-            builder.duplicate("denoise_indirect_out"),
-            builder.duplicate("denoise_indirect_acc"),
-            builder.duplicate("denoise_indirect_history"),
-        ]
+            .with_sampled()
     }
 
     pub fn record(
@@ -46,7 +65,7 @@ impl DenoisePass {
     ) -> Result<(), VulkanError> {
         self.device.begin_label("RT Denoise Temporal", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_compute("denoise_temporal").unwrap();
+        let pipeline = &self.temporal_pipeline;
 
         let desc_ref = renderer.descriptors.borrow();
 
@@ -133,7 +152,7 @@ impl DenoisePass {
         if renderer.quality.use_spatial_denoise {
             self.device.begin_label("RT Denoise", command_buffer);
 
-            let pipeline = renderer.pipeline_builder.get_compute("atrous").unwrap();
+            let pipeline = &self.spatial_pipeline;
 
             command_buffer.bind_compute_pipeline(pipeline);
 

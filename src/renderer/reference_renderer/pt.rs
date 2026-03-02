@@ -1,19 +1,46 @@
-use crate::renderer::pipeline_builder::PipelineHandle;
-use crate::renderer::render_target::RenderTargetBuilder;
+use crate::err::AppError;
+use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{FrameContext, PushConstBuilder, VulkanContext, VulkanMcPathTracer};
-use crate::vulkan::{CommandBuffer, Device, VulkanError};
+use crate::vulkan::{CommandBuffer, Pipeline, Rt, VulkanError};
 use ash::vk;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 pub struct ReferencePathtracePass {
-    pub context: Rc<VulkanContext>,
-    pub pipeline_handle: PipelineHandle,
+    context: Rc<VulkanContext>,
+    render_target: Rc<RefCell<RenderTarget>>,
+    pub pipeline_handle: Rc<Pipeline<Rt>>,
 }
 
 impl ReferencePathtracePass {
     pub const TARGET_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
-    pub fn render_target_def() -> RenderTargetBuilder {
+    pub fn create(
+        context: Rc<VulkanContext>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<Self, AppError> {
+        let render_target = render_targets.add(Self::render_target_def())?;
+
+        let pipeline_handle = pipeline_builder.build_rt(
+            "pt",
+            "pt_reference|raygen",
+            "pt_reference|miss",
+            "pt_reference|chit",
+            descriptors,
+        )?;
+
+        Ok(Self {
+            context,
+            render_target,
+            pipeline_handle,
+        })
+    }
+
+    fn render_target_def() -> RenderTargetBuilder {
         RenderTargetBuilder::new("rt_out")
             .with_storage()
             .with_transfer()
@@ -30,7 +57,7 @@ impl ReferencePathtracePass {
     ) -> Result<(), VulkanError> {
         self.context.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = renderer.pipeline_builder.get_rt(&self.pipeline_handle).unwrap();
+        let pipeline = &self.pipeline_handle;
 
         command_buffer.bind_rt_pipeline(pipeline);
 

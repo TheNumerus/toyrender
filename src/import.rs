@@ -123,7 +123,9 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
     culling_info.bb_min = min_pos;
     culling_info.bb_max = max_pos;
 
-    Ok(MeshResource::new(vertices_total, indices_total, culling_info))
+    let name = mesh.name().unwrap_or_default();
+
+    Ok(MeshResource::new(vertices_total, indices_total, culling_info, name))
 }
 
 pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {

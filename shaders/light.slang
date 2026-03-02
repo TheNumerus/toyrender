@@ -1,4 +1,5 @@
 import Common;
+import Sky;
 
 #define PI 3.14159265359
 #define PHI 1.618033988
@@ -43,34 +44,6 @@ float schlick(float f0, float3 l, float3 n) {
     return f0 + (1.0 - f0) * pow(1.0 - dot(l, n), 5.0);
 }
 
-float3 sky_color(float3 view_dir, uint sky_idx) {
-    float2 dir = normalize(view_dir.xy);
-
-    float u = 0.0;
-    if (dir.y >= 0.0) {
-        u = acos(dir.x);
-    } else {
-        u = -acos(dir.x);
-    }
-
-    u = (u + PI) / (2.0 * PI);
-    if (isnan(u) || isinf(u)) {
-        u = 0.0;
-    }
-
-    float v = ((asin(view_dir.z) / (PI / 2.0)) * 0.5) + 0.5;
-
-    if (isnan(v) || isinf(v)) {
-        v = 0.0;
-    }
-
-    u = clamp(u, 0.0, 1.0);
-    v = clamp(v, 0.0, 1.0);
-    v = (sqrt(abs((v - 0.5) * 2.0)) * sign(v - 0.5)) * 0.5 + 0.5;
-
-    return images[sky_idx].Sample(float2(u, v)).xyz;
-}
-
 [numthreads(16, 16, 1)]
 [shader("compute")]
 void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
@@ -98,7 +71,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 loc = transpose(vp.view_inverse)[3].xyz;
     float3 view_dir = normalize(vertPos - loc);
 
-    float3 sky_col = sky_color(view_dir, pc.sky_idx) * pow(2.0, global.exposure) * env.sun_color_sky_int.w;
+    float3 sky_col = Toyrender::Sky::sample_distorted(view_dir, images[pc.sky_idx]) * pow(2.0, global.exposure) * env.sun_color_sky_int.w;
 
     if (color.a == 0.0) {
         storages[pc.out_idx].Store(int2(x, y), float4(sky_col, 1.0));

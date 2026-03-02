@@ -1,19 +1,18 @@
+mod acc;
+use acc::AccumulatePass;
+
 mod pt;
 use pt::ReferencePathtracePass;
 
 use crate::err::AppError;
 use crate::math;
-use crate::renderer::buffers::global::Globals;
-use crate::renderer::buffers::view_proj::ViewProj;
+use crate::renderer::buffers::{Globals, ViewProj};
 use crate::renderer::descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
 use crate::renderer::passes::{SkyPass, TonemapPass};
-use crate::renderer::pipeline_builder::PipelineBuilder;
-use crate::renderer::push_const::PushConstBuilder;
 use crate::renderer::quality::QualitySettings;
-use crate::renderer::render_target::{RenderTargetBuilder, RenderTargets};
-use crate::renderer::shader_loader::ShaderLoader;
+use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{
-    FrameContext, FrameStats, GPUEnv, TlasIndex, VulkanContext, create_buffer_update, env_to_buffer, open_shader_zip,
+    FrameContext, FrameStats, GPUEnv, TlasIndex, VulkanContext, create_buffer_update, env_to_buffer,
 };
 use crate::scene::Scene;
 use crate::vulkan::{
@@ -33,11 +32,10 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 pub struct VulkanMcPathTracer {
     pub context: Rc<VulkanContext>,
     pub render_targets: RenderTargets,
-    pub pipeline_builder: PipelineBuilder,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
     pub blases: BTreeMap<u64, AccelerationStructure>,
-    pub descriptor_pool: DescriptorPool,
+    pub _descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
     pub descriptors: Rc<RefCell<RendererDescriptors>>,
     pub uniform_buffers: Vec<Buffer>,
@@ -55,13 +53,12 @@ pub struct VulkanMcPathTracer {
     sky_pass: SkyPass,
     tonemap_pass: TonemapPass,
     pt_pass: ReferencePathtracePass,
+    accumulate_pass: AccumulatePass,
 }
 
 impl VulkanMcPathTracer {
     pub fn init(context: Rc<VulkanContext>) -> Result<Self, AppError> {
         let device = context.device.clone();
-
-        let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
         let default_sampler = Rc::new(Sampler::new(device.clone())?);
         let repeat_sampler = Rc::new(Sampler::new_repeat(device.clone())?);
@@ -113,49 +110,40 @@ impl VulkanMcPathTracer {
             repeat_sampler,
             repeat_x_only_sampler,
         );
-        let mut pipeline_builder = PipelineBuilder::new(shader_loader, device.clone(), context.rt_pipeline_ext.clone());
 
-        let sky_pass = SkyPass {
-            device: device.clone(),
-            render_target: render_targets.add(SkyPass::render_target_def())?,
-            is_init: RefCell::new(false),
-        };
-
-        let tonemap_pass = TonemapPass {
-            device: device.clone(),
-            render_target: render_targets.add(TonemapPass::render_target_def())?,
-        };
-
-        // need full fat buffer for increased precision
-        render_targets.add(
-            RenderTargetBuilder::new("acc_out")
-                .with_storage()
-                .with_transfer()
-                .with_format(vk::Format::R32G32B32A32_SFLOAT),
-        )?;
-
-        pipeline_builder.build_compute("sky", "sky|main", descriptors.borrow())?;
-        pipeline_builder.build_compute("accumulator", "accumulator|main", descriptors.borrow())?;
-        pipeline_builder.build_compute("tonemap", "tonemap|main", descriptors.borrow())?;
-        let pt_pipeline = pipeline_builder.build_rt(
-            "pt",
-            "pt_reference|raygen",
-            "pt_reference|miss",
-            "pt_reference|chit",
+        let sky_pass = SkyPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
             descriptors.borrow(),
         )?;
 
-        let pt_pass = ReferencePathtracePass {
-            context: context.clone(),
-            pipeline_handle: pt_pipeline,
-        };
-        render_targets.add(ReferencePathtracePass::render_target_def())?;
+        let tonemap_pass = TonemapPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let accumulate_pass = AccumulatePass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
+
+        let pt_pass = ReferencePathtracePass::create(
+            context.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptors.borrow(),
+        )?;
 
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
             context.allocator.clone(),
             &context.rt_pipeline_ext,
-            pipeline_builder.get_rt(&pt_pipeline).unwrap(),
+            &pt_pass.pipeline_handle,
             1,
             1,
         )?;
@@ -251,11 +239,10 @@ impl VulkanMcPathTracer {
         Ok(Self {
             context: context.clone(),
             render_targets,
-            pipeline_builder,
             shader_binding_table,
             tlases,
             blases: BTreeMap::new(),
-            descriptor_pool,
+            _descriptor_pool: descriptor_pool,
             command_buffers,
             img_available,
             render_finished,
@@ -273,6 +260,7 @@ impl VulkanMcPathTracer {
             tonemap_pass,
             render_scale: 1.0,
             pt_pass,
+            accumulate_pass,
         })
     }
 
@@ -594,7 +582,8 @@ impl VulkanMcPathTracer {
 
         self.pt_pass
             .record_pt(command_buffer, self, context, viewport_size, fov)?;
-        self.record_accumulate(command_buffer, context, viewport_size)?;
+        self.accumulate_pass
+            .record(command_buffer, self, context, viewport_size)?;
         self.tonemap_pass
             .record_reference(command_buffer, self, viewport_size)?;
         self.record_end_copy(command_buffer, target, viewport_size)?;
@@ -632,66 +621,6 @@ impl VulkanMcPathTracer {
                 &barriers,
             );
         }
-    }
-
-    fn record_accumulate(
-        &self,
-        command_buffer: &CommandBuffer,
-        context: &FrameContext,
-        viewport_size: (u32, u32),
-    ) -> Result<(), VulkanError> {
-        let acc_image = self.render_targets.get("acc_out").unwrap().borrow().image.inner;
-
-        let pipeline = self.pipeline_builder.get_compute("accumulator").unwrap();
-
-        command_buffer.bind_compute_pipeline(pipeline);
-        command_buffer.bind_descriptor_sets(
-            vk::PipelineBindPoint::COMPUTE,
-            pipeline.layout,
-            [
-                self.descriptors.borrow().global_sets[self.current_frame].inner,
-                self.descriptors.borrow().compute_sets[self.current_frame].inner,
-            ],
-        );
-
-        let pc = PushConstBuilder::with_capacity(4 * size_of::<u32>())
-            .add_u32(context.frame_index)
-            .add_u32(if context.clear_taa { 1 } else { 0 })
-            .add_u32(*self.descriptors.borrow().storages.get("rt_out").unwrap() as u32)
-            .add_u32(*self.descriptors.borrow().storages.get("acc_out").unwrap() as u32);
-
-        command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc.build());
-
-        let x = viewport_size.0 / 16 + 1;
-        let y = viewport_size.1 / 16 + 1;
-
-        command_buffer.dispatch(x, y, 1);
-
-        let barrier = vk::ImageMemoryBarrier {
-            src_access_mask: vk::AccessFlags::SHADER_WRITE,
-            dst_access_mask: vk::AccessFlags::SHADER_READ,
-            old_layout: vk::ImageLayout::GENERAL,
-            new_layout: vk::ImageLayout::GENERAL,
-            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            image: acc_image,
-            subresource_range: crate::vulkan::Image::single_color_layer_range(),
-            ..Default::default()
-        };
-
-        unsafe {
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
-            );
-        }
-
-        Ok(())
     }
 
     fn record_end_copy(
@@ -862,6 +791,10 @@ impl VulkanMcPathTracer {
         for mesh in &scene.meshes {
             let transform = mesh.transform;
             let id = mesh.resource.id;
+
+            if !mesh.visible {
+                continue;
+            }
 
             index.push((id, transform));
         }

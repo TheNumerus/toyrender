@@ -1,4 +1,4 @@
-use crate::renderer::ShaderLoaderError;
+use crate::app::shader_loader::ShaderLoaderError;
 use crate::vulkan::VulkanError;
 use gpu_allocator::AllocationError;
 use thiserror::Error;
