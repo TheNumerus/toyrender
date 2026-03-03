@@ -234,7 +234,7 @@ void raygen() {
 
             // ignore shadow rays from unreachable normals
             if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_int == 0.0) {
-                intensity_indirect *= bounce_energy * current_color;
+                intensity_indirect *= bounce_energy * current_color * payload.color;
                 current_color = payload.color;
                 continue;
             }
@@ -253,10 +253,7 @@ void raygen() {
         }
     }
 
-    payload.isMiss = false;
-
     if (dot(ray_shadow_dir, normal) > 0.0 && env.sun_int > 0.0) {
-        payload.isMiss = true;
         traceShadow(vertPos + bias, ray_shadow_dir, payload);
     }
 

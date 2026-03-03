@@ -30,3 +30,12 @@ pub fn fovx_to_fovy(fovx: f32, ratio: f32) -> f32 {
 pub fn fovy_to_fovx(fovy: f32, ratio: f32) -> f32 {
     2.0 * ((fovy / 2.0).tan() * ratio).atan()
 }
+
+pub fn workgroup_saturate(total: u32, group_dim: u32) -> u32 {
+    let mut part = total / group_dim;
+    if !total.is_multiple_of(group_dim) {
+        part += 1
+    }
+
+    part
+}

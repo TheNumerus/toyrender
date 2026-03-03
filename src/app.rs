@@ -363,10 +363,13 @@ impl App {
                             (frame_stats.iter().fold(0.0, |a, x| a + x.record_time) / frame_stats.len() as f32)
                                 * 1000.0
                         ));
-                        ui.text(format!("Draw calls: {}", frame_stats[current_stats].draw_calls));
+                        ui.text(format!(
+                            "Draw calls: {}",
+                            frame_stats[(current_stats + (frame_stats.len() - 1)) % frame_stats.len()].draw_calls
+                        ));
                         ui.text(format!(
                             "Drawn objects: {}",
-                            frame_stats[current_stats].objects_rendered
+                            frame_stats[(current_stats + (frame_stats.len() - 1)) % frame_stats.len()].objects_rendered
                         ));
                     }
                     if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty()) {

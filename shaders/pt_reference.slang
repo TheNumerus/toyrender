@@ -210,7 +210,7 @@ void raygen() {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                Toyrender::Sky::sample_distorted(dir, images[pc.sky_idx]) * env.sun_color_sky_int.w * pow(2.0, global.exposure),
+                payload.color * env.sun_color_sky_int.w * pow(2.0, global.exposure),
                 0.0
             )
         );

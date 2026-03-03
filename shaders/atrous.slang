@@ -17,7 +17,7 @@ struct PushConsts {
     int normal_idx;
     int depth_idx;
     int src_idx;
-    int acc_idx;
+    int out_idx;
 };
 
 [vk::push_constant]
@@ -57,16 +57,20 @@ float get_linear_depth(float4x4 viewproj, Sampler2D depth, float2 uv) {
     return pos.z * pos.w;
 }
 
-float get_depth_gradient(float4x4 viewproj, uint x, uint y, Sampler2D depth, int2 size) {
+float get_depth(Sampler2D depth, float2 uv) {
+    return depth.Sample(uv_to_abs(uv)).x;
+}
+
+float get_depth_gradient(uint x, uint y, Sampler2D depth, int2 size) {
     float2 uv = float2((x + 0.5) / size.x, (y + 0.5) / size.y);
     float x_offset = 1.0 / size.x;
     float y_offset = 1.0 / size.y;
 
-    float m = get_linear_depth(viewproj, depth, uv);
-    float t = get_linear_depth(viewproj, depth, uv + float2(0.0, -y_offset));
-    float b = get_linear_depth(viewproj, depth, uv + float2(0.0, y_offset));
-    float l = get_linear_depth(viewproj, depth, uv + float2(-x_offset, 0.0));
-    float r = get_linear_depth(viewproj, depth, uv + float2(x_offset, 0.0));
+    float m = get_depth(depth, uv);
+    float t = get_depth(depth, uv + float2(0.0, -y_offset));
+    float b = get_depth(depth, uv + float2(0.0, y_offset));
+    float l = get_depth(depth, uv + float2(-x_offset, 0.0));
+    float r = get_depth(depth, uv + float2(x_offset, 0.0));
 
     return max(max(abs(t-m), abs(m-b)), max(abs(l-m), abs(m-r)));
 }
@@ -80,7 +84,7 @@ float get_depth_weight(float base, float sample_depth, float gradient, float dis
 
 float get_luma_weight(float base, float sample_luma, float variance) {
     float a = abs(base - sample_luma);
-    float b = 4.0 * (sqrt(variance) + 0.0001);
+    float b = 4.0 * sqrt(variance) + 0.0001;
     return exp(-(a / b));
 }
 
@@ -114,7 +118,6 @@ void main(uint3 tid: SV_DispatchThreadID) {
     }
 
     float4 result = storages[pc.src_idx].Load(int2(x_base, y_base));
-    float4 raw = storages[pc.acc_idx].Load(int2(x_base, y_base));
 
     float4 sum = float4(0.0);
     float weight_sum = 0.0;
@@ -130,10 +133,10 @@ void main(uint3 tid: SV_DispatchThreadID) {
 
     float4x4 viewproj = mul(vp.proj[0], vp.view[0]);
 
-    float luma_base = luminance(raw.xyz);
+    float luma_base = luminance(result.xyz);
     float3 normal_base = normalize(images[pc.normal_idx].Sample(uv_to_abs(uv)).xyz * 2.0 - 1.0);
-    float depth_base = get_linear_depth(viewproj, images[pc.depth_idx], uv);
-    float gradient = get_depth_gradient(viewproj, x_base, y_base, images[pc.depth_idx], drawSize);
+    float depth_base = get_depth(images[pc.depth_idx], uv);
+    float gradient = get_depth_gradient(x_base, y_base, images[pc.depth_idx], drawSize);
     float blurred_variance = get_blurred_variance(int2(x_base, y_base), drawSize);
 
     for (int y = -2; y <= 2; y++) {
@@ -147,15 +150,10 @@ void main(uint3 tid: SV_DispatchThreadID) {
 
             float2 sample_uv = float2((x_final + 0.5) / drawSize.x, (y_final + 0.5) / drawSize.y);
             float3 sample_normal = normalize(images[pc.normal_idx].Sample(uv_to_abs(sample_uv)).xyz * 2.0 - 1.0);
-            float sample_depth = get_linear_depth(viewproj, images[pc.depth_idx], sample_uv);
+            float sample_depth = get_depth(images[pc.depth_idx], sample_uv);
             float sample_dist = distance(sample_uv, uv);
 
-            float4 img_in;
-            if (pc.level == 0) {
-                img_in = storages[pc.acc_idx].Load(int2(x_final, y_final));
-            } else {
-                img_in = storages[pc.src_idx].Load(int2(x_final, y_final));
-            }
+            float4 img_in = storages[pc.src_idx].Load(int2(x_final, y_final));
             float variance = img_in.a;
 
             float normal_weight = pow(max(dot(normal_base, sample_normal), 0.0), 128.0);
@@ -168,15 +166,11 @@ void main(uint3 tid: SV_DispatchThreadID) {
             sum += img_in * weight;
             weight_sum += weight;
             new_variance_sum += variance * variance_weight;
-            new_variance_weight_sum += get_weight(x) * get_weight(y) * pow(normal_weight * depth_weight * luma_weight, 2.0);
+            new_variance_weight_sum += get_weight(x) * get_weight(y) * normal_weight * depth_weight * luma_weight;
         }
     }
 
-    float4 total = float4((sum / weight_sum).xyz, max(new_variance_sum / new_variance_weight_sum, 0.0));
+    float4 total = float4((sum / weight_sum).xyz, max(new_variance_sum / pow(new_variance_weight_sum, 2.0), 0.0));
 
-    if (pc.level == 0) {
-        storages[pc.acc_idx].Store(int2(x_base, y_base), total);
-    }
-
-    storages[pc.src_idx].Store(int2(x_base, y_base), total);
+    storages[pc.out_idx].Store(int2(x_base, y_base), total);
 }

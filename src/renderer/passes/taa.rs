@@ -181,53 +181,6 @@ impl TaaPass {
 
             self.device.inner.cmd_copy_image(
                 command_buffer.inner,
-                renderer
-                    .render_targets
-                    .get_ref("denoise_direct_out")
-                    .unwrap()
-                    .image
-                    .inner,
-                vk::ImageLayout::GENERAL,
-                renderer
-                    .render_targets
-                    .get_ref("denoise_direct_history")
-                    .unwrap()
-                    .image
-                    .inner,
-                vk::ImageLayout::GENERAL,
-                &[vk::ImageCopy {
-                    extent: extent_3d,
-                    dst_subresource: image_color_res,
-                    src_subresource: image_color_res,
-                    ..Default::default()
-                }],
-            );
-            self.device.inner.cmd_copy_image(
-                command_buffer.inner,
-                renderer
-                    .render_targets
-                    .get_ref("denoise_indirect_out")
-                    .unwrap()
-                    .image
-                    .inner,
-                vk::ImageLayout::GENERAL,
-                renderer
-                    .render_targets
-                    .get_ref("denoise_indirect_history")
-                    .unwrap()
-                    .image
-                    .inner,
-                vk::ImageLayout::GENERAL,
-                &[vk::ImageCopy {
-                    extent: extent_3d,
-                    dst_subresource: image_color_res,
-                    src_subresource: image_color_res,
-                    ..Default::default()
-                }],
-            );
-
-            self.device.inner.cmd_copy_image(
-                command_buffer.inner,
                 self.render_target.borrow().image.inner,
                 vk::ImageLayout::GENERAL,
                 self.render_target_history.borrow().image.inner,

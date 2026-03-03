@@ -101,7 +101,7 @@ impl ShadingPass {
                         .descriptors
                         .borrow()
                         .samplers
-                        .get("denoise_direct_out")
+                        .get("denoise_direct_acc")
                         .unwrap() as u32,
                 )
                 .add_u32(
@@ -109,7 +109,7 @@ impl ShadingPass {
                         .descriptors
                         .borrow()
                         .samplers
-                        .get("denoise_indirect_out")
+                        .get("denoise_indirect_acc")
                         .unwrap() as u32,
                 )
                 .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)

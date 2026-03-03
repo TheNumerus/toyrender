@@ -1,5 +1,6 @@
 use nalgebra_glm::Mat4;
 
+#[derive(Clone)]
 pub struct PushConstBuilder {
     storage: Vec<u8>,
 }
@@ -46,5 +47,9 @@ impl PushConstBuilder {
 
     pub fn build(self) -> Box<[u8]> {
         self.storage.into_boxed_slice()
+    }
+
+    pub fn as_ref(&self) -> &[u8] {
+        self.storage.as_slice()
     }
 }

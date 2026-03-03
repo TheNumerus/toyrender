@@ -37,7 +37,7 @@ impl TonemapPass {
         RenderTargetBuilder::new("tonemap_out")
             .with_storage()
             .with_transfer()
-            .with_format(vk::Format::A2B10G10R10_UNORM_PACK32)
+            .with_format(vk::Format::R16G16B16A16_SFLOAT)
     }
 
     pub fn record(

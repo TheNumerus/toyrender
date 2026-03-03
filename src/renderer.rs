@@ -224,11 +224,13 @@ impl VulkanRenderer {
             &context.device,
             &context.graphics_command_pool,
             &[
-                render_targets.get_ref("taa_history_target").unwrap().image.inner,
-                render_targets.get_ref("denoise_direct_acc").unwrap().image.inner,
-                render_targets.get_ref("denoise_direct_history").unwrap().image.inner,
-                render_targets.get_ref("denoise_indirect_acc").unwrap().image.inner,
-                render_targets.get_ref("denoise_indirect_history").unwrap().image.inner,
+                taa_pass.render_target_history.borrow().image.inner,
+                denoise_pass.direct_render_target_acc.borrow().image.inner,
+                denoise_pass.direct_render_target_history.borrow().image.inner,
+                denoise_pass.indirect_render_target_acc.borrow().image.inner,
+                denoise_pass.indirect_render_target_history.borrow().image.inner,
+                denoise_pass.moments_direct_render_target.borrow().image.inner,
+                denoise_pass.moments_indirect_render_target.borrow().image.inner,
             ],
             &[render_targets.get_ref("last_depth").unwrap().image.inner],
         )?;
@@ -732,19 +734,13 @@ impl VulkanRenderer {
             &self.device,
             &self.context.graphics_command_pool,
             &[
-                self.render_targets.get_ref("taa_history_target").unwrap().image.inner,
-                self.render_targets.get_ref("denoise_direct_acc").unwrap().image.inner,
-                self.render_targets
-                    .get_ref("denoise_direct_history")
-                    .unwrap()
-                    .image
-                    .inner,
-                self.render_targets.get_ref("denoise_indirect_acc").unwrap().image.inner,
-                self.render_targets
-                    .get_ref("denoise_indirect_history")
-                    .unwrap()
-                    .image
-                    .inner,
+                self.taa_pass.render_target_history.borrow().image.inner,
+                self.denoise_pass.direct_render_target_acc.borrow().image.inner,
+                self.denoise_pass.direct_render_target_history.borrow().image.inner,
+                self.denoise_pass.indirect_render_target_acc.borrow().image.inner,
+                self.denoise_pass.indirect_render_target_history.borrow().image.inner,
+                self.denoise_pass.moments_direct_render_target.borrow().image.inner,
+                self.denoise_pass.moments_indirect_render_target.borrow().image.inner,
             ],
             &[self.render_targets.get_ref("last_depth").unwrap().image.inner],
         )?;
@@ -830,8 +826,8 @@ impl VulkanRenderer {
             // TODO depth needs shader to remap
             DebugMode::Depth => self.render_targets.get_ref("tonemap").unwrap().image.inner,
             DebugMode::DisOcclusion => self.render_targets.get_ref("taa_target").unwrap().image.inner,
-            DebugMode::VarianceDirect => self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
-            DebugMode::VarianceIndirect => self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
+            DebugMode::VarianceDirect => self.render_targets.get_ref("denoise_direct_acc").unwrap().image.inner,
+            DebugMode::VarianceIndirect => self.render_targets.get_ref("denoise_indirect_acc").unwrap().image.inner,
             DebugMode::DenoiseDirect => self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
             DebugMode::DenoiseIndirect => self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
         };

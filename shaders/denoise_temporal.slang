@@ -20,6 +20,7 @@ struct PushConsts {
     int curr_idx;
     int prev_idx;
     int normal_idx;
+    int moments_idx;
 };
 
 [vk::push_constant]
@@ -38,6 +39,10 @@ float get_linear_depth(Sampler2D depth, float2 uv) {
     float4 pos = mul(vp.proj[0], mul(vp.view[0], float4(curr_pos, 1.0)));
 
     return pos.z * pos.w;
+}
+
+float get_depth(Sampler2D depth, float2 uv) {
+    return depth.Sample(uv_to_abs(uv)).x;
 }
 
 bool reproject(float2 uv_in, out float2 uv_out, int2 size) {
@@ -94,11 +99,11 @@ float get_depth_gradient(uint x, uint y, Sampler2D depth, int2 size) {
     float x_offset = 1.0 / size.x;
     float y_offset = 1.0 / size.y;
 
-    float m = get_linear_depth(depth, uv);
-    float t = get_linear_depth(depth, uv + float2(0.0, -y_offset));
-    float b = get_linear_depth(depth, uv + float2(0.0, y_offset));
-    float l = get_linear_depth(depth, uv + float2(-x_offset, 0.0));
-    float r = get_linear_depth(depth, uv + float2(x_offset, 0.0));
+    float m = get_depth(depth, uv);
+    float t = get_depth(depth, uv + float2(0.0, -y_offset));
+    float b = get_depth(depth, uv + float2(0.0, y_offset));
+    float l = get_depth(depth, uv + float2(-x_offset, 0.0));
+    float r = get_depth(depth, uv + float2(x_offset, 0.0));
 
     return max(max(abs(t-m), abs(m-b)), max(abs(l-m), abs(m-r)));
 }
@@ -120,49 +125,16 @@ float luminance(float3 color) {
     return dot(color, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-float compute_spatial_variance(int2 uv_int, float luma_base, int2 size) {
-    float2 uv = (float2(uv_int) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
-    float3 base_normal = normalize(images[pc.normal_idx].Sample(uv_to_abs(uv)).xyz * 2.0 - 1.0);
+float3 bilinear_load(RWTexture2D image, float2 uv) {
+    float3 topLeft = image.Load(int2(floor(uv.x), floor(uv.y))).xyz;
+    float3 topRight = image.Load(int2(floor(uv.x), ceil(uv.y))).xyz;
+    float3 bottomLeft = image.Load(int2(ceil(uv.x), floor(uv.y))).xyz;
+    float3 bottomRight = image.Load(int2(ceil(uv.x), ceil(uv.y))).xyz;
 
-    if (images[pc.curr_depth_idx].Sample(uv_to_abs(uv)).x == 0.0) {
-        return 0.0;
-    }
+    float3 topMix = lerp(topLeft, topRight, fract(uv.y));
+    float3 bottomMix = lerp(bottomLeft, bottomRight, fract(uv.y));
 
-    float base_depth = get_linear_depth(images[pc.curr_depth_idx], uv);
-    float gradient = get_depth_gradient(uv_int.x, uv_int.y, images[pc.curr_depth_idx], size);
-
-    float sum = 0.0;
-    float sum_sq = 0.0;
-    float sum_weight = 0.0;
-    for (int x = -3; x <= 3; x++) {
-        for (int y = -3; y <= 3; y++) {
-            int2 uv = uv_int + int2(x, y);
-            if (uv.x >= 0 || uv.y >= 0 || uv.x < size.x || uv.y < size.y) {
-                float2 texture_uv = (float2(uv) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
-
-                float4 current = storages[pc.curr_idx].Load(uv);
-                float luma_sample = luminance(current.xyz);
-                float3 normal_sample = normalize(images[pc.normal_idx].Sample(uv_to_abs(texture_uv)).xyz * 2.0 - 1.0);
-                float depth_sample = get_linear_depth(images[pc.curr_depth_idx], texture_uv);
-                float sample_dist = distance(texture_uv, uv);
-
-                float normal_weight = pow(max(dot(base_normal, normal_sample), 0.0), 128.0);
-                float depth_weight = get_depth_weight(base_depth, depth_sample, gradient, sample_dist);
-                float luma_weight = get_luma_weight(luma_sample, luma_base, 1.0);
-
-                float weight = max(normal_weight * depth_weight * luma_weight, 0.0);
-
-                sum += luma_sample * weight;
-                sum_sq += (luma_sample * luma_sample) * weight;
-                sum_weight += weight;
-            }
-        }
-    }
-
-    sum /= sum_weight;
-    sum_sq /= sum_weight;
-
-    return sum_sq - (sum * sum);
+    return lerp(topMix, bottomMix, fract(uv.x));
 }
 
 [numthreads(16, 16, 1)]
@@ -174,9 +146,12 @@ void main(uint3 tid: SV_DispatchThreadID) {
     int2 size = int2(int(global.res_x), int(global.res_y));
     int2 drawSize = int2(int(global.draw_res_x), int(global.draw_res_y));
 
-    float blend_factor = 0.1;
+    float blend_factor = 0.05;
+    float moment_blend_factor = 0.2;
+
     if (pc.clear == 1) {
         blend_factor = 1.0;
+        moment_blend_factor = 1.0;
     }
 
     if (x <= drawSize.x && y <= drawSize.y) {
@@ -184,19 +159,29 @@ void main(uint3 tid: SV_DispatchThreadID) {
 
         float3 current = storages[pc.curr_idx].Load(int2(x, y)).xyz;
 
-        float variance = compute_spatial_variance(int2(x, y), luminance(current), drawSize);
-
-        if (global.debug == DebugMode::DirectVariance || global.debug == DebugMode::IndirectVariance) {
-            storages[pc.out_idx].Store(int2(x, y), float4(float3(variance * 5.0), 1.0));
-            return;
-        }
-
         float2 uv_reprojected;
-        if (!reproject(uv, uv_reprojected, drawSize)) {
+        bool do_reproject = reproject(uv, uv_reprojected, drawSize);
+        if (!do_reproject) {
             blend_factor = 1.0;
+            moment_blend_factor = 1.0;
         }
 
         float4 prev = max(images[pc.prev_idx].Sample(uv_to_abs(uv_reprojected)), float4(0.000001));
-        storages[pc.out_idx].Store(int2(x, y), lerp(prev, float4(current, variance), blend_factor));
+        storages[pc.out_idx].Store(int2(x, y), lerp(prev, float4(current, 0.0), blend_factor));
+
+        var moments = float3(0.0);
+        int2 coords = int2(round((uv_reprojected * drawSize)));
+        int2 pix = int2(x, y);
+        if (do_reproject && blend_factor != 1.0) {
+            
+            //moments = storages[pc.moments_idx].Load(coords).xyz;
+
+            moments = bilinear_load(storages[pc.moments_idx], uv_reprojected * drawSize - 0.5);
+        }
+
+        float luma = luminance(current);
+        float luma2 = luma * luma;
+
+        storages[pc.moments_idx].Store(int2(x, y), float4(lerp(moments.x, luma, moment_blend_factor), lerp(moments.y, luma2, moment_blend_factor), moments.z + 1.0, 0.0));
     }
 }
