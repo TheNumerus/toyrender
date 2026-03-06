@@ -313,13 +313,31 @@ void raygen() {
 
     uint end = getRealtimeClockLow().x;
 
-    storages[pc.out_idx].Store(
-        int2(launch_idx.xy),
-        float4(
-            (direct + indirect) * pow(2.0, global.exposure),
-            0.0
-        )
-    );
+    if (global.debug == DebugMode::Direct) {
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                (direct) * pow(2.0, global.exposure),
+                0.0
+            )
+        );
+    } else if (global.debug == DebugMode::Indirect) {
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                (indirect) * pow(2.0, global.exposure),
+                0.0
+            )
+        );
+    } else {
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                (direct + indirect) * pow(2.0, global.exposure),
+                0.0
+            )
+        );
+    }
 }
 
 

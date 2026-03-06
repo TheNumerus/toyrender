@@ -253,6 +253,7 @@ void raygen() {
         }
     }
 
+    payload.isMiss = false;
     if (dot(ray_shadow_dir, normal) > 0.0 && env.sun_int > 0.0) {
         traceShadow(vertPos + bias, ray_shadow_dir, payload);
     }

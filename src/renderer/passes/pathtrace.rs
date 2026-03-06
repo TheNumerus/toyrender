@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 pub(crate) struct PathTracePass {
     device: Rc<Device>,
-    direct_render_target: Rc<RefCell<RenderTarget>>,
-    indirect_render_target: Rc<RefCell<RenderTarget>>,
+    pub direct_render_target: Rc<RefCell<RenderTarget>>,
+    pub indirect_render_target: Rc<RefCell<RenderTarget>>,
     pub pipeline_handle: Rc<Pipeline<Rt>>,
 }
 

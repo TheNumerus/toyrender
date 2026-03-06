@@ -245,7 +245,9 @@ impl DescLayout {
                     vk::DescriptorSetLayoutBinding {
                         binding: 0,
                         descriptor_count: 24,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
+                        stage_flags: vk::ShaderStageFlags::COMPUTE
+                            | vk::ShaderStageFlags::RAYGEN_KHR
+                            | vk::ShaderStageFlags::MISS_KHR,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                         ..Default::default()
                     },

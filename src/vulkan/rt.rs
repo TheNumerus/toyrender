@@ -172,33 +172,18 @@ impl ShaderBindingTable {
     }
 }
 
-pub enum AsLevel {
-    Top,
-    Bottom,
-}
-
-impl From<AsLevel> for vk::AccelerationStructureTypeKHR {
-    fn from(value: AsLevel) -> Self {
-        match value {
-            AsLevel::Top => Self::TOP_LEVEL,
-            AsLevel::Bottom => Self::BOTTOM_LEVEL,
-        }
-    }
-}
-
-pub struct AccelerationStructure {
+pub struct BottomLevelAs {
     pub inner: AccelerationStructureKHR,
     buf: Buffer,
     ray_tracing_as: Rc<RayTracingAs>,
 }
 
-impl AccelerationStructure {
+impl BottomLevelAs {
     fn create(
         device: Rc<Device>,
         allocator: Arc<Mutex<Allocator>>,
         ray_tracing_as: Rc<RayTracingAs>,
         size: u64,
-        level: AsLevel,
     ) -> Result<Self, AppError> {
         let buf = Buffer::new(
             device.clone(),
@@ -213,7 +198,7 @@ impl AccelerationStructure {
             create_flags: Default::default(),
             buffer: buf.inner,
             size,
-            ty: level.into(),
+            ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
             ..Default::default()
         };
 
@@ -257,6 +242,11 @@ impl AccelerationStructure {
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
+        cmd_buf.begin_one_time()?;
+
+        let fence = Fence::new(device.clone())?;
+        fence.reset()?;
+
         for id in geos.keys() {
             let geo = *geos.get(id).unwrap();
             let range = *ranges.get(id).unwrap();
@@ -298,7 +288,6 @@ impl AccelerationStructure {
                 allocator.clone(),
                 rt_acc_struct_ext.clone(),
                 size_info.acceleration_structure_size,
-                AsLevel::Bottom,
             )?;
 
             build_info.dst_acceleration_structure = blas.inner;
@@ -306,41 +295,37 @@ impl AccelerationStructure {
                 device_address: buf.get_device_addr(),
             };
 
-            cmd_buf.begin_one_time()?;
-
-            let fence = Fence::new(device.clone())?;
-
             unsafe {
-                fence.reset()?;
-
                 rt_acc_struct_ext
                     .loader
                     .cmd_build_acceleration_structures(cmd_buf.inner, &[build_info], &[&[range]]);
-
-                cmd_buf.end()?;
-
-                let submit_info = vk::SubmitInfo {
-                    command_buffer_count: 1,
-                    p_command_buffers: &cmd_buf.inner,
-                    ..Default::default()
-                };
-
-                device
-                    .inner
-                    .queue_submit(device.compute_queue, &[submit_info], fence.inner)
-                    .map_to_err("Cannot submit queue")?;
-
-                fence.wait()?;
             }
 
             blases.insert(*id, blas);
+        }
+
+        unsafe {
+            cmd_buf.end()?;
+
+            let submit_info = vk::SubmitInfo {
+                command_buffer_count: 1,
+                p_command_buffers: &cmd_buf.inner,
+                ..Default::default()
+            };
+
+            device
+                .inner
+                .queue_submit(device.compute_queue, &[submit_info], fence.inner)
+                .map_to_err("Cannot submit queue")?;
+
+            fence.wait()?;
         }
 
         Ok(blases)
     }
 }
 
-impl Drop for AccelerationStructure {
+impl Drop for BottomLevelAs {
     fn drop(&mut self) {
         unsafe {
             self.ray_tracing_as
@@ -367,7 +352,7 @@ impl TopLevelAs {
         allocator: Arc<Mutex<Allocator>>,
         rt_acc_struct_ext: Rc<RayTracingAs>,
         cmd_buf: &CommandBuffer,
-        blases: &BTreeMap<u64, AccelerationStructure>,
+        blases: &BTreeMap<u64, BottomLevelAs>,
         tlas_index: TlasIndex,
     ) -> Result<Self, AppError> {
         let mut instances = Vec::with_capacity(tlas_index.index.len());

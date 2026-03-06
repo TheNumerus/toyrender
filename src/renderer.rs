@@ -2,9 +2,8 @@ use crate::err::AppError;
 use crate::math;
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
-    AccelerationStructure, Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence,
-    IntoVulkanError, PresentInfo, Sampler, Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError,
-    VulkanMesh,
+    BottomLevelAs, Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence, IntoVulkanError,
+    PresentInfo, Sampler, Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
@@ -55,7 +54,7 @@ pub struct VulkanRenderer {
     pub render_targets: RenderTargets,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
-    pub blases: BTreeMap<u64, AccelerationStructure>,
+    pub blases: BTreeMap<u64, BottomLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub raster_command_buffers: Vec<CommandBuffer>,
     pub command_buffers: Vec<CommandBuffer>,
@@ -818,8 +817,8 @@ impl VulkanRenderer {
     ) -> Result<(), VulkanError> {
         let src_image = match self.debug_mode {
             DebugMode::None => self.tonemap_pass.render_target.borrow().image.inner,
-            DebugMode::Direct => self.render_targets.get_ref("rt_direct").unwrap().image.inner,
-            DebugMode::Indirect => self.render_targets.get_ref("rt_indirect").unwrap().image.inner,
+            DebugMode::Direct => self.pt_pass.direct_render_target.borrow().image.inner,
+            DebugMode::Indirect => self.pt_pass.indirect_render_target.borrow().image.inner,
             DebugMode::Time => self.render_targets.get_ref("rt_direct").unwrap().image.inner,
             DebugMode::BaseColor => self.render_targets.get_ref("gbuffer_color").unwrap().image.inner,
             DebugMode::Normal => self.render_targets.get_ref("gbuffer_normal").unwrap().image.inner,
@@ -984,7 +983,7 @@ impl VulkanRenderer {
                 processed.insert(mesh.resource.id);
             }
 
-            let batch = AccelerationStructure::batch_bottom_build(
+            let batch = BottomLevelAs::batch_bottom_build(
                 self.context.device.clone(),
                 self.context.allocator.clone(),
                 self.context.rt_acc_struct_ext.clone(),

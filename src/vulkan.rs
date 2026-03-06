@@ -31,7 +31,7 @@ pub use image_view::ImageView;
 pub use instance::Instance;
 pub use mesh::VulkanMesh;
 pub use pipeline::{Compute, Graphics, Pipeline, Rt};
-pub use rt::{AccelerationStructure, RayTracingAs, RayTracingPipeline, ShaderBindingTable, TopLevelAs};
+pub use rt::{BottomLevelAs, RayTracingAs, RayTracingPipeline, ShaderBindingTable, TopLevelAs};
 pub use sampler::Sampler;
 pub use shader::{ShaderModule, ShaderStage};
 pub use surface::Surface;

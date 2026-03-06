@@ -7,6 +7,7 @@ use pt::ReferencePathtracePass;
 use crate::err::AppError;
 use crate::math;
 use crate::renderer::buffers::{Globals, ViewProj};
+use crate::renderer::debug::DebugMode;
 use crate::renderer::descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
 use crate::renderer::passes::{SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
@@ -16,7 +17,7 @@ use crate::renderer::{
 };
 use crate::scene::Scene;
 use crate::vulkan::{
-    AccelerationStructure, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore,
+    BottomLevelAs, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore,
     ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk;
@@ -34,7 +35,7 @@ pub struct VulkanMcPathTracer {
     pub render_targets: RenderTargets,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
-    pub blases: BTreeMap<u64, AccelerationStructure>,
+    pub blases: BTreeMap<u64, BottomLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
     pub descriptors: Rc<RefCell<RendererDescriptors>>,
@@ -43,6 +44,7 @@ pub struct VulkanMcPathTracer {
     pub env_uniforms: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
+    pub debug_mode: DebugMode,
     pub render_scale: f32,
     meshes: BTreeMap<u64, VulkanMesh>,
     img_available: Vec<Semaphore>,
@@ -253,6 +255,7 @@ impl VulkanMcPathTracer {
             in_flight,
             meshes: BTreeMap::new(),
             quality: QualitySettings::new(),
+            debug_mode: DebugMode::None,
             current_frame: 0,
             prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
@@ -394,7 +397,7 @@ impl VulkanMcPathTracer {
 
         let globals = Globals {
             exposure: scene.env.exposure,
-            debug_mode: 0,
+            debug_mode: self.debug_mode as i32,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
             draw_res_x: width as f32,
@@ -768,7 +771,7 @@ impl VulkanMcPathTracer {
                 processed.insert(mesh.resource.id);
             }
 
-            let batch = AccelerationStructure::batch_bottom_build(
+            let batch = BottomLevelAs::batch_bottom_build(
                 self.context.device.clone(),
                 self.context.allocator.clone(),
                 self.context.rt_acc_struct_ext.clone(),

@@ -263,6 +263,7 @@ impl App {
 
             if debug_mode_flip {
                 self.renderer.debug_mode = self.renderer.debug_mode.next();
+                self.reference_renderer.debug_mode = self.renderer.debug_mode;
                 eprintln!("debug mode: {:?}", self.renderer.debug_mode);
             }
 

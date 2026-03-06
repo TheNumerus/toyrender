@@ -20,18 +20,7 @@ impl TryFrom<i32> for DebugMode {
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(DebugMode::None),
-            1 => Ok(DebugMode::Direct),
-            2 => Ok(DebugMode::Indirect),
-            3 => Ok(DebugMode::Time),
-            4 => Ok(DebugMode::BaseColor),
-            5 => Ok(DebugMode::Normal),
-            6 => Ok(DebugMode::Depth),
-            7 => Ok(DebugMode::DisOcclusion),
-            8 => Ok(DebugMode::VarianceDirect),
-            9 => Ok(DebugMode::VarianceIndirect),
-            10 => Ok(DebugMode::DenoiseDirect),
-            11 => Ok(DebugMode::DenoiseIndirect),
+            0..12 => Ok(unsafe {std::mem::transmute::<i32, DebugMode>(value)}),
             _ => Err(""),
         }
     }
