@@ -108,6 +108,26 @@ uint time_diff(uint startTime, uint endTime) {
     return endTime >= startTime ? (endTime-startTime) : (~0u-(startTime-endTime));
 }
 
+constexpr static float origin = 1.0f / 32.0f;
+constexpr static float float_scale = 1.0f / 65536.0f;
+constexpr static float int_scale = 256.0f;
+
+float3 offset_ray(const float3 p, const float3 n) {
+    int3 of_i = int3(int(int_scale * n.x), int(int_scale * n.y), int(int_scale * n.z));
+
+    float3 p_i = float3(
+        asfloat(asint(p.x) + ((p.x < 0) ? -of_i.x : of_i.x)),
+        asfloat(asint(p.y) + ((p.y < 0) ? -of_i.y : of_i.y)),
+        asfloat(asint(p.z) + ((p.z < 0) ? -of_i.z : of_i.z))
+    );
+
+    return float3(
+        abs(p.x) < origin ? p.x + float_scale * n.x : p_i.x,
+        abs(p.y) < origin ? p.y + float_scale * n.y : p_i.y,
+        abs(p.z) < origin ? p.z + float_scale * n.z : p_i.z
+    );
+}
+
 [shader("raygeneration")]
 void raygen() {
     uint3 launch_idx = DispatchRaysIndex();
@@ -153,7 +173,6 @@ void raygen() {
     float3 loc = transpose(vp.view_inverse)[3].xyz;
     float3 view_dir = normalize(vertPos - loc);
     float dis = distance(loc, vertPos);
-    float3 bias = dis * normal * 0.001;
 
     float3 indirect = float3(0.0);
 
@@ -166,15 +185,13 @@ void raygen() {
 
     float2 rand = float2(pcg_hash(), pcg_hash());
 
-    float3 sphere = rand_sphere(rand) * 0.1;
-
     compute_default_basis(env.sun_dir_sun_angle.xyz, tangent, bitangent);
 
     float3 cone = rand_cone(rand, cos(env.sun_dir_sun_angle.w));
     float3 ray_shadow_dir = cone.x * tangent + cone.y * bitangent + cone.z * env.sun_dir_sun_angle.xyz;
 
     float3 intensity_indirect = 1.0;
-    float3 pos = vertPos + bias;
+    float3 pos = vertPos;
     float3 hitNormal = normal;
     float3 dir = view_dir;
 
@@ -215,7 +232,7 @@ void raygen() {
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
-        trace(pos, dir, payload);
+        trace(offset_ray(pos, hitNormal), dir, payload);
 
         // sky
         if (payload.isMiss) {
@@ -241,7 +258,7 @@ void raygen() {
 
             float3 hit_color = payload.color;
 
-            traceShadow(pos, ray_shadow_dir, payload);
+            traceShadow(offset_ray(pos, hitNormal), ray_shadow_dir, payload);
 
             // sun bounce
             if (payload.isMiss) {
@@ -255,7 +272,7 @@ void raygen() {
 
     payload.isMiss = false;
     if (dot(ray_shadow_dir, normal) > 0.0 && env.sun_int > 0.0) {
-        traceShadow(vertPos + bias, ray_shadow_dir, payload);
+        traceShadow(offset_ray(vertPos, normal), ray_shadow_dir, payload);
     }
 
     float shadow = float(payload.isMiss);

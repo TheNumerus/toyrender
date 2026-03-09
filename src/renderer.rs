@@ -9,7 +9,7 @@ use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
 use nalgebra_glm::Mat4;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::time::Instant;
@@ -27,9 +27,10 @@ mod mesh_collector;
 use mesh_collector::{DrawData, MeshCollector};
 
 mod passes;
-use passes::{DenoisePass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
+use passes::{DenoisePass, DepthDebugPass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
 
 mod pipeline_builder;
+use pipeline_builder::PipelineBuilder;
 
 mod quality;
 use quality::QualitySettings;
@@ -48,6 +49,17 @@ pub use reference_renderer::VulkanMcPathTracer;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
+struct VulkanRendererPasses {
+    gbuffer: GBufferPass,
+    sky: SkyPass,
+    pt: PathTracePass,
+    denoise: DenoisePass,
+    shading: ShadingPass,
+    taa: TaaPass,
+    tonemap: TonemapPass,
+    depth_debug: DepthDebugPass,
+}
+
 pub struct VulkanRenderer {
     pub context: Rc<VulkanContext>,
     pub device: Rc<Device>,
@@ -59,6 +71,7 @@ pub struct VulkanRenderer {
     pub raster_command_buffers: Vec<CommandBuffer>,
     pub command_buffers: Vec<CommandBuffer>,
     pub compute_command_buffers: Vec<CommandBuffer>,
+    tlas_prepare_cmd_buf: CommandBuffer,
     pub descriptors: Rc<RefCell<RendererDescriptors>>,
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
@@ -77,13 +90,7 @@ pub struct VulkanRenderer {
     last_view_proj: ViewProj,
     prev_jitter: (f32, f32),
     frames_in_flight: usize,
-    gbuffer_pass: GBufferPass,
-    sky_pass: SkyPass,
-    pt_pass: PathTracePass,
-    denoise_pass: DenoisePass,
-    shading_pass: ShadingPass,
-    taa_pass: TaaPass,
-    tonemap_pass: TonemapPass,
+    passes: VulkanRendererPasses,
 }
 
 impl VulkanRenderer {
@@ -141,49 +148,7 @@ impl VulkanRenderer {
             repeat_x_only_sampler,
         );
 
-        let sky_pass = SkyPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
-        )?;
-
-        let gbuffer_pass = GBufferPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
-        )?;
-
-        let tonemap_pass = TonemapPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
-        )?;
-
-        let shading_pass = ShadingPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
-        )?;
-
-        let denoise_pass = DenoisePass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
-        )?;
-
-        let taa_pass = TaaPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
-        )?;
-
-        let pt_pass = PathTracePass::create(
+        let passes = Self::create_passes(
             device.clone(),
             &mut render_targets,
             &mut context.pipeline_builder.borrow_mut(),
@@ -196,7 +161,7 @@ impl VulkanRenderer {
             device.clone(),
             context.allocator.clone(),
             &context.rt_pipeline_ext,
-            &pt_pass.pipeline_handle,
+            &passes.pt.pipeline_handle,
             1,
             1,
         )?;
@@ -210,6 +175,7 @@ impl VulkanRenderer {
         let compute_command_buffers = context
             .compute_command_pool
             .allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
+        let tlas_prepare_cmd_buf = context.compute_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
         let mut img_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -223,13 +189,13 @@ impl VulkanRenderer {
             &context.device,
             &context.graphics_command_pool,
             &[
-                taa_pass.render_target_history.borrow().image.inner,
-                denoise_pass.direct_render_target_acc.borrow().image.inner,
-                denoise_pass.direct_render_target_history.borrow().image.inner,
-                denoise_pass.indirect_render_target_acc.borrow().image.inner,
-                denoise_pass.indirect_render_target_history.borrow().image.inner,
-                denoise_pass.moments_direct_render_target.borrow().image.inner,
-                denoise_pass.moments_indirect_render_target.borrow().image.inner,
+                passes.taa.render_target_history.borrow().image.inner,
+                passes.denoise.direct_render_target_acc.borrow().image.inner,
+                passes.denoise.direct_render_target_history.borrow().image.inner,
+                passes.denoise.indirect_render_target_acc.borrow().image.inner,
+                passes.denoise.indirect_render_target_history.borrow().image.inner,
+                passes.denoise.moments_direct_render_target.borrow().image.inner,
+                passes.denoise.moments_indirect_render_target.borrow().image.inner,
             ],
             &[render_targets.get_ref("last_depth").unwrap().image.inner],
         )?;
@@ -355,16 +321,80 @@ impl VulkanRenderer {
             current_frame: 0,
             prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
-            gbuffer_pass,
-            sky_pass,
-            pt_pass,
-            denoise_pass,
-            shading_pass,
-            taa_pass,
-            tonemap_pass,
+            tlas_prepare_cmd_buf,
             render_scale: 1.0,
             gbuf_done,
             sky_done,
+            passes,
+        })
+    }
+
+    fn create_passes(
+        device: Rc<Device>,
+        render_targets: &mut RenderTargets,
+        pipeline_builder: &mut PipelineBuilder,
+        descriptors: Ref<RendererDescriptors>,
+    ) -> Result<VulkanRendererPasses, AppError> {
+        let sky = SkyPass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let gbuffer = GBufferPass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let tonemap = TonemapPass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let shading = ShadingPass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let denoise = DenoisePass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let taa = TaaPass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let pt = PathTracePass::create(
+            device.clone(),
+            render_targets,
+            pipeline_builder,
+            Ref::clone(&descriptors),
+        )?;
+
+        let depth_debug = DepthDebugPass::create(device.clone(), pipeline_builder, Ref::clone(&descriptors))?;
+
+        Ok(VulkanRendererPasses {
+            pt,
+            tonemap,
+            sky,
+            denoise,
+            depth_debug,
+            gbuffer,
+            shading,
+            taa,
         })
     }
 
@@ -543,7 +573,7 @@ impl VulkanRenderer {
             self.device.clone(),
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
-            &self.context.compute_command_pool.allocate_cmd_buffers(1)?[0],
+            &self.tlas_prepare_cmd_buf,
             &self.blases,
             tlas_index,
         )?;
@@ -671,6 +701,27 @@ impl VulkanRenderer {
         }
 
         command_buffer.end_rendering();
+
+        unsafe {
+            self.context.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access_mask: vk::AccessFlags::TRANSFER_READ,
+                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                    image: self.context.swap_chain.borrow().images[image_index as usize],
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                    ..Default::default()
+                }],
+            );
+        }
+
         command_buffer.end()?;
 
         let record_time = record_start.elapsed().as_secs_f32();
@@ -733,13 +784,13 @@ impl VulkanRenderer {
             &self.device,
             &self.context.graphics_command_pool,
             &[
-                self.taa_pass.render_target_history.borrow().image.inner,
-                self.denoise_pass.direct_render_target_acc.borrow().image.inner,
-                self.denoise_pass.direct_render_target_history.borrow().image.inner,
-                self.denoise_pass.indirect_render_target_acc.borrow().image.inner,
-                self.denoise_pass.indirect_render_target_history.borrow().image.inner,
-                self.denoise_pass.moments_direct_render_target.borrow().image.inner,
-                self.denoise_pass.moments_indirect_render_target.borrow().image.inner,
+                self.passes.taa.render_target_history.borrow().image.inner,
+                self.passes.denoise.direct_render_target_acc.borrow().image.inner,
+                self.passes.denoise.direct_render_target_history.borrow().image.inner,
+                self.passes.denoise.indirect_render_target_acc.borrow().image.inner,
+                self.passes.denoise.indirect_render_target_history.borrow().image.inner,
+                self.passes.denoise.moments_direct_render_target.borrow().image.inner,
+                self.passes.denoise.moments_indirect_render_target.borrow().image.inner,
             ],
             &[self.render_targets.get_ref("last_depth").unwrap().image.inner],
         )?;
@@ -764,7 +815,8 @@ impl VulkanRenderer {
         draw_data: &Vec<DrawData>,
         viewport_size: (u32, u32),
     ) -> Result<(), AppError> {
-        self.gbuffer_pass
+        self.passes
+            .gbuffer
             .record(raster_command_buffer, self, draw_data, viewport_size)?;
 
         raster_command_buffer.end()?;
@@ -781,7 +833,7 @@ impl VulkanRenderer {
         compute_command_buffer.begin()?;
 
         self.tlases[self.current_frame].build(compute_command_buffer)?;
-        self.sky_pass.record(compute_command_buffer, self)?;
+        self.passes.sky.record(compute_command_buffer, self)?;
 
         compute_command_buffer.end()?;
 
@@ -796,13 +848,15 @@ impl VulkanRenderer {
         })?;
 
         command_buffer.begin()?;
-        self.pt_pass.record(command_buffer, self, viewport_size)?;
-        self.denoise_pass
+        self.passes.pt.record(command_buffer, self, viewport_size)?;
+        self.passes
+            .denoise
             .record(command_buffer, self, context.clear_taa, viewport_size)?;
-        self.shading_pass.record(command_buffer, self, viewport_size)?;
-        self.taa_pass
+        self.passes.shading.record(command_buffer, self, viewport_size)?;
+        self.passes
+            .taa
             .record(command_buffer, self, context.clear_taa, viewport_size)?;
-        self.tonemap_pass.record(command_buffer, self, viewport_size)?;
+        self.passes.tonemap.record(command_buffer, self, viewport_size)?;
 
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
@@ -816,19 +870,23 @@ impl VulkanRenderer {
         viewport_size: (u32, u32),
     ) -> Result<(), VulkanError> {
         let src_image = match self.debug_mode {
-            DebugMode::None => self.tonemap_pass.render_target.borrow().image.inner,
-            DebugMode::Direct => self.pt_pass.direct_render_target.borrow().image.inner,
-            DebugMode::Indirect => self.pt_pass.indirect_render_target.borrow().image.inner,
+            DebugMode::None => self.passes.tonemap.render_target.borrow().image.inner,
+            DebugMode::Direct => self.passes.pt.direct_render_target.borrow().image.inner,
+            DebugMode::Indirect => self.passes.pt.indirect_render_target.borrow().image.inner,
             DebugMode::Time => self.render_targets.get_ref("rt_direct").unwrap().image.inner,
             DebugMode::BaseColor => self.render_targets.get_ref("gbuffer_color").unwrap().image.inner,
             DebugMode::Normal => self.render_targets.get_ref("gbuffer_normal").unwrap().image.inner,
-            // TODO depth needs shader to remap
-            DebugMode::Depth => self.render_targets.get_ref("tonemap").unwrap().image.inner,
             DebugMode::DisOcclusion => self.render_targets.get_ref("taa_target").unwrap().image.inner,
             DebugMode::VarianceDirect => self.render_targets.get_ref("denoise_direct_acc").unwrap().image.inner,
             DebugMode::VarianceIndirect => self.render_targets.get_ref("denoise_indirect_acc").unwrap().image.inner,
             DebugMode::DenoiseDirect => self.render_targets.get_ref("denoise_direct_out").unwrap().image.inner,
             DebugMode::DenoiseIndirect => self.render_targets.get_ref("denoise_indirect_out").unwrap().image.inner,
+            DebugMode::Raw => self.render_targets.get_ref("tonemap").unwrap().image.inner,
+            DebugMode::Depth => {
+                // runs convert, result is in tonemap
+                self.passes.depth_debug.record(command_buffer, self, viewport_size)?;
+                self.render_targets.get_ref("tonemap").unwrap().image.inner
+            }
         };
 
         unsafe {
@@ -871,7 +929,7 @@ impl VulkanRenderer {
             self.device.inner.cmd_blit_image(
                 command_buffer.inner,
                 src_image,
-                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                vk::ImageLayout::GENERAL,
                 *target,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[vk::ImageBlit {
@@ -904,7 +962,7 @@ impl VulkanRenderer {
                     src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
                     dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
                     old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     image: *target,
                     subresource_range: vk::ImageSubresourceRange {
                         base_mip_level: 0,

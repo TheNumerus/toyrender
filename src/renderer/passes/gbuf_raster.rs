@@ -297,7 +297,7 @@ impl GBufferPass {
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
                 vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -307,7 +307,7 @@ impl GBufferPass {
                         src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                         dst_access_mask: vk::AccessFlags::SHADER_READ,
                         old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        new_layout: vk::ImageLayout::GENERAL,
                         image: color_rt.image.inner,
                         subresource_range: image_color_res,
                         ..Default::default()
@@ -316,7 +316,7 @@ impl GBufferPass {
                         src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
                         dst_access_mask: vk::AccessFlags::SHADER_READ,
                         old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        new_layout: vk::ImageLayout::GENERAL,
                         image: normal_rt.image.inner,
                         subresource_range: image_color_res,
                         ..Default::default()
@@ -325,7 +325,7 @@ impl GBufferPass {
                         src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                         dst_access_mask: vk::AccessFlags::SHADER_READ,
                         old_layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        new_layout: vk::ImageLayout::GENERAL,
                         image: depth_rt.image.inner,
                         subresource_range: image_depth_res,
                         ..Default::default()

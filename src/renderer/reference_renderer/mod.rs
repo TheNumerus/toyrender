@@ -17,8 +17,8 @@ use crate::renderer::{
 };
 use crate::scene::Scene;
 use crate::vulkan::{
-    BottomLevelAs, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore,
-    ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
+    BottomLevelAs, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, IntoVulkanError, PresentInfo, Sampler,
+    Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
@@ -29,6 +29,13 @@ use std::rc::Rc;
 use std::time::Instant;
 
 const MAX_FRAMES_IN_FLIGHT: usize = 2;
+
+struct VulkanMcPathTracerPasses {
+    sky: SkyPass,
+    tonemap: TonemapPass,
+    pt: ReferencePathtracePass,
+    accumulate: AccumulatePass,
+}
 
 pub struct VulkanMcPathTracer {
     pub context: Rc<VulkanContext>,
@@ -50,12 +57,9 @@ pub struct VulkanMcPathTracer {
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     in_flight: Vec<Fence>,
-    prev_jitter: (f32, f32),
     frames_in_flight: usize,
-    sky_pass: SkyPass,
-    tonemap_pass: TonemapPass,
-    pt_pass: ReferencePathtracePass,
-    accumulate_pass: AccumulatePass,
+    tlas_prepare_cmd_buf: CommandBuffer,
+    passes: VulkanMcPathTracerPasses,
 }
 
 impl VulkanMcPathTracer {
@@ -141,11 +145,18 @@ impl VulkanMcPathTracer {
             descriptors.borrow(),
         )?;
 
+        let passes = VulkanMcPathTracerPasses {
+            sky: sky_pass,
+            tonemap: tonemap_pass,
+            accumulate: accumulate_pass,
+            pt: pt_pass,
+        };
+
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
             context.allocator.clone(),
             &context.rt_pipeline_ext,
-            &pt_pass.pipeline_handle,
+            &passes.pt.pipeline_handle,
             1,
             1,
         )?;
@@ -153,7 +164,7 @@ impl VulkanMcPathTracer {
         let command_buffers = context
             .graphics_command_pool
             .allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
-        let as_builder_cmd_buf = context.compute_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
+        let tlas_prepare_cmd_buf = context.compute_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
         let mut img_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -177,7 +188,7 @@ impl VulkanMcPathTracer {
                 device.clone(),
                 context.allocator.clone(),
                 context.rt_acc_struct_ext.clone(),
-                &as_builder_cmd_buf,
+                &tlas_prepare_cmd_buf,
                 &BTreeMap::new(),
                 TlasIndex { index: Vec::new() },
             )?;
@@ -257,13 +268,10 @@ impl VulkanMcPathTracer {
             quality: QualitySettings::new(),
             debug_mode: DebugMode::None,
             current_frame: 0,
-            prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
-            sky_pass,
-            tonemap_pass,
             render_scale: 1.0,
-            pt_pass,
-            accumulate_pass,
+            passes,
+            tlas_prepare_cmd_buf,
         })
     }
 
@@ -348,11 +356,13 @@ impl VulkanMcPathTracer {
 
         let tlas_index = self.build_tlas_index(scene);
 
+        self.tlas_prepare_cmd_buf.reset()?;
+
         self.tlases[self.current_frame] = TopLevelAs::prepare(
             self.context.device.clone(),
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
-            &self.context.compute_command_pool.allocate_cmd_buffers(1)?[0],
+            &self.tlas_prepare_cmd_buf,
             &self.blases,
             tlas_index,
         )?;
@@ -405,7 +415,8 @@ impl VulkanMcPathTracer {
             time: context.total_time,
             frame_index: context.frame_index,
             current_jitter: offset,
-            prev_jitter: self.prev_jitter,
+            // reference renderer does not use this, so it can be safely ignored
+            prev_jitter: offset,
         };
 
         let env = env_to_buffer(&scene.env);
@@ -516,7 +527,6 @@ impl VulkanMcPathTracer {
         }
 
         self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
-        self.prev_jitter = offset;
 
         let stats = FrameStats {
             cpu_time: (end - start).as_secs_f32(),
@@ -565,7 +575,7 @@ impl VulkanMcPathTracer {
 
         self.init_frame_images(command_buffer);
 
-        self.sky_pass.record_reference(command_buffer, self)?;
+        self.passes.sky.record_reference(command_buffer, self)?;
 
         unsafe {
             self.context.device.inner.cmd_pipeline_barrier(
@@ -583,11 +593,14 @@ impl VulkanMcPathTracer {
             );
         }
 
-        self.pt_pass
+        self.passes
+            .pt
             .record_pt(command_buffer, self, context, viewport_size, fov)?;
-        self.accumulate_pass
+        self.passes
+            .accumulate
             .record(command_buffer, self, context, viewport_size)?;
-        self.tonemap_pass
+        self.passes
+            .tonemap
             .record_reference(command_buffer, self, viewport_size)?;
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
@@ -712,17 +725,45 @@ impl VulkanMcPathTracer {
     fn prepare_meshes(&mut self, scene: &Scene) -> Result<bool, AppError> {
         let mut changed = false;
 
+        self.tlas_prepare_cmd_buf.reset()?;
+        self.tlas_prepare_cmd_buf.begin_one_time()?;
+
         for instance in &scene.meshes {
             if let std::collections::btree_map::Entry::Vacant(e) = self.meshes.entry(instance.resource.id) {
-                let mesh = VulkanMesh::new(
+                let mesh = VulkanMesh::new_nonblocking(
                     self.context.device.clone(),
                     self.context.allocator.clone(),
-                    &self.context.graphics_command_pool,
+                    &self.tlas_prepare_cmd_buf,
                     &instance.resource,
                 )?;
                 changed = true;
                 e.insert(mesh);
             }
+        }
+
+        self.tlas_prepare_cmd_buf.end()?;
+
+        let submit_info = vk::SubmitInfo {
+            command_buffer_count: 1,
+            p_command_buffers: &self.tlas_prepare_cmd_buf.inner,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.context
+                .device
+                .inner
+                .queue_submit(self.context.device.compute_queue, &[submit_info], vk::Fence::null())
+                .map_to_err("Cannot submit queue")?;
+            self.context
+                .device
+                .inner
+                .queue_wait_idle(self.context.device.compute_queue)
+                .map_to_err("Cannot wait idle")?;
+        }
+
+        for mesh in self.meshes.values_mut() {
+            mesh.buf.finalize();
         }
 
         if changed {

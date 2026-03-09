@@ -116,7 +116,7 @@ impl TonemapPass {
                 &[],
                 &[vk::ImageMemoryBarrier {
                     src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
                     old_layout: vk::ImageLayout::GENERAL,
                     new_layout: vk::ImageLayout::GENERAL,
                     image: self.render_target.borrow().image.inner,

@@ -13,6 +13,7 @@ pub enum DebugMode {
     VarianceIndirect = 9,
     DenoiseDirect = 10,
     DenoiseIndirect = 11,
+    Raw = 12,
 }
 
 impl TryFrom<i32> for DebugMode {
@@ -20,14 +21,16 @@ impl TryFrom<i32> for DebugMode {
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         match value {
-            0..12 => Ok(unsafe {std::mem::transmute::<i32, DebugMode>(value)}),
+            0..Self::COUNT => Ok(unsafe { std::mem::transmute::<i32, DebugMode>(value) }),
             _ => Err(""),
         }
     }
 }
 
 impl DebugMode {
+    pub const COUNT: i32 = 13;
+
     pub fn next(self) -> DebugMode {
-        ((self as i32 + 1) % 12).try_into().unwrap()
+        ((self as i32 + 1) % Self::COUNT).try_into().unwrap()
     }
 }

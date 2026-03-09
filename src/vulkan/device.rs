@@ -407,10 +407,12 @@ impl Device {
     }
 
     pub fn queue_submit<'a>(&'a self, info: SubmitInfo<'a>) -> Result<(), VulkanError> {
+        let stage_mask = vec![info.wait_stages; info.wait_semaphores.len()];
+
         let submit_info = vk::SubmitInfo {
             wait_semaphore_count: info.wait_semaphores.len() as u32,
             p_wait_semaphores: info.wait_semaphores.as_ptr(),
-            p_wait_dst_stage_mask: &info.wait_stages,
+            p_wait_dst_stage_mask: stage_mask.as_ptr(),
             command_buffer_count: info.command_buffers.len() as u32,
             p_command_buffers: info.command_buffers.as_ptr(),
             signal_semaphore_count: info.signal_semaphores.len() as u32,

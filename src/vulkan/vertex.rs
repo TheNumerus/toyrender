@@ -1,5 +1,5 @@
 use crate::err::AppError;
-use crate::vulkan::{Buffer, CommandPool, DebugMarker, Device, IntoVulkanError};
+use crate::vulkan::{Buffer, CommandBuffer, CommandPool, DebugMarker, Device, IntoVulkanError};
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::Allocator;
@@ -56,6 +56,7 @@ impl Vertex {
 }
 
 pub struct VertexIndexBuffer {
+    staging: Option<Buffer>,
     pub inner: Buffer,
 }
 
@@ -73,6 +74,7 @@ impl VertexIndexBuffer {
             vk::BufferUsageFlags::TRANSFER_SRC,
             data.len() as u64,
         )?;
+        staging.name("Mesh stage data")?;
 
         staging.fill_host(data)?;
 
@@ -124,6 +126,59 @@ impl VertexIndexBuffer {
                 .map_to_err("Cannot wait idle")?;
         }
 
-        Ok(Self { inner })
+        Ok(Self { inner, staging: None })
+    }
+
+    pub fn new_nonblocking(
+        device: Rc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
+        cmd_buf: &CommandBuffer,
+        data: &[u8],
+    ) -> Result<Self, AppError> {
+        let mut staging = Buffer::new(
+            device.clone(),
+            allocator.clone(),
+            MemoryLocation::CpuToGpu,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            data.len() as u64,
+        )?;
+        staging.name("Mesh stage data")?;
+
+        staging.fill_host(data)?;
+
+        let inner = Buffer::new(
+            device.clone(),
+            allocator.clone(),
+            MemoryLocation::GpuOnly,
+            vk::BufferUsageFlags::TRANSFER_DST
+                | vk::BufferUsageFlags::VERTEX_BUFFER
+                | vk::BufferUsageFlags::INDEX_BUFFER
+                | vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
+                | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            data.len() as u64,
+        )?;
+        inner.name("Mesh data")?;
+
+        unsafe {
+            let region = vk::BufferCopy {
+                size: data.len() as u64,
+                src_offset: 0,
+                dst_offset: 0,
+            };
+
+            device
+                .inner
+                .cmd_copy_buffer(cmd_buf.inner, staging.inner, inner.inner, &[region]);
+        }
+
+        Ok(Self {
+            inner,
+            staging: Some(staging),
+        })
+    }
+
+    pub fn finalize(&mut self) {
+        self.staging.take();
     }
 }

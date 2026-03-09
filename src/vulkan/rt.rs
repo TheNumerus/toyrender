@@ -377,7 +377,7 @@ impl TopLevelAs {
                         transform.m34,
                     ],
                 },
-                instance_custom_index_and_mask: Packed24_8::new(0, 0xFF),
+                instance_custom_index_and_mask: Packed24_8::new(id as u32, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, 1),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                     device_handle: blas.get_device_addr(),

@@ -11,7 +11,7 @@ use std::rc::Rc;
 
 pub(crate) struct ShadingPass {
     device: Rc<Device>,
-    render_target: Rc<RefCell<RenderTarget>>,
+    pub render_target: Rc<RefCell<RenderTarget>>,
     pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
@@ -141,7 +141,7 @@ impl ShadingPass {
                     src_access_mask: vk::AccessFlags::SHADER_WRITE,
                     dst_access_mask: vk::AccessFlags::SHADER_READ,
                     old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    new_layout: vk::ImageLayout::GENERAL,
                     image: self.render_target.borrow().image.inner,
                     subresource_range: vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,

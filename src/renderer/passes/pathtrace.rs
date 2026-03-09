@@ -88,7 +88,9 @@ impl PathTracePass {
             self.device.inner.cmd_push_constants(
                 command_buffer.inner,
                 pipeline.layout,
-                vk::ShaderStageFlags::RAYGEN_KHR,
+                vk::ShaderStageFlags::RAYGEN_KHR
+                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                    | vk::ShaderStageFlags::MISS_KHR,
                 0,
                 &pc,
             );

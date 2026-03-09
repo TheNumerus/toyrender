@@ -42,4 +42,7 @@ public enum DebugMode {
     Disocclusion,
     DirectVariance,
     IndirectVariance,
+    DenoiseDirect,
+    DenoiseIndirect,
+    Raw,
 };

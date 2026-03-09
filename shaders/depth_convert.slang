@@ -12,7 +12,6 @@ RWTexture2D<float4> storages[];
 struct PushConsts {
     int out_idx;
     int depth_idx;
-    int sky_idx;
 };
 
 
@@ -30,7 +29,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     if (x <= width && y <= height) {
         float input = images[pc.depth_idx].Sample(uv).x;
-        input = fract(input * 32.0);
+        input = fract(pow(input, 0.1) * 32.0);
 
         storages[pc.out_idx].Store(int2(x, y), float4(float3(input), 1.0));
     }

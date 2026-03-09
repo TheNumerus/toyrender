@@ -180,8 +180,6 @@ void raygen() {
 
     float2 rand = float2(pcg_hash(), pcg_hash());
 
-    float3 sphere = rand_sphere(rand) * 0.1;
-
     compute_default_basis(env.sun_dir_sun_angle.xyz, tangent, bitangent);
 
     float3 cone = rand_cone(rand, cos(env.sun_dir_sun_angle.w));
@@ -367,7 +365,7 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     payload.normal = normalize(normal);
     payload.hit = attr.barycentrics.x * edgeA + attr.barycentrics.y * edgeB + vertPos0;
 
-    //hash_state = InstanceIndex() * 4096;
+    //hash_state = InstanceID() * 4096;
     //payload.color = pow(float3(pcg_hash(), pcg_hash(), pcg_hash()), 2.2);
 
     payload.color = float3(0.7);
