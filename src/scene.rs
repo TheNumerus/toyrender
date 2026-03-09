@@ -39,13 +39,24 @@ impl Scene {
     }
 }
 
+pub enum SkyVariant {
+    Shader,
+    SingleColor(Vec3),
+    Textured,
+}
+
+pub struct Sky {
+    pub variant: SkyVariant,
+    pub intensity: f32,
+}
+
 pub struct Environment {
     pub sun_direction: Vec3,
     pub sun_color: Vec3,
     pub sun_angle: f32,
     pub exposure: f32,
-    pub sky_intensity: f32,
     pub sun_intensity: f32,
+    pub sky: Sky,
 }
 
 impl Default for Environment {
@@ -55,8 +66,11 @@ impl Default for Environment {
             sun_color: vec3(0.9, 0.8, 0.7),
             sun_angle: 0.54 / (180.0 * std::f32::consts::PI),
             exposure: 0.0,
-            sky_intensity: 1.0,
             sun_intensity: 1.0,
+            sky: Sky {
+                variant: SkyVariant::Shader,
+                intensity: 1.0,
+            },
         }
     }
 }

@@ -1,4 +1,6 @@
 mod env;
+pub use env::GPUEnv;
+
 mod global;
 pub use global::Globals;
 

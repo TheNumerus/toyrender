@@ -1,7 +1,6 @@
 module Common;
 
 public struct Global {
-    public float exposure;
     public int debug;
     public float res_x;
     public float res_y;
@@ -22,8 +21,9 @@ public struct ViewProj {
 
 public struct Environment {
     public float4 sun_dir_sun_angle;
-    public float4 sun_color_sky_int;
-    public float sun_int;
+    public float4 sun_color_intensity;
+    public float4 sky_color_intensity;
+    public float exposure;
 };
 
 public struct MeshTransform {

@@ -208,7 +208,7 @@ void raygen() {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                payload.color * env.sun_color_sky_int.w * pow(2.0, global.exposure),
+                payload.color * env.sky_color_intensity.w,
                 0.0
             )
         );
@@ -266,7 +266,7 @@ void raygen() {
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * payload.color * env.sun_color_sky_int.w * current_color;
+            indirect += intensity_indirect * bounce_energy * payload.color * env.sky_color_intensity.w * current_color;
             intensity_indirect *= bounce_energy * current_color;
             break;
         } else {
@@ -280,7 +280,7 @@ void raygen() {
             }
 
             // ignore shadow rays from unreachable normals
-            if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_int == 0.0) {
+            if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_color_intensity.w == 0.0) {
                 intensity_indirect *= bounce_energy * current_color;
                 current_color = payload.color;
                 continue;
@@ -292,7 +292,7 @@ void raygen() {
 
             // sun bounce
             if (payload.isMiss) {
-                direct += intensity_indirect * bounce_energy * env.sun_color_sky_int.xyz * env.sun_int * current_color * hit_color;
+                direct += intensity_indirect * bounce_energy * env.sun_color_intensity.xyz * env.sun_color_intensity.w * current_color * hit_color;
             }
             current_color = hit_color;
             intensity_indirect *= bounce_energy * current_color * payload.color;
@@ -301,13 +301,13 @@ void raygen() {
 
     payload.isMiss = false;
 
-    if (dot(ray_shadow_dir, primaryNormal) > 0.0 && env.sun_int > 0.0) {
+    if (dot(ray_shadow_dir, primaryNormal) > 0.0 && env.sun_color_intensity.w > 0.0) {
         payload.isMiss = true;
         traceShadow(primaryPos, ray_shadow_dir, payload);
     }
 
     float shadow = float(payload.isMiss) * dot(ray_shadow_dir, primaryNormal);
-    direct += shadow * env.sun_color_sky_int.xyz * env.sun_int * primaryColor;
+    direct += shadow * env.sun_color_intensity.xyz * env.sun_color_intensity.w * primaryColor;
 
     uint end = getRealtimeClockLow().x;
 
@@ -315,7 +315,7 @@ void raygen() {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                (direct) * pow(2.0, global.exposure),
+                (direct),
                 0.0
             )
         );
@@ -323,7 +323,7 @@ void raygen() {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                (indirect) * pow(2.0, global.exposure),
+                (indirect),
                 0.0
             )
         );
@@ -331,7 +331,7 @@ void raygen() {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                (direct + indirect) * pow(2.0, global.exposure),
+                (direct + indirect),
                 0.0
             )
         );

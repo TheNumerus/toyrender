@@ -2,20 +2,20 @@ use crate::err::AppError;
 use crate::math;
 use crate::scene::{Environment, Scene};
 use crate::vulkan::{
-    BottomLevelAs, Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence, IntoVulkanError,
-    PresentInfo, Sampler, Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
+    Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence, IntoVulkanError, PresentInfo,
+    Sampler, Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, VulkanError,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
 use nalgebra_glm::Mat4;
 use std::cell::{Ref, RefCell};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Instant;
 
 mod buffers;
-use buffers::{Globals, ViewProj};
+use buffers::{GPUEnv, Globals, ViewProj};
 
 mod context;
 pub use context::VulkanContext;
@@ -25,6 +25,9 @@ use descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
 mod mesh_collector;
 use mesh_collector::{DrawData, MeshCollector};
+
+mod mesh_subsystem;
+pub use mesh_subsystem::MeshSubsystem;
 
 mod passes;
 use passes::{DenoisePass, DepthDebugPass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
@@ -66,7 +69,6 @@ pub struct VulkanRenderer {
     pub render_targets: RenderTargets,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
-    pub blases: BTreeMap<u64, BottomLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub raster_command_buffers: Vec<CommandBuffer>,
     pub command_buffers: Vec<CommandBuffer>,
@@ -81,7 +83,6 @@ pub struct VulkanRenderer {
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
     pub render_scale: f32,
-    meshes: BTreeMap<u64, VulkanMesh>,
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     gbuf_done: Semaphore,
@@ -301,7 +302,6 @@ impl VulkanRenderer {
             render_targets,
             shader_binding_table,
             tlases,
-            blases: BTreeMap::new(),
             _descriptor_pool: descriptor_pool,
             raster_command_buffers,
             compute_command_buffers,
@@ -317,7 +317,6 @@ impl VulkanRenderer {
             last_view_proj: ViewProj::default(),
             debug_mode: DebugMode::None,
             quality: QualitySettings::new(),
-            meshes: BTreeMap::new(),
             current_frame: 0,
             prev_jitter: (0.5, 0.5),
             frames_in_flight: MAX_FRAMES_IN_FLIGHT,
@@ -542,6 +541,7 @@ impl VulkanRenderer {
     pub fn render_frame(
         &mut self,
         scene: &Scene,
+        mesh_subsystem: &mut MeshSubsystem,
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
@@ -559,7 +559,7 @@ impl VulkanRenderer {
 
         let start = Instant::now();
 
-        if self.prepare_meshes(scene)? {
+        if mesh_subsystem.prepare_meshes(scene, &self.tlas_prepare_cmd_buf)? {
             info!("Mesh first prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
@@ -567,14 +567,14 @@ impl VulkanRenderer {
 
         let tlas_start = Instant::now();
 
-        let tlas_index = self.build_tlas_index(scene);
+        let tlas_index = mesh_subsystem.build_tlas_index(scene);
 
         self.tlases[self.current_frame] = TopLevelAs::prepare(
             self.device.clone(),
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
             &self.tlas_prepare_cmd_buf,
-            &self.blases,
+            &mesh_subsystem.blases,
             tlas_index,
         )?;
 
@@ -626,7 +626,6 @@ impl VulkanRenderer {
         let mesh_time = mesh_start.elapsed().as_secs_f32() + prepare_end;
 
         let globals = Globals {
-            exposure: scene.env.exposure,
             debug_mode: self.debug_mode as i32,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
@@ -638,11 +637,9 @@ impl VulkanRenderer {
             prev_jitter: self.prev_jitter,
         };
 
-        let env = env_to_buffer(&scene.env);
-
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
-        self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
+        self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes().as_ref())?;
         self.mesh_bufs[self.current_frame].fill_host(collected_meshes.data.as_ref())?;
 
         let mut writes = Vec::new();
@@ -667,6 +664,7 @@ impl VulkanRenderer {
             &self.context.swap_chain.borrow().images[image_index as usize],
             context,
             &collected_meshes.draws,
+            mesh_subsystem,
             (width, height),
         )?;
 
@@ -813,11 +811,12 @@ impl VulkanRenderer {
         target: &vk::Image,
         context: &FrameContext,
         draw_data: &Vec<DrawData>,
+        mesh_subsystem: &MeshSubsystem,
         viewport_size: (u32, u32),
     ) -> Result<(), AppError> {
         self.passes
             .gbuffer
-            .record(raster_command_buffer, self, draw_data, viewport_size)?;
+            .record(raster_command_buffer, self, mesh_subsystem, draw_data, viewport_size)?;
 
         raster_command_buffer.end()?;
 
@@ -978,102 +977,6 @@ impl VulkanRenderer {
             Ok(())
         }
     }
-
-    fn prepare_meshes(&mut self, scene: &Scene) -> Result<bool, AppError> {
-        let mut changed = false;
-
-        for instance in &scene.meshes {
-            if let std::collections::btree_map::Entry::Vacant(e) = self.meshes.entry(instance.resource.id) {
-                let mesh = VulkanMesh::new(
-                    self.context.device.clone(),
-                    self.context.allocator.clone(),
-                    &self.context.graphics_command_pool,
-                    &instance.resource,
-                )?;
-                changed = true;
-                e.insert(mesh);
-            }
-        }
-
-        if changed {
-            let mut geos = BTreeMap::new();
-            let mut ranges = BTreeMap::new();
-
-            let mut processed = BTreeSet::new();
-
-            for mesh in &scene.meshes {
-                if processed.contains(&mesh.resource.id) {
-                    continue;
-                }
-
-                let res = self.meshes.get(&mesh.resource.id).unwrap();
-
-                let addr = res.buf.inner.get_device_addr();
-                let max_prim_count = res.index_count / 3;
-
-                let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR {
-                    vertex_format: vk::Format::R32G32B32_SFLOAT,
-                    vertex_data: vk::DeviceOrHostAddressConstKHR { device_address: addr },
-                    vertex_stride: std::mem::size_of::<Vertex>() as vk::DeviceSize,
-                    max_vertex: mesh.resource.vertices.len() as u32 - 1,
-                    index_type: vk::IndexType::UINT32,
-                    index_data: vk::DeviceOrHostAddressConstKHR {
-                        device_address: addr + (res.indices_offset),
-                    },
-                    ..Default::default()
-                };
-
-                let geo = vk::AccelerationStructureGeometryKHR {
-                    geometry_type: vk::GeometryTypeKHR::TRIANGLES,
-                    geometry: vk::AccelerationStructureGeometryDataKHR { triangles },
-                    flags: vk::GeometryFlagsKHR::OPAQUE,
-                    ..Default::default()
-                };
-                geos.insert(mesh.resource.id, geo);
-
-                let range = vk::AccelerationStructureBuildRangeInfoKHR {
-                    primitive_count: max_prim_count as u32,
-                    primitive_offset: 0,
-                    first_vertex: 0,
-                    transform_offset: 0,
-                };
-                ranges.insert(mesh.resource.id, range);
-                processed.insert(mesh.resource.id);
-            }
-
-            let batch = BottomLevelAs::batch_bottom_build(
-                self.context.device.clone(),
-                self.context.allocator.clone(),
-                self.context.rt_acc_struct_ext.clone(),
-                &self.context.compute_command_pool,
-                ranges,
-                geos,
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS,
-            )?;
-
-            self.blases = batch;
-        }
-
-        Ok(changed)
-    }
-
-    fn build_tlas_index(&self, scene: &Scene) -> TlasIndex {
-        let mut index = Vec::new();
-
-        for mesh in &scene.meshes {
-            let transform = mesh.transform;
-            let id = mesh.resource.id;
-
-            if !mesh.visible {
-                continue;
-            }
-
-            index.push((id, transform));
-        }
-
-        TlasIndex { index }
-    }
 }
 
 pub struct TlasIndex {
@@ -1086,30 +989,6 @@ pub struct FrameContext {
     pub clear_taa: bool,
     pub culling: bool,
     pub frame_index: u32,
-}
-
-#[repr(C)]
-/// float3 followed by float are turned into float 4
-struct GPUEnv {
-    sun_dir: [f32; 3],
-    sun_angle: f32,
-    sun_color: [f32; 3],
-    sky_intensity: f32,
-    sun_intensity: f32,
-}
-
-fn env_to_buffer(env: &Environment) -> Vec<u8> {
-    let sun_dir = env.sun_direction.normalize();
-
-    let gpu_env = GPUEnv {
-        sun_dir: sun_dir.data.0[0],
-        sun_angle: env.sun_angle,
-        sun_color: env.sun_color.data.0[0],
-        sky_intensity: env.sky_intensity,
-        sun_intensity: env.sun_intensity,
-    };
-
-    unsafe { core::slice::from_raw_parts(&gpu_env as *const GPUEnv as *const u8, size_of::<GPUEnv>()).to_owned() }
 }
 
 fn create_buffer_update<'a>(

@@ -1,6 +1,5 @@
 #[repr(C)]
 pub struct Globals {
-    pub exposure: f32,
     pub debug_mode: i32,
     pub res_x: f32,
     pub res_y: f32,

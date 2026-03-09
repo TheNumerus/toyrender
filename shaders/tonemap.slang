@@ -9,9 +9,13 @@ RWTexture2D<float4> storages[];
 [[vk::binding(2, 0)]]
 ConstantBuffer<ViewProj> vp;
 
+[[vk::binding(3, 0)]]
+ConstantBuffer<Environment> env;
+
 struct PushConsts {
     int src_idx;
     int out_idx;
+    int adjust_exposure;
 };
 
 [vk::push_constant]
@@ -124,6 +128,10 @@ void main(uint3 tid: SV_DispatchThreadID) {
     float3 sum = float3(0.0);
 
     float3 inputColor = storages[pc.src_idx].Load(tid.xy).rgb;
+
+    if (pc.adjust_exposure == 1) {
+        inputColor *= pow(2.0, env.exposure);
+    }
 
     inputColor = agx(inputColor);
     inputColor = agxEotf(inputColor);

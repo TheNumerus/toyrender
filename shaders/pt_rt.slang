@@ -236,7 +236,7 @@ void raygen() {
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * payload.color * env.sun_color_sky_int.w * current_color;
+            indirect += intensity_indirect * bounce_energy * payload.color * env.sun_color_intensity.w * current_color;
             intensity_indirect *= bounce_energy * current_color;
             break;
         } else {
@@ -250,7 +250,7 @@ void raygen() {
             }
 
             // ignore shadow rays from unreachable normals
-            if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_int == 0.0) {
+            if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_color_intensity.w == 0.0) {
                 intensity_indirect *= bounce_energy * current_color * payload.color;
                 current_color = payload.color;
                 continue;
@@ -262,7 +262,7 @@ void raygen() {
 
             // sun bounce
             if (payload.isMiss) {
-                indirect += intensity_indirect * bounce_energy * env.sun_color_sky_int.xyz * env.sun_int * current_color * hit_color;
+                indirect += intensity_indirect * bounce_energy * env.sun_color_intensity.xyz * env.sun_color_intensity.w * current_color * hit_color;
             }
 
             current_color = hit_color;
@@ -271,12 +271,12 @@ void raygen() {
     }
 
     payload.isMiss = false;
-    if (dot(ray_shadow_dir, normal) > 0.0 && env.sun_int > 0.0) {
+    if (dot(ray_shadow_dir, normal) > 0.0 && env.sun_color_intensity.w > 0.0) {
         traceShadow(offset_ray(vertPos, normal), ray_shadow_dir, payload);
     }
 
     float shadow = float(payload.isMiss);
-    float3 direct = shadow * env.sun_color_sky_int.xyz * env.sun_int;
+    float3 direct = shadow * env.sun_color_intensity.xyz * env.sun_color_intensity.w;
 
     uint end = getRealtimeClockLow().x;
 

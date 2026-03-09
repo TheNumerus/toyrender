@@ -1,9 +1,9 @@
 use crate::err::AppError;
-use crate::renderer::VulkanRenderer;
 use crate::renderer::descriptors::RendererDescriptors;
 use crate::renderer::mesh_collector::DrawData;
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
+use crate::renderer::{MeshSubsystem, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Device, Graphics, Pipeline, VulkanError};
 use ash::vk;
 use std::cell::{Ref, RefCell};
@@ -83,6 +83,7 @@ impl GBufferPass {
         &self,
         command_buffer: &CommandBuffer,
         renderer: &VulkanRenderer,
+        mesh_subsystem: &MeshSubsystem,
         draw_data: &Vec<DrawData>,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
@@ -251,7 +252,7 @@ impl GBufferPass {
         }
 
         for draw in draw_data {
-            let mesh_data = &renderer.meshes[&draw.mesh_id];
+            let mesh_data = &mesh_subsystem.meshes[&draw.mesh_id];
 
             command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
 

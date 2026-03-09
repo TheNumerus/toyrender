@@ -86,9 +86,10 @@ impl TonemapPass {
             ],
         );
 
-        let pc = PushConstBuilder::with_capacity(2 * size_of::<u32>())
+        let pc = PushConstBuilder::with_capacity(3 * size_of::<u32>())
             .add_u32(*renderer.descriptors.borrow().storages.get("taa_target").unwrap() as u32)
             .add_u32(*renderer.descriptors.borrow().storages.get("tonemap_out").unwrap() as u32)
+            .add_u32(0)
             .build();
 
         unsafe {
@@ -157,9 +158,10 @@ impl TonemapPass {
             ],
         );
 
-        let pc = PushConstBuilder::with_capacity(2 * size_of::<u32>())
+        let pc = PushConstBuilder::with_capacity(3 * size_of::<u32>())
             .add_u32(*renderer.descriptors.borrow().storages.get("acc_out").unwrap() as u32)
             .add_u32(*renderer.descriptors.borrow().storages.get("tonemap_out").unwrap() as u32)
+            .add_u32(1)
             .build();
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc);

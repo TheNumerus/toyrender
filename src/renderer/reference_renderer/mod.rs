@@ -13,18 +13,18 @@ use crate::renderer::passes::{SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
 use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{
-    FrameContext, FrameStats, GPUEnv, TlasIndex, VulkanContext, create_buffer_update, env_to_buffer,
+    FrameContext, FrameStats, GPUEnv, MeshSubsystem, TlasIndex, VulkanContext, create_buffer_update,
 };
 use crate::scene::Scene;
 use crate::vulkan::{
-    BottomLevelAs, Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, IntoVulkanError, PresentInfo, Sampler,
-    Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, Vertex, VulkanError, VulkanMesh,
+    Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore, ShaderBindingTable,
+    SubmitInfo, TopLevelAs, VulkanError,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
 use std::cell::RefCell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -42,7 +42,6 @@ pub struct VulkanMcPathTracer {
     pub render_targets: RenderTargets,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
-    pub blases: BTreeMap<u64, BottomLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
     pub descriptors: Rc<RefCell<RendererDescriptors>>,
@@ -53,7 +52,6 @@ pub struct VulkanMcPathTracer {
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
     pub render_scale: f32,
-    meshes: BTreeMap<u64, VulkanMesh>,
     img_available: Vec<Semaphore>,
     render_finished: Vec<Semaphore>,
     in_flight: Vec<Fence>,
@@ -254,7 +252,6 @@ impl VulkanMcPathTracer {
             render_targets,
             shader_binding_table,
             tlases,
-            blases: BTreeMap::new(),
             _descriptor_pool: descriptor_pool,
             command_buffers,
             img_available,
@@ -264,7 +261,6 @@ impl VulkanMcPathTracer {
             uniform_buffers_globals,
             env_uniforms,
             in_flight,
-            meshes: BTreeMap::new(),
             quality: QualitySettings::new(),
             debug_mode: DebugMode::None,
             current_frame: 0,
@@ -329,6 +325,7 @@ impl VulkanMcPathTracer {
     pub fn render_frame(
         &mut self,
         scene: &Scene,
+        mesh_subsystem: &mut MeshSubsystem,
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
@@ -346,7 +343,7 @@ impl VulkanMcPathTracer {
 
         let start = Instant::now();
 
-        if self.prepare_meshes(scene)? {
+        if mesh_subsystem.prepare_meshes(scene, &self.tlas_prepare_cmd_buf)? {
             info!("Mesh first prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
@@ -354,7 +351,7 @@ impl VulkanMcPathTracer {
 
         let tlas_start = Instant::now();
 
-        let tlas_index = self.build_tlas_index(scene);
+        let tlas_index = mesh_subsystem.build_tlas_index(scene);
 
         self.tlas_prepare_cmd_buf.reset()?;
 
@@ -363,7 +360,7 @@ impl VulkanMcPathTracer {
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
             &self.tlas_prepare_cmd_buf,
-            &self.blases,
+            &mesh_subsystem.blases,
             tlas_index,
         )?;
 
@@ -406,7 +403,6 @@ impl VulkanMcPathTracer {
         };
 
         let globals = Globals {
-            exposure: scene.env.exposure,
             debug_mode: self.debug_mode as i32,
             res_x: drawable_size.0 as f32,
             res_y: drawable_size.1 as f32,
@@ -419,11 +415,9 @@ impl VulkanMcPathTracer {
             prev_jitter: offset,
         };
 
-        let env = env_to_buffer(&scene.env);
-
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
-        self.env_uniforms[self.current_frame].fill_host(env.as_ref())?;
+        self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes().as_ref())?;
 
         let mut writes = Vec::new();
 
@@ -720,129 +714,5 @@ impl VulkanMcPathTracer {
         }
 
         Ok(())
-    }
-
-    fn prepare_meshes(&mut self, scene: &Scene) -> Result<bool, AppError> {
-        let mut changed = false;
-
-        self.tlas_prepare_cmd_buf.reset()?;
-        self.tlas_prepare_cmd_buf.begin_one_time()?;
-
-        for instance in &scene.meshes {
-            if let std::collections::btree_map::Entry::Vacant(e) = self.meshes.entry(instance.resource.id) {
-                let mesh = VulkanMesh::new_nonblocking(
-                    self.context.device.clone(),
-                    self.context.allocator.clone(),
-                    &self.tlas_prepare_cmd_buf,
-                    &instance.resource,
-                )?;
-                changed = true;
-                e.insert(mesh);
-            }
-        }
-
-        self.tlas_prepare_cmd_buf.end()?;
-
-        let submit_info = vk::SubmitInfo {
-            command_buffer_count: 1,
-            p_command_buffers: &self.tlas_prepare_cmd_buf.inner,
-            ..Default::default()
-        };
-
-        unsafe {
-            self.context
-                .device
-                .inner
-                .queue_submit(self.context.device.compute_queue, &[submit_info], vk::Fence::null())
-                .map_to_err("Cannot submit queue")?;
-            self.context
-                .device
-                .inner
-                .queue_wait_idle(self.context.device.compute_queue)
-                .map_to_err("Cannot wait idle")?;
-        }
-
-        for mesh in self.meshes.values_mut() {
-            mesh.buf.finalize();
-        }
-
-        if changed {
-            let mut geos = BTreeMap::new();
-            let mut ranges = BTreeMap::new();
-
-            let mut processed = BTreeSet::new();
-
-            for mesh in &scene.meshes {
-                if processed.contains(&mesh.resource.id) {
-                    continue;
-                }
-
-                let res = self.meshes.get(&mesh.resource.id).unwrap();
-
-                let addr = res.buf.inner.get_device_addr();
-                let max_prim_count = res.index_count / 3;
-
-                let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR {
-                    vertex_format: vk::Format::R32G32B32_SFLOAT,
-                    vertex_data: vk::DeviceOrHostAddressConstKHR { device_address: addr },
-                    vertex_stride: std::mem::size_of::<Vertex>() as vk::DeviceSize,
-                    max_vertex: mesh.resource.vertices.len() as u32 - 1,
-                    index_type: vk::IndexType::UINT32,
-                    index_data: vk::DeviceOrHostAddressConstKHR {
-                        device_address: addr + (res.indices_offset),
-                    },
-                    ..Default::default()
-                };
-
-                let geo = vk::AccelerationStructureGeometryKHR {
-                    geometry_type: vk::GeometryTypeKHR::TRIANGLES,
-                    geometry: vk::AccelerationStructureGeometryDataKHR { triangles },
-                    flags: vk::GeometryFlagsKHR::OPAQUE,
-                    ..Default::default()
-                };
-                geos.insert(mesh.resource.id, geo);
-
-                let range = vk::AccelerationStructureBuildRangeInfoKHR {
-                    primitive_count: max_prim_count as u32,
-                    primitive_offset: 0,
-                    first_vertex: 0,
-                    transform_offset: 0,
-                };
-                ranges.insert(mesh.resource.id, range);
-                processed.insert(mesh.resource.id);
-            }
-
-            let batch = BottomLevelAs::batch_bottom_build(
-                self.context.device.clone(),
-                self.context.allocator.clone(),
-                self.context.rt_acc_struct_ext.clone(),
-                &self.context.compute_command_pool,
-                ranges,
-                geos,
-                vk::BuildAccelerationStructureFlagsKHR::PREFER_FAST_TRACE
-                    | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS,
-            )?;
-
-            self.blases = batch;
-        }
-
-        Ok(changed)
-    }
-
-    fn build_tlas_index(&self, scene: &Scene) -> TlasIndex {
-        let mut index = Vec::with_capacity(scene.meshes.len());
-
-        for mesh in &scene.meshes {
-            let transform = mesh.transform;
-            let id = mesh.resource.id;
-
-            if !mesh.visible {
-                continue;
-            }
-
-            index.push((id, transform));
-        }
-
-        TlasIndex { index }
     }
 }

@@ -3,7 +3,7 @@ use crate::err::AppError;
 use crate::import;
 use crate::import::ImportedScene;
 use crate::input::InputMapper;
-use crate::renderer::{FrameContext, FrameStats, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
+use crate::renderer::{FrameContext, FrameStats, MeshSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
 use crate::scene::Scene;
 use log::{error, info};
 use sdl2::event::{Event, WindowEvent};
@@ -25,6 +25,7 @@ pub struct App {
     pub vulkan_context: Rc<VulkanContext>,
     pub renderer: VulkanRenderer,
     pub reference_renderer: VulkanMcPathTracer,
+    pub mesh_subsystem: MeshSubsystem,
     pub sdl_context: Sdl,
     pub window: Window,
     pub event_pump: EventPump,
@@ -58,6 +59,7 @@ impl App {
         let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
         let vulkan_context = Rc::new(VulkanContext::init(&window, &mut imgui, shader_loader)?);
+        let mesh_subsystem = MeshSubsystem::new(vulkan_context.clone());
         let renderer = VulkanRenderer::init(vulkan_context.clone())?;
         let reference_renderer = VulkanMcPathTracer::init(vulkan_context.clone())?;
 
@@ -71,6 +73,7 @@ impl App {
             event_pump,
             renderer,
             reference_renderer,
+            mesh_subsystem,
             vulkan_context,
             input_mapper,
             scene,
@@ -333,7 +336,7 @@ impl App {
                     if ui.collapsing_header("Environment", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                         ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
                         ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
-                        ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky_intensity);
+                        ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky.intensity);
                         ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
                             .build();
                         ui.slider(
@@ -397,12 +400,16 @@ impl App {
             }
 
             frame_stats[current_stats] = match state.selected_renderer {
-                SelectedRenderer::Realtime => {
-                    self.renderer
-                        .render_frame(&self.scene, self.window.drawable_size(), &context, Some(draw_data))?
-                }
+                SelectedRenderer::Realtime => self.renderer.render_frame(
+                    &self.scene,
+                    &mut self.mesh_subsystem,
+                    self.window.drawable_size(),
+                    &context,
+                    Some(draw_data),
+                )?,
                 SelectedRenderer::Reference => self.reference_renderer.render_frame(
                     &self.scene,
+                    &mut self.mesh_subsystem,
                     self.window.drawable_size(),
                     &context,
                     Some(draw_data),
@@ -488,8 +495,13 @@ impl App {
                 culling: true,
             };
 
-            self.renderer
-                .render_frame(&self.scene, self.window.drawable_size(), &context, None)?;
+            self.renderer.render_frame(
+                &self.scene,
+                &mut self.mesh_subsystem,
+                self.window.drawable_size(),
+                &context,
+                None,
+            )?;
         }
 
         self.renderer.device.wait_idle()?;
