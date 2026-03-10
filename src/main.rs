@@ -5,6 +5,7 @@ mod app;
 mod args;
 mod camera;
 mod err;
+mod image;
 mod import;
 mod input;
 mod math;

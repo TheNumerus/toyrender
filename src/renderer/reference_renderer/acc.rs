@@ -1,16 +1,17 @@
 use crate::err::AppError;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::math;
+use crate::renderer::PushConstBuilder;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
-use crate::renderer::{FrameContext, PushConstBuilder, VulkanMcPathTracer};
 use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct AccumulatePass {
     device: Rc<Device>,
-    render_target: Rc<RefCell<RenderTarget>>,
+    pub render_target: Rc<RefCell<RenderTarget>>,
     pub pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
@@ -19,11 +20,11 @@ impl AccumulatePass {
         device: Rc<Device>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
         let render_target = render_targets.add(Self::render_target_def())?;
 
-        let pipeline_handle = pipeline_builder.build_compute("accumulator", "accumulator|main", descriptors)?;
+        let pipeline_handle = pipeline_builder.build_compute("accumulator", "accumulator|main", descriptor_layouts)?;
 
         Ok(Self {
             device,
@@ -43,8 +44,8 @@ impl AccumulatePass {
     pub fn record(
         &self,
         command_buffer: &CommandBuffer,
-        renderer: &VulkanMcPathTracer,
-        context: &FrameContext,
+        descriptors: &RendererDescriptors,
+        inputs: AccumulateInputs,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         let pipeline = &self.pipeline_handle;
@@ -53,22 +54,19 @@ impl AccumulatePass {
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            [
-                renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-            ],
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
         let pc = PushConstBuilder::with_capacity(4 * size_of::<u32>())
-            .add_u32(context.frame_index)
-            .add_u32(if context.clear_taa { 1 } else { 0 })
-            .add_u32(*renderer.descriptors.borrow().storages.get("rt_out").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().storages.get("acc_out").unwrap() as u32);
+            .add_u32(inputs.frame_index)
+            .add_u32(if inputs.clear { 1 } else { 0 })
+            .add_u32(inputs.input.storage_index.unwrap())
+            .add_u32(self.render_target.borrow().storage_index.unwrap());
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc.build());
 
-        let x = viewport.0 / pipeline.reflect_data.workgroup_size.0 + 1;
-        let y = viewport.1 / pipeline.reflect_data.workgroup_size.1 + 1;
+        let x = math::workgroup_saturate(viewport.0, pipeline.reflect_data.workgroup_size.0);
+        let y = math::workgroup_saturate(viewport.1, pipeline.reflect_data.workgroup_size.1);
 
         command_buffer.dispatch(x, y, 1);
 
@@ -98,4 +96,10 @@ impl AccumulatePass {
 
         Ok(())
     }
+}
+
+pub struct AccumulateInputs<'a> {
+    pub input: &'a RenderTarget,
+    pub frame_index: u32,
+    pub clear: bool,
 }

@@ -1,12 +1,12 @@
 use crate::err::AppError;
 use crate::math;
-use crate::renderer::VulkanRenderer;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::push_const::PushConstBuilder;
+use crate::renderer::render_target::RenderTarget;
 use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::Ref;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(crate) struct DepthDebugPass {
@@ -18,9 +18,9 @@ impl DepthDebugPass {
     pub fn create(
         device: Rc<Device>,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
-        let pipeline = pipeline_builder.build_compute("depth_convert", "depth_convert|main", descriptors)?;
+        let pipeline = pipeline_builder.build_compute("depth_convert", "depth_convert|main", descriptor_layouts)?;
 
         Ok(Self {
             device,
@@ -31,7 +31,9 @@ impl DepthDebugPass {
     pub fn record(
         &self,
         command_buffer: &CommandBuffer,
-        renderer: &VulkanRenderer,
+        descriptors: &RendererDescriptors,
+        render_target: Rc<RefCell<RenderTarget>>,
+        depth_render_target: Rc<RefCell<RenderTarget>>,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.device.begin_label("Depth Convert", command_buffer);
@@ -40,23 +42,15 @@ impl DepthDebugPass {
 
         command_buffer.bind_compute_pipeline(pipeline);
 
-        unsafe {
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                0,
-                &[
-                    renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                    renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-                ],
-                &[],
-            );
-        }
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
+        );
 
         let pc = PushConstBuilder::new()
-            .add_u32(*renderer.descriptors.borrow().storages.get("tonemap").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
+            .add_u32(render_target.borrow().storage_index.unwrap())
+            .add_u32(depth_render_target.borrow().sampler_index.unwrap())
             .build();
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
@@ -79,7 +73,7 @@ impl DepthDebugPass {
                     dst_access_mask: vk::AccessFlags::SHADER_READ,
                     old_layout: vk::ImageLayout::GENERAL,
                     new_layout: vk::ImageLayout::GENERAL,
-                    image: renderer.passes.shading.render_target.borrow().image.inner,
+                    image: render_target.borrow().image.inner,
                     subresource_range: vk::ImageSubresourceRange {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                         base_mip_level: 0,

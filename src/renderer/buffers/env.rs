@@ -11,6 +11,7 @@ pub struct GPUEnv {
     sky_color: [f32; 3],
     sky_intensity: f32,
     exposure: f32,
+    do_distortion: i32,
 }
 
 impl Environment {
@@ -24,10 +25,14 @@ impl Environment {
             sky_color: match self.sky.variant {
                 SkyVariant::Shader => Vec3::from_element(1.0).into(),
                 SkyVariant::SingleColor(a) => a.into(),
-                SkyVariant::Textured => Vec3::from_element(1.0).into(),
+                SkyVariant::Textured(_) => Vec3::from_element(1.0).into(),
             },
             sky_intensity: self.sky.intensity,
             exposure: self.exposure,
+            do_distortion: match self.sky.variant {
+                SkyVariant::Shader => 1,
+                _ => 0,
+            },
         };
 
         unsafe { core::slice::from_raw_parts(&gpu as *const GPUEnv as *const u8, size).to_owned() }

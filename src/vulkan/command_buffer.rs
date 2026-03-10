@@ -1,5 +1,6 @@
 use crate::vulkan::{
-    Compute, DebugMarker, Device, Graphics, IntoVulkanError, Pipeline, Rt, VertexIndexBuffer, VulkanError,
+    Buffer, Compute, DebugMarker, Device, Graphics, Image, IntoVulkanError, Pipeline, Rt, VertexIndexBuffer,
+    VulkanError,
 };
 use ash::vk;
 use ash::vk::{CommandBuffer as RawCommandBuffer, Handle, Rect2D, Viewport};
@@ -130,6 +131,20 @@ impl CommandBuffer {
     pub fn push_constants(&self, stages: vk::ShaderStageFlags, layout: vk::PipelineLayout, pc: &[u8]) {
         unsafe {
             self.device.inner.cmd_push_constants(self.inner, layout, stages, 0, pc);
+        }
+    }
+
+    pub fn copy_buffer_to_image(
+        &self,
+        src: &Buffer,
+        dst: &Image,
+        dst_layout: vk::ImageLayout,
+        region: &vk::BufferImageCopy,
+    ) {
+        unsafe {
+            self.device
+                .inner
+                .cmd_copy_buffer_to_image(self.inner, src.inner, dst.inner, dst_layout, &[*region]);
         }
     }
 }

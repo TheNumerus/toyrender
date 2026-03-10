@@ -1,9 +1,9 @@
 use crate::err::AppError;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::ResourceSubsystem;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::mesh_collector::DrawData;
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
-use crate::renderer::{MeshSubsystem, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Device, Graphics, Pipeline, VulkanError};
 use ash::vk;
 use std::cell::{Ref, RefCell};
@@ -32,13 +32,13 @@ impl GBufferPass {
         device: Rc<Device>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
         let pipeline_handle = pipeline_builder.build_graphics(
             "deferred",
             "deferred|vertMain",
             "deferred|fragMain",
-            descriptors,
+            descriptor_layouts,
             &Self::PIPELINE_TARGET_FORMATS,
             true,
         )?;
@@ -82,8 +82,8 @@ impl GBufferPass {
     pub fn record(
         &self,
         command_buffer: &CommandBuffer,
-        renderer: &VulkanRenderer,
-        mesh_subsystem: &MeshSubsystem,
+        descriptors: Ref<RendererDescriptors>,
+        resource_subsystem: &ResourceSubsystem,
         draw_data: &Vec<DrawData>,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
@@ -240,19 +240,16 @@ impl GBufferPass {
                 ],
                 &[rect],
             );
-
-            self.device.inner.cmd_bind_descriptor_sets(
-                command_buffer.inner,
-                vk::PipelineBindPoint::GRAPHICS,
-                pipeline.layout,
-                0,
-                &[renderer.descriptors.borrow().global_sets[renderer.current_frame].inner],
-                &[],
-            );
         }
 
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline.layout,
+            [descriptors.global_set.inner],
+        );
+
         for draw in draw_data {
-            let mesh_data = &mesh_subsystem.meshes[&draw.mesh_id];
+            let mesh_data = &resource_subsystem.meshes[&draw.mesh_id];
 
             command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
 

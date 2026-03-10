@@ -1,16 +1,16 @@
 use crate::err::AppError;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
-use crate::renderer::{FrameContext, PushConstBuilder, VulkanContext, VulkanMcPathTracer};
-use crate::vulkan::{CommandBuffer, Pipeline, Rt, VulkanError};
+use crate::renderer::{FrameContext, PushConstBuilder, VulkanContext};
+use crate::vulkan::{CommandBuffer, Pipeline, Rt, ShaderBindingTable, VulkanError};
 use ash::vk;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub struct ReferencePathtracePass {
     context: Rc<VulkanContext>,
-    render_target: Rc<RefCell<RenderTarget>>,
+    pub render_target: Rc<RefCell<RenderTarget>>,
     pub pipeline_handle: Rc<Pipeline<Rt>>,
 }
 
@@ -21,7 +21,7 @@ impl ReferencePathtracePass {
         context: Rc<VulkanContext>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
         let render_target = render_targets.add(Self::render_target_def())?;
 
@@ -30,7 +30,7 @@ impl ReferencePathtracePass {
             "pt_reference|raygen",
             "pt_reference|miss",
             "pt_reference|chit",
-            descriptors,
+            descriptor_layouts,
         )?;
 
         Ok(Self {
@@ -50,10 +50,10 @@ impl ReferencePathtracePass {
     pub fn record_pt(
         &self,
         command_buffer: &CommandBuffer,
-        renderer: &VulkanMcPathTracer,
+        descriptors: &RendererDescriptors,
+        inputs: ReferencePathTraceInputs,
         context: &FrameContext,
         viewport: (u32, u32),
-        fov: f32,
     ) -> Result<(), VulkanError> {
         self.context.device.begin_label("Path Tracing", command_buffer);
 
@@ -62,47 +62,20 @@ impl ReferencePathtracePass {
         command_buffer.bind_rt_pipeline(pipeline);
 
         unsafe {
-            let barriers = [renderer.render_targets.get("sky").unwrap().borrow().image.inner].map(|image| {
-                vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }
-            });
-
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-
             command_buffer.bind_descriptor_sets(
                 vk::PipelineBindPoint::RAY_TRACING_KHR,
                 pipeline.layout,
-                [
-                    renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                    renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-                ],
+                [descriptors.global_set.inner, descriptors.compute_set.inner],
             );
 
             let pc = PushConstBuilder::with_capacity(7 * size_of::<u32>())
                 .add_u32(context.frame_index)
-                .add_u32(renderer.quality.pt_bounces as u32)
-                .add_u32(*renderer.descriptors.borrow().storages.get("rt_out").unwrap() as u32)
-                .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
-                .add_f32(renderer.quality.rt_direct_trace_distance)
-                .add_f32(renderer.quality.rt_indirect_trace_distance)
-                .add_f32(fov)
+                .add_u32(inputs.bounces)
+                .add_u32(self.render_target.borrow().storage_index.unwrap())
+                .add_u32(inputs.sky_sampler)
+                .add_f32(inputs.direct_trace_distance)
+                .add_f32(inputs.indirect_trace_distance)
+                .add_f32(inputs.fov)
                 .build();
 
             command_buffer.push_constants(
@@ -115,27 +88,25 @@ impl ReferencePathtracePass {
 
             self.context.rt_pipeline_ext.loader.cmd_trace_rays(
                 command_buffer.inner,
-                &renderer.shader_binding_table.raygen_region,
-                &renderer.shader_binding_table.miss_region,
-                &renderer.shader_binding_table.hit_region,
-                &renderer.shader_binding_table.call_region,
+                &inputs.sbt.raygen_region,
+                &inputs.sbt.miss_region,
+                &inputs.sbt.hit_region,
+                &inputs.sbt.call_region,
                 viewport.0,
                 viewport.1,
                 1,
             );
 
-            let barriers = [renderer.render_targets.get("rt_out").unwrap().borrow().image.inner].map(|image| {
-                vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }
+            let barriers = [self.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image,
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
             });
 
             self.context.device.inner.cmd_pipeline_barrier(
@@ -155,4 +126,11 @@ impl ReferencePathtracePass {
     }
 }
 
-struct PtPassInput {}
+pub struct ReferencePathTraceInputs<'a> {
+    pub sky_sampler: u32,
+    pub sbt: &'a ShaderBindingTable,
+    pub bounces: u32,
+    pub direct_trace_distance: f32,
+    pub indirect_trace_distance: f32,
+    pub fov: f32,
+}

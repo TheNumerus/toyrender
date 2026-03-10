@@ -1,21 +1,21 @@
 mod acc;
-use acc::AccumulatePass;
+use acc::{AccumulateInputs, AccumulatePass};
 
 mod pt;
-use pt::ReferencePathtracePass;
+use pt::{ReferencePathTraceInputs, ReferencePathtracePass};
 
 use crate::err::AppError;
 use crate::math;
 use crate::renderer::buffers::{Globals, ViewProj};
 use crate::renderer::debug::DebugMode;
-use crate::renderer::descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
+use crate::renderer::descriptors::{DescriptorLayouts, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 use crate::renderer::passes::{SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
 use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{
-    FrameContext, FrameStats, GPUEnv, MeshSubsystem, TlasIndex, VulkanContext, create_buffer_update,
+    FrameContext, FrameStats, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update,
 };
-use crate::scene::Scene;
+use crate::scene::{Scene, SkyVariant};
 use crate::vulkan::{
     Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore, ShaderBindingTable,
     SubmitInfo, TopLevelAs, VulkanError,
@@ -44,7 +44,8 @@ pub struct VulkanMcPathTracer {
     pub tlases: Vec<TopLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
-    pub descriptors: Rc<RefCell<RendererDescriptors>>,
+    pub descriptor_layouts: DescriptorLayouts,
+    pub descriptors: Vec<Rc<RefCell<RendererDescriptors>>>,
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
@@ -95,11 +96,7 @@ impl VulkanMcPathTracer {
             200 * MAX_FRAMES_IN_FLIGHT as u32,
         )?;
 
-        let descriptors = Rc::new(RefCell::new(RendererDescriptors::build(
-            device.clone(),
-            &descriptor_pool,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )?));
+        let descriptor_layouts = DescriptorLayouts::create(device.clone())?;
 
         let extent_3d = vk::Extent3D {
             width: context.swap_chain.borrow().extent.width,
@@ -109,6 +106,7 @@ impl VulkanMcPathTracer {
 
         let mut render_targets = RenderTargets::new(
             device.clone(),
+            context.allocator.clone(),
             extent_3d,
             default_sampler,
             repeat_sampler,
@@ -119,28 +117,28 @@ impl VulkanMcPathTracer {
             device.clone(),
             &mut render_targets,
             &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
+            &descriptor_layouts,
         )?;
 
         let tonemap_pass = TonemapPass::create(
             device.clone(),
             &mut render_targets,
             &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
+            &descriptor_layouts,
         )?;
 
         let accumulate_pass = AccumulatePass::create(
             device.clone(),
             &mut render_targets,
             &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
+            &descriptor_layouts,
         )?;
 
         let pt_pass = ReferencePathtracePass::create(
             context.clone(),
             &mut render_targets,
             &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
+            &descriptor_layouts,
         )?;
 
         let passes = VulkanMcPathTracerPasses {
@@ -170,6 +168,7 @@ impl VulkanMcPathTracer {
         let mut uniform_buffers = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut descriptors = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let mut writes = Vec::new();
         let mut tlases = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -181,6 +180,13 @@ impl VulkanMcPathTracer {
             img_available[i].name(format!("img_available[{}]", i))?;
             in_flight[i].name(format!("in_flight[{}]", i))?;
             command_buffers[i].name(format!("cmd_buffers[{}]", i))?;
+
+            {
+                descriptors.push(Rc::new(RefCell::new(RendererDescriptors::build(
+                    &descriptor_pool,
+                    &descriptor_layouts,
+                )?)));
+            }
 
             let tlas = TopLevelAs::prepare(
                 device.clone(),
@@ -223,7 +229,7 @@ impl VulkanMcPathTracer {
             env_uniforms.push(env_buf);
 
             writes.extend(Self::init_global_descriptor_set(
-                &descriptors.borrow().global_sets[i].inner,
+                &descriptors[i].borrow().global_set.inner,
                 &uniform_buffers_globals[i].inner,
                 &tlases[i],
                 &uniform_buffers[i].inner,
@@ -236,16 +242,7 @@ impl VulkanMcPathTracer {
             render_finished[i].name(format!("render_finished[{}]", i))?;
         }
 
-        let mut desc_borrow = descriptors.borrow_mut();
-
-        writes.extend(desc_borrow.update_resources(&render_targets)?);
-
         DescriptorWriter::batch_write(&device, writes);
-
-        drop(desc_borrow);
-
-        info!("Storage images: {:?}", descriptors.borrow().storages.len());
-        info!("Sampled images: {:?}", descriptors.borrow().samplers.len());
 
         Ok(Self {
             context: context.clone(),
@@ -257,6 +254,7 @@ impl VulkanMcPathTracer {
             img_available,
             render_finished,
             descriptors,
+            descriptor_layouts,
             uniform_buffers,
             uniform_buffers_globals,
             env_uniforms,
@@ -325,7 +323,7 @@ impl VulkanMcPathTracer {
     pub fn render_frame(
         &mut self,
         scene: &Scene,
-        mesh_subsystem: &mut MeshSubsystem,
+        resource_subsystem: &mut ResourceSubsystem,
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
@@ -343,15 +341,15 @@ impl VulkanMcPathTracer {
 
         let start = Instant::now();
 
-        if mesh_subsystem.prepare_meshes(scene, &self.tlas_prepare_cmd_buf)? {
-            info!("Mesh first prepare time: {:.3}s", start.elapsed().as_secs_f32());
+        if resource_subsystem.prepare_resources(scene, &self.tlas_prepare_cmd_buf)? {
+            info!("Resource prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
         let mesh_time = start.elapsed().as_secs_f32();
 
         let tlas_start = Instant::now();
 
-        let tlas_index = mesh_subsystem.build_tlas_index(scene);
+        let tlas_index = resource_subsystem.build_tlas_index(scene);
 
         self.tlas_prepare_cmd_buf.reset()?;
 
@@ -360,7 +358,7 @@ impl VulkanMcPathTracer {
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
             &self.tlas_prepare_cmd_buf,
-            &mesh_subsystem.blases,
+            &resource_subsystem.blases,
             tlas_index,
         )?;
 
@@ -421,9 +419,19 @@ impl VulkanMcPathTracer {
 
         let mut writes = Vec::new();
 
-        for i in 0..MAX_FRAMES_IN_FLIGHT {
+        let mut borrow = self.descriptors[self.current_frame].borrow_mut();
+
+        writes.extend(borrow.update_resources(&self.render_targets, Some(resource_subsystem))?);
+
+        DescriptorWriter::batch_write(&self.context.device, writes);
+
+        drop(borrow);
+
+        let mut writes = Vec::new();
+
+        for i in 0..crate::renderer::MAX_FRAMES_IN_FLIGHT {
             writes.push(Self::create_tlas_update_descriptor_set(
-                &self.descriptors.borrow().global_sets[i].inner,
+                &self.descriptors[i].borrow().global_set.inner,
                 &self.tlases[i],
             ));
         }
@@ -435,6 +443,7 @@ impl VulkanMcPathTracer {
         let record_start = Instant::now();
 
         self.record_command_buffer(
+            scene,
             command_buffer,
             &self.context.swap_chain.borrow().images[image_index as usize],
             context,
@@ -547,34 +556,50 @@ impl VulkanMcPathTracer {
         self.render_targets.set_extent(extent_3d);
         self.render_targets.resize()?;
 
-        let mut desc_borrow = self.descriptors.borrow_mut();
-        let writes = desc_borrow.update_resources(&self.render_targets)?;
-
-        DescriptorWriter::batch_write(&self.context.device, writes);
-
-        drop(desc_borrow);
-
         Ok(())
     }
 
     fn record_command_buffer(
         &self,
+        scene: &Scene,
         command_buffer: &CommandBuffer,
         target: &vk::Image,
         context: &FrameContext,
         viewport_size: (u32, u32),
         fov: f32,
     ) -> Result<(), AppError> {
+        let descriptors = self.descriptors[self.current_frame].borrow();
+
         self.tlases[self.current_frame].build(command_buffer)?;
 
         self.init_frame_images(command_buffer);
 
-        self.passes.sky.record_reference(command_buffer, self)?;
+        let sky_sampler = match &scene.env.sky.variant {
+            SkyVariant::Shader => {
+                self.passes.sky.record(command_buffer, &descriptors)?;
+
+                self.passes.sky.render_target.borrow().sampler_index.unwrap()
+            }
+            SkyVariant::SingleColor(_) => 0,
+            SkyVariant::Textured(ir) => descriptors.samplers[&ir.id],
+        };
 
         unsafe {
+            let barriers = [self.passes.sky.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image,
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
+            });
+
             self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                 vk::DependencyFlags::empty(),
                 &[vk::MemoryBarrier {
@@ -583,19 +608,41 @@ impl VulkanMcPathTracer {
                     ..Default::default()
                 }],
                 &[],
-                &[],
+                &barriers,
             );
         }
 
-        self.passes
-            .pt
-            .record_pt(command_buffer, self, context, viewport_size, fov)?;
-        self.passes
-            .accumulate
-            .record(command_buffer, self, context, viewport_size)?;
-        self.passes
-            .tonemap
-            .record_reference(command_buffer, self, viewport_size)?;
+        self.passes.pt.record_pt(
+            command_buffer,
+            &descriptors,
+            ReferencePathTraceInputs {
+                sky_sampler,
+                sbt: &self.shader_binding_table,
+                bounces: self.quality.pt_bounces,
+                direct_trace_distance: self.quality.rt_direct_trace_distance,
+                indirect_trace_distance: self.quality.rt_indirect_trace_distance,
+                fov,
+            },
+            context,
+            viewport_size,
+        )?;
+        self.passes.accumulate.record(
+            command_buffer,
+            &descriptors,
+            AccumulateInputs {
+                input: &self.passes.pt.render_target.borrow(),
+                frame_index: context.frame_index,
+                clear: context.clear_taa,
+            },
+            viewport_size,
+        )?;
+        self.passes.tonemap.record(
+            command_buffer,
+            &descriptors,
+            self.passes.accumulate.render_target.clone(),
+            viewport_size,
+            true,
+        )?;
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
         Ok(())

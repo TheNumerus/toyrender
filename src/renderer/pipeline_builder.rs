@@ -1,12 +1,11 @@
 use crate::app::shader_loader::ShaderLoader;
 use crate::err::AppError;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::descriptors::DescriptorLayouts;
 use crate::vulkan::{
     Compute, DebugMarker, Device, Graphics, Pipeline, RayTracingPipeline, Rt, ShaderModule, ShaderStage,
 };
 use ash::vk;
 use rspirv_reflect::{DescriptorInfo, Reflection};
-use std::cell::Ref;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,7 +41,7 @@ impl PipelineBuilder {
         name: impl AsRef<str>,
         vert_name: impl AsRef<str>,
         frag_name: impl AsRef<str>,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
         attachment_formats: &[vk::Format],
         use_depth: bool,
     ) -> Result<Rc<Pipeline<Graphics>>, AppError> {
@@ -77,7 +76,7 @@ impl PipelineBuilder {
             )));
         }
 
-        let desc_layouts = Self::get_desc_layouts(descriptors, desc_sets_info)
+        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
         let pipeline = Pipeline::new_graphics(
@@ -101,7 +100,7 @@ impl PipelineBuilder {
         &mut self,
         name: impl AsRef<str>,
         compute_name: impl AsRef<str>,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Rc<Pipeline<Compute>>, AppError> {
         let compute_name = compute_name.as_ref();
         let (module, refl) = self.get_shader(compute_name, ShaderStage::Compute)?;
@@ -124,7 +123,7 @@ impl PipelineBuilder {
             )));
         }
 
-        let desc_layouts = Self::get_desc_layouts(descriptors, desc_sets_info)
+        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
         let workgroup_size = refl
@@ -153,7 +152,7 @@ impl PipelineBuilder {
         name_raygen: impl AsRef<str>,
         name_miss: impl AsRef<str>,
         name_hit: impl AsRef<str>,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Rc<Pipeline<Rt>>, AppError> {
         let raygen_name = name_raygen.as_ref();
         let (raygen_module, refl) = self.get_shader(raygen_name, ShaderStage::RayGen)?;
@@ -190,7 +189,7 @@ impl PipelineBuilder {
             )));
         }
 
-        let desc_layouts = Self::get_desc_layouts(descriptors, desc_sets_info)
+        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
         let pipeline = Pipeline::new_rt(
@@ -230,14 +229,14 @@ impl PipelineBuilder {
     }
 
     fn get_desc_layouts(
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
         desc_info: BTreeMap<u32, BTreeMap<u32, DescriptorInfo>>,
     ) -> Result<Vec<vk::DescriptorSetLayout>, AppError> {
         let mut sets = Vec::with_capacity(desc_info.len());
 
         // hope that no index is skipped in shader definition
         for set in desc_info.values() {
-            sets.push(descriptors.guess_layout_from_reflection(set)?);
+            sets.push(descriptor_layouts.guess_layout_from_reflection(set)?);
         }
 
         Ok(sets)

@@ -24,6 +24,7 @@ public struct Environment {
     public float4 sun_color_intensity;
     public float4 sky_color_intensity;
     public float exposure;
+    public int do_distort;
 };
 
 public struct MeshTransform {

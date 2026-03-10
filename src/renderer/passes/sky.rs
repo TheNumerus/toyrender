@@ -1,19 +1,19 @@
 use crate::err::AppError;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::math;
+use crate::renderer::PushConstBuilder;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{
     RenderTarget, RenderTargetBuilder, RenderTargetSampler, RenderTargetSize, RenderTargets,
 };
-use crate::renderer::{PushConstBuilder, VulkanMcPathTracer, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(crate) struct SkyPass {
     device: Rc<Device>,
-    render_target: Rc<RefCell<RenderTarget>>,
-    is_init: RefCell<bool>,
+    pub render_target: Rc<RefCell<RenderTarget>>,
     pipeline_handle: Rc<Pipeline<Compute>>,
 }
 
@@ -24,14 +24,13 @@ impl SkyPass {
         device: Rc<Device>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
-        let pipeline = pipeline_builder.build_compute("sky", "sky|main", descriptors)?;
+        let pipeline = pipeline_builder.build_compute("sky", "sky|main", descriptor_layouts)?;
 
         Ok(Self {
             device,
             render_target: render_targets.add(Self::render_target_def())?,
-            is_init: RefCell::new(false),
             pipeline_handle: pipeline,
         })
     }
@@ -45,113 +44,7 @@ impl SkyPass {
             .with_size(RenderTargetSize::Custom(Self::SKY_SIZE[0], Self::SKY_SIZE[1]))
     }
 
-    pub fn record(&self, command_buffer: &CommandBuffer, renderer: &VulkanRenderer) -> Result<(), VulkanError> {
-        self.device.begin_label("Sky", command_buffer);
-
-        let pipeline = &self.pipeline_handle;
-
-        if !*self.is_init.borrow() {
-            let barrier = vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_READ,
-                dst_access_mask: vk::AccessFlags::SHADER_WRITE,
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.render_target.borrow().image.inner,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-
-            unsafe {
-                self.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[barrier],
-                );
-            }
-
-            *self.is_init.borrow_mut() = true;
-        }
-
-        command_buffer.bind_compute_pipeline(pipeline);
-
-        unsafe {
-            command_buffer.bind_descriptor_sets(
-                vk::PipelineBindPoint::COMPUTE,
-                pipeline.layout,
-                [
-                    renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                    renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-                ],
-            );
-
-            let pc = PushConstBuilder::new()
-                .add_u32(*renderer.descriptors.borrow().storages.get("sky").unwrap() as u32)
-                .build();
-
-            self.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::COMPUTE,
-                0,
-                &pc,
-            );
-
-            let x = Self::SKY_SIZE[0] / 16;
-            let y = Self::SKY_SIZE[1] / 16;
-
-            self.device.inner.cmd_dispatch(command_buffer.inner, x, y, 1);
-
-            let barrier = vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image: self.render_target.borrow().image.inner,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            };
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[barrier],
-            );
-        }
-
-        self.device.end_label(command_buffer);
-
-        Ok(())
-    }
-
-    pub fn record_reference(
-        &self,
-        command_buffer: &CommandBuffer,
-        renderer: &VulkanMcPathTracer,
-    ) -> Result<(), VulkanError> {
+    pub fn record(&self, command_buffer: &CommandBuffer, descriptors: &RendererDescriptors) -> Result<(), VulkanError> {
         self.device.begin_label("Sky", command_buffer);
 
         let pipeline = &self.pipeline_handle;
@@ -160,20 +53,17 @@ impl SkyPass {
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            [
-                renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-            ],
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
         let pc = PushConstBuilder::with_capacity(size_of::<u32>())
-            .add_u32(*renderer.descriptors.borrow().storages.get("sky").unwrap() as u32)
+            .add_u32(self.render_target.borrow().storage_index.unwrap())
             .build();
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc);
 
-        let x = Self::SKY_SIZE[0] / pipeline.reflect_data.workgroup_size.0;
-        let y = Self::SKY_SIZE[1] / pipeline.reflect_data.workgroup_size.1;
+        let x = math::workgroup_saturate(Self::SKY_SIZE[0], pipeline.reflect_data.workgroup_size.0);
+        let y = math::workgroup_saturate(Self::SKY_SIZE[1], pipeline.reflect_data.workgroup_size.1);
 
         command_buffer.dispatch(x, y, 1);
 

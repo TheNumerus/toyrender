@@ -1,21 +1,28 @@
-use crate::vulkan::{DebugMarker, Device, IntoVulkanError, VulkanError};
+use crate::err::AppError;
+use crate::err::AppError::VulkanAllocatorError;
+use crate::vulkan::{DebugMarker, Device, IntoVulkanError};
 use ash::vk;
 use ash::vk::{Handle, Image as RawImage};
+use gpu_allocator::MemoryLocation;
+use gpu_allocator::vulkan::{Allocation, AllocationCreateDesc, AllocationScheme, Allocator};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub struct Image {
     pub inner: RawImage,
-    pub memory: vk::DeviceMemory,
+    allocation: Option<Allocation>,
     device: Rc<Device>,
+    pub allocator: Arc<Mutex<Allocator>>,
 }
 
 impl Image {
     pub fn new(
         device: Rc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
         format: vk::Format,
         extent: vk::Extent3D,
         usage: vk::ImageUsageFlags,
-    ) -> Result<Self, VulkanError> {
+    ) -> Result<Self, AppError> {
         let create_info = vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,
             format,
@@ -36,34 +43,33 @@ impl Image {
                 .map_to_err("Cannot create vertex buffer")?
         };
 
-        let mem_req = unsafe { device.inner.get_image_memory_requirements(inner) };
+        let requirements = unsafe { device.inner.get_image_memory_requirements(inner) };
 
-        let alloc_info = vk::MemoryAllocateInfo {
-            allocation_size: mem_req.size,
-            memory_type_index: device
-                .find_memory_type_index(mem_req.memory_type_bits, vk::MemoryPropertyFlags::DEVICE_LOCAL)
-                .ok_or(VulkanError {
-                    msg: "Cannot find memory type".into(),
-                    code: vk::Result::ERROR_UNKNOWN,
-                })?,
-            ..Default::default()
-        };
-
-        let memory = unsafe {
-            device
-                .inner
-                .allocate_memory(&alloc_info, None)
-                .map_to_err("Cannot allocate memory")?
-        };
+        let allocation = allocator
+            .lock()
+            .unwrap()
+            .allocate(&AllocationCreateDesc {
+                name: "Image",
+                requirements,
+                location: MemoryLocation::GpuOnly,
+                linear: true,
+                allocation_scheme: AllocationScheme::GpuAllocatorManaged,
+            })
+            .map_err(VulkanAllocatorError)?;
 
         unsafe {
             device
                 .inner
-                .bind_image_memory(inner, memory, 0)
+                .bind_image_memory(inner, allocation.memory(), allocation.offset())
                 .map_to_err("Cannot bind memory to buffer")
         }?;
 
-        Ok(Self { inner, memory, device })
+        Ok(Self {
+            inner,
+            allocation: Some(allocation),
+            device,
+            allocator,
+        })
     }
 
     pub fn single_color_layer_range() -> vk::ImageSubresourceRange {
@@ -81,7 +87,11 @@ impl Drop for Image {
     fn drop(&mut self) {
         unsafe {
             self.device.inner.destroy_image(self.inner, None);
-            self.device.inner.free_memory(self.memory, None);
+            self.allocator
+                .lock()
+                .unwrap()
+                .free(self.allocation.take().unwrap())
+                .unwrap();
         }
     }
 }

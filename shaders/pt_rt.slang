@@ -236,7 +236,7 @@ void raygen() {
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * payload.color * env.sun_color_intensity.w * current_color;
+            indirect += intensity_indirect * bounce_energy * payload.color * env.sky_color_intensity.w * current_color;
             intensity_indirect *= bounce_energy * current_color;
             break;
         } else {
@@ -313,7 +313,12 @@ void raygen() {
 [shader("miss")]
 void miss(inout Payload payload) {
     payload.isMiss = true;
-    payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
+
+    if (env.do_distort == 1) {
+        payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
+    } else {
+        payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx]);
+    }
 }
 
 

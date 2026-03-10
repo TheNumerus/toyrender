@@ -1,6 +1,7 @@
 use crate::app::shader_loader::ShaderLoaderError;
 use crate::vulkan::VulkanError;
 use gpu_allocator::AllocationError;
+use image::ImageError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -11,6 +12,8 @@ pub enum AppError {
     VulkanAllocatorError(#[from] AllocationError),
     #[error(transparent)]
     ShaderLoader(#[from] ShaderLoaderError),
+    #[error(transparent)]
+    Image(#[from] ImageError),
     #[error("{0}")]
     Import(String),
     #[error("{0}")]

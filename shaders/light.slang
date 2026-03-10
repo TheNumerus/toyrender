@@ -71,7 +71,12 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 loc = transpose(vp.view_inverse)[3].xyz;
     float3 view_dir = normalize(vertPos - loc);
 
-    float3 sky_col = Toyrender::Sky::sample_distorted(view_dir, images[pc.sky_idx]) * pow(2.0, env.exposure) * env.sky_color_intensity.w;
+    float3 sky_col;
+    if (env.do_distort == 1) {
+        sky_col = Toyrender::Sky::sample_distorted(view_dir, images[pc.sky_idx]) * pow(2.0, env.exposure) * env.sky_color_intensity.w;
+    } else {
+        sky_col = Toyrender::Sky::sample(view_dir, images[pc.sky_idx]) * pow(2.0, env.exposure) * env.sky_color_intensity.w;
+    }
 
     if (color.a == 0.0) {
         storages[pc.out_idx].Store(int2(x, y), float4(sky_col, 1.0));

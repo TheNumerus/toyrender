@@ -1,12 +1,12 @@
 use crate::err::AppError;
 use crate::math;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::PushConstBuilder;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
-use crate::renderer::{PushConstBuilder, VulkanRenderer};
 use crate::vulkan::{CommandBuffer, Compute, Device, Pipeline, VulkanError};
 use ash::vk;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(crate) struct DenoisePass {
@@ -29,15 +29,16 @@ impl DenoisePass {
         device: Rc<Device>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
         let denoise_pass_target = Self::render_target_def();
 
-        let spatial_pipeline = pipeline_builder.build_compute("atrous", "atrous|main", Ref::clone(&descriptors))?;
+        let spatial_pipeline = pipeline_builder.build_compute("atrous", "atrous|main", descriptor_layouts)?;
         let temporal_pipeline =
-            pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", Ref::clone(&descriptors))?;
+            pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptor_layouts)?;
 
-        let variance_estimate_pipeline = pipeline_builder.build_compute("variance", "variance|main", descriptors)?;
+        let variance_estimate_pipeline =
+            pipeline_builder.build_compute("variance", "variance|main", descriptor_layouts)?;
 
         Ok(Self {
             device,
@@ -76,37 +77,32 @@ impl DenoisePass {
     pub fn record(
         &self,
         command_buffer: &CommandBuffer,
-        renderer: &VulkanRenderer,
-        clear: bool,
+        descriptors: &RendererDescriptors,
+        inputs: DenoiseInputs,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.device.begin_label("RT Denoise Temporal", command_buffer);
 
         let pipeline = &self.temporal_pipeline;
 
-        let desc_ref = renderer.descriptors.borrow();
-
         command_buffer.bind_compute_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            [
-                desc_ref.global_sets[renderer.current_frame].inner,
-                desc_ref.compute_sets[renderer.current_frame].inner,
-            ],
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
-        let clear = if clear { 1 } else { 0 };
+        let clear = if inputs.clear { 1 } else { 0 };
 
         let pc = PushConstBuilder::with_capacity(7 * size_of::<u32>())
             .add_u32(clear as u32)
-            .add_u32(*desc_ref.storages.get("denoise_direct_out").unwrap() as u32)
-            .add_u32(*desc_ref.samplers.get("gbuffer_depth").unwrap() as u32)
-            .add_u32(*desc_ref.samplers.get("last_depth").unwrap() as u32)
-            .add_u32(*desc_ref.storages.get("rt_direct").unwrap() as u32)
-            .add_u32(*desc_ref.samplers.get("denoise_direct_history").unwrap() as u32)
-            .add_u32(*desc_ref.samplers.get("gbuffer_normal").unwrap() as u32)
-            .add_u32(*desc_ref.storages.get("denoise_direct_moments").unwrap() as u32);
+            .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
+            .add_u32(inputs.depth.sampler_index.unwrap())
+            .add_u32(inputs.last_depth.sampler_index.unwrap())
+            .add_u32(inputs.rt_direct.storage_index.unwrap())
+            .add_u32(self.direct_render_target_history.borrow().sampler_index.unwrap())
+            .add_u32(inputs.normal.sampler_index.unwrap())
+            .add_u32(self.moments_direct_render_target.borrow().storage_index.unwrap());
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -116,10 +112,10 @@ impl DenoisePass {
         command_buffer.dispatch(x, y, 1);
 
         let pc = pc
-            .update_u32(*desc_ref.storages.get("denoise_indirect_out").unwrap() as u32, 4)
-            .update_u32(*desc_ref.storages.get("rt_indirect").unwrap() as u32, 16)
-            .update_u32(*desc_ref.samplers.get("denoise_indirect_history").unwrap() as u32, 20)
-            .update_u32(*desc_ref.storages.get("denoise_indirect_moments").unwrap() as u32, 28);
+            .update_u32(self.indirect_render_target.borrow().storage_index.unwrap(), 4)
+            .update_u32(inputs.rt_indirect.storage_index.unwrap(), 16)
+            .update_u32(self.indirect_render_target_history.borrow().sampler_index.unwrap(), 20)
+            .update_u32(self.moments_indirect_render_target.borrow().storage_index.unwrap(), 28);
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -161,18 +157,15 @@ impl DenoisePass {
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
             pipeline.layout,
-            [
-                desc_ref.global_sets[renderer.current_frame].inner,
-                desc_ref.compute_sets[renderer.current_frame].inner,
-            ],
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
-        let pc = PushConstBuilder::with_capacity(4 * size_of::<u32>())
-            .add_u32(*desc_ref.storages.get("denoise_direct_out").unwrap() as u32)
-            .add_u32(*desc_ref.storages.get("denoise_direct_acc").unwrap() as u32)
-            .add_u32(*desc_ref.samplers.get("gbuffer_depth").unwrap() as u32)
-            .add_u32(*desc_ref.samplers.get("gbuffer_normal").unwrap() as u32)
-            .add_u32(*desc_ref.storages.get("denoise_direct_moments").unwrap() as u32);
+        let pc = PushConstBuilder::with_capacity(5 * size_of::<u32>())
+            .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
+            .add_u32(self.direct_render_target_acc.borrow().storage_index.unwrap())
+            .add_u32(inputs.depth.sampler_index.unwrap())
+            .add_u32(inputs.normal.sampler_index.unwrap())
+            .add_u32(self.moments_direct_render_target.borrow().storage_index.unwrap());
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc.clone().build());
 
@@ -182,9 +175,9 @@ impl DenoisePass {
         command_buffer.dispatch(x, y, 1);
 
         let pc = pc
-            .update_u32(*desc_ref.storages.get("denoise_indirect_out").unwrap() as u32, 0)
-            .update_u32(*desc_ref.storages.get("denoise_indirect_acc").unwrap() as u32, 4)
-            .update_u32(*desc_ref.storages.get("denoise_indirect_moments").unwrap() as u32, 16);
+            .update_u32(self.indirect_render_target.borrow().storage_index.unwrap(), 0)
+            .update_u32(self.indirect_render_target_acc.borrow().storage_index.unwrap(), 4)
+            .update_u32(self.moments_indirect_render_target.borrow().storage_index.unwrap(), 16);
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -220,7 +213,7 @@ impl DenoisePass {
 
         self.device.end_label(command_buffer);
 
-        if renderer.quality.use_spatial_denoise {
+        if inputs.use_spatial_denoise {
             self.device.begin_label("RT Denoise", command_buffer);
 
             let pipeline = &self.spatial_pipeline;
@@ -233,15 +226,12 @@ impl DenoisePass {
             command_buffer.bind_descriptor_sets(
                 vk::PipelineBindPoint::COMPUTE,
                 pipeline.layout,
-                [
-                    desc_ref.global_sets[renderer.current_frame].inner,
-                    desc_ref.compute_sets[renderer.current_frame].inner,
-                ],
+                [descriptors.global_set.inner, descriptors.compute_set.inner],
             );
 
             for level in 0..4_u32 {
-                let mut src_idx = desc_ref.storages.get("denoise_direct_out").unwrap();
-                let mut out_idx = desc_ref.storages.get("denoise_direct_acc").unwrap();
+                let mut src_idx = self.direct_render_target.borrow().storage_index.unwrap();
+                let mut out_idx = self.direct_render_target_acc.borrow().storage_index.unwrap();
 
                 if level % 2 == 0 {
                     (out_idx, src_idx) = (src_idx, out_idx);
@@ -249,23 +239,23 @@ impl DenoisePass {
 
                 let pc = PushConstBuilder::with_capacity(5 * size_of::<u32>())
                     .add_u32(level)
-                    .add_u32(*desc_ref.samplers.get("gbuffer_normal").unwrap() as u32)
-                    .add_u32(*desc_ref.samplers.get("gbuffer_depth").unwrap() as u32)
-                    .add_u32(*src_idx as u32)
-                    .add_u32(*out_idx as u32);
+                    .add_u32(inputs.normal.sampler_index.unwrap())
+                    .add_u32(inputs.depth.sampler_index.unwrap())
+                    .add_u32(src_idx)
+                    .add_u32(out_idx);
 
                 command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
                 command_buffer.dispatch(x, y, 1);
 
-                let mut src_idx = desc_ref.storages.get("denoise_indirect_out").unwrap();
-                let mut out_idx = desc_ref.storages.get("denoise_indirect_acc").unwrap();
+                let mut src_idx = self.indirect_render_target.borrow().storage_index.unwrap();
+                let mut out_idx = self.indirect_render_target_acc.borrow().storage_index.unwrap();
 
                 if level % 2 == 0 {
                     (out_idx, src_idx) = (src_idx, out_idx);
                 };
 
-                let pc = pc.update_u32(*src_idx as u32, 12).update_u32(*out_idx as u32, 16);
+                let pc = pc.update_u32(src_idx, 12).update_u32(out_idx, 16);
 
                 command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -426,4 +416,14 @@ impl DenoisePass {
 
         Ok(())
     }
+}
+
+pub struct DenoiseInputs<'a> {
+    pub depth: &'a RenderTarget,
+    pub last_depth: &'a RenderTarget,
+    pub normal: &'a RenderTarget,
+    pub rt_direct: &'a RenderTarget,
+    pub rt_indirect: &'a RenderTarget,
+    pub clear: bool,
+    pub use_spatial_denoise: bool,
 }

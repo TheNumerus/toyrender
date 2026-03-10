@@ -1,11 +1,13 @@
 use crate::err::AppError;
-use crate::vulkan::{Device, Image, ImageView, Sampler, VulkanError};
+use crate::vulkan::{DebugMarker, Device, Image, ImageView, Sampler, VulkanError};
 use ash::vk;
 use ash::vk::{Extent3D, Handle};
+use gpu_allocator::vulkan::Allocator;
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 pub struct RenderTarget {
     pub image: Image,
@@ -16,18 +18,22 @@ pub struct RenderTarget {
     aspect: vk::ImageAspectFlags,
     device: Rc<Device>,
     name: Option<String>,
+    pub id: uuid::Uuid,
+    pub storage_index: Option<u32>,
+    pub sampler_index: Option<u32>,
 }
 
 impl RenderTarget {
     pub fn new(
         device: Rc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
         extent: Extent3D,
         format: vk::Format,
         usage: vk::ImageUsageFlags,
         aspect: vk::ImageAspectFlags,
         sampler: Rc<Sampler>,
-    ) -> Result<Self, VulkanError> {
-        let image = Image::new(device.clone(), format, extent, usage)?;
+    ) -> Result<Self, AppError> {
+        let image = Image::new(device.clone(), allocator, format, extent, usage)?;
         let view = ImageView::new(device.clone(), image.inner, format, aspect)?;
 
         Ok(Self {
@@ -39,33 +45,19 @@ impl RenderTarget {
             usage,
             aspect,
             name: None,
+            id: uuid::Uuid::new_v4(),
+            storage_index: None,
+            sampler_index: None,
         })
     }
 
     pub fn set_names<S: AsRef<str>>(&mut self, name: S) -> Result<(), VulkanError> {
-        let name = name.as_ref().to_owned();
+        let name = name.as_ref();
+        self.image.name(name)?;
+        self.view.name(name)?;
 
-        self.name = Some(name.clone());
-        let name_ptr = CString::new(name.clone() + "_image").unwrap();
-        let name_info = vk::DebugUtilsObjectNameInfoEXT {
-            object_type: vk::ObjectType::IMAGE,
-            object_handle: self.image.inner.as_raw(),
-            p_object_name: name_ptr.as_ptr(),
-            ..Default::default()
-        };
-
-        self.device.name_object(name_info)?;
-
-        let name_ptr = CString::new(name.clone() + "_imageview").unwrap();
-        let name_info = vk::DebugUtilsObjectNameInfoEXT {
-            object_type: vk::ObjectType::IMAGE_VIEW,
-            object_handle: self.view.inner.as_raw(),
-            p_object_name: name_ptr.as_ptr(),
-            ..Default::default()
-        };
-
-        self.device.name_object(name_info)?;
-        let name_ptr = CString::new(name + "_sampler").unwrap();
+        self.name = Some(name.to_owned());
+        let name_ptr = CString::new(name.to_owned() + "_sampler").unwrap();
         let name_info = vk::DebugUtilsObjectNameInfoEXT {
             object_type: vk::ObjectType::SAMPLER,
             object_handle: self.sampler.inner.as_raw(),
@@ -76,8 +68,9 @@ impl RenderTarget {
         self.device.name_object(name_info)
     }
 
-    pub fn resize(&mut self, extent: Extent3D) -> Result<(), VulkanError> {
-        self.image = Image::new(self.device.clone(), self.format, extent, self.usage)?;
+    pub fn resize(&mut self, extent: Extent3D) -> Result<(), AppError> {
+        let allocator = self.image.allocator.clone();
+        self.image = Image::new(self.device.clone(), allocator, self.format, extent, self.usage)?;
         self.view = ImageView::new(self.device.clone(), self.image.inner, self.format, self.aspect)?;
 
         if let Some(name) = &self.name {
@@ -197,6 +190,7 @@ pub(crate) struct RenderTargetItem {
 pub struct RenderTargets {
     pub targets: HashMap<String, RenderTargetItem>,
     device: Rc<Device>,
+    allocator: Arc<Mutex<Allocator>>,
     default_extent: Extent3D,
     clamped_sampler: Rc<Sampler>,
     repeat_sampler: Rc<Sampler>,
@@ -206,6 +200,7 @@ pub struct RenderTargets {
 impl RenderTargets {
     pub fn new(
         device: Rc<Device>,
+        allocator: Arc<Mutex<Allocator>>,
         default_extent: Extent3D,
         clamped_sampler: Rc<Sampler>,
         repeat_sampler: Rc<Sampler>,
@@ -214,6 +209,7 @@ impl RenderTargets {
         Self {
             targets: HashMap::new(),
             device,
+            allocator,
             default_extent,
             clamped_sampler,
             repeat_sampler,
@@ -257,7 +253,7 @@ impl RenderTargets {
         self.targets.get(key).map(|item| item.value.borrow())
     }
 
-    pub fn resize(&mut self) -> Result<(), VulkanError> {
+    pub fn resize(&mut self) -> Result<(), AppError> {
         for (_name, target) in &mut self.targets {
             let extent = match target.size {
                 RenderTargetSize::Window => self.default_extent,
@@ -288,13 +284,13 @@ impl RenderTargets {
 
         let mut rt = RenderTarget::new(
             self.device.clone(),
+            self.allocator.clone(),
             extent,
             builder.format,
             builder.usage,
             builder.aspect,
             sampler,
-        )
-        .map_err(AppError::VulkanError)?;
+        )?;
 
         rt.set_names(&builder.name)?;
 

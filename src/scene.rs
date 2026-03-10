@@ -1,4 +1,5 @@
 use crate::camera::PerspectiveCamera;
+use crate::image::ImageResource;
 use crate::mesh::MeshInstance;
 use nalgebra_glm::{Mat4, Vec3, vec3};
 
@@ -42,7 +43,7 @@ impl Scene {
 pub enum SkyVariant {
     Shader,
     SingleColor(Vec3),
-    Textured,
+    Textured(ImageResource),
 }
 
 pub struct Sky {

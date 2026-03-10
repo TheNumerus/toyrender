@@ -1,6 +1,6 @@
 use crate::err::AppError;
 use crate::math;
-use crate::scene::{Environment, Scene};
+use crate::scene::{Scene, SkyVariant};
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, DebugMarker, DescriptorPool, Device, Fence, IntoVulkanError, PresentInfo,
     Sampler, Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, VulkanError,
@@ -26,8 +26,8 @@ use descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
 mod mesh_collector;
 use mesh_collector::{DrawData, MeshCollector};
 
-mod mesh_subsystem;
-pub use mesh_subsystem::MeshSubsystem;
+mod resource_subsystem;
+pub use resource_subsystem::ResourceSubsystem;
 
 mod passes;
 use passes::{DenoisePass, DepthDebugPass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
@@ -48,6 +48,9 @@ mod push_const;
 pub use push_const::PushConstBuilder;
 
 mod reference_renderer;
+use crate::renderer::descriptors::DescriptorLayouts;
+use crate::renderer::passes::{DenoiseInputs, PathTraceInputs, ShadingInputs, TaaInputs};
+use crate::renderer::render_target::RenderTarget;
 pub use reference_renderer::VulkanMcPathTracer;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
@@ -67,6 +70,7 @@ pub struct VulkanRenderer {
     pub context: Rc<VulkanContext>,
     pub device: Rc<Device>,
     pub render_targets: RenderTargets,
+    pub last_depth: Rc<RefCell<RenderTarget>>,
     pub shader_binding_table: ShaderBindingTable,
     pub tlases: Vec<TopLevelAs>,
     pub _descriptor_pool: DescriptorPool,
@@ -74,7 +78,8 @@ pub struct VulkanRenderer {
     pub command_buffers: Vec<CommandBuffer>,
     pub compute_command_buffers: Vec<CommandBuffer>,
     tlas_prepare_cmd_buf: CommandBuffer,
-    pub descriptors: Rc<RefCell<RendererDescriptors>>,
+    pub descriptor_layouts: DescriptorLayouts,
+    pub descriptors: Vec<Rc<RefCell<RendererDescriptors>>>,
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
@@ -129,11 +134,7 @@ impl VulkanRenderer {
             200 * MAX_FRAMES_IN_FLIGHT as u32,
         )?;
 
-        let descriptors = Rc::new(RefCell::new(RendererDescriptors::build(
-            device.clone(),
-            &descriptor_pool,
-            MAX_FRAMES_IN_FLIGHT as u32,
-        )?));
+        let descriptor_layouts = DescriptorLayouts::create(device.clone())?;
 
         let extent_3d = vk::Extent3D {
             width: context.swap_chain.borrow().extent.width,
@@ -143,6 +144,7 @@ impl VulkanRenderer {
 
         let mut render_targets = RenderTargets::new(
             device.clone(),
+            context.allocator.clone(),
             extent_3d,
             default_sampler,
             repeat_sampler,
@@ -151,12 +153,13 @@ impl VulkanRenderer {
 
         let passes = Self::create_passes(
             device.clone(),
+            context.clone(),
             &mut render_targets,
             &mut context.pipeline_builder.borrow_mut(),
-            descriptors.borrow(),
+            &descriptor_layouts,
         )?;
 
-        render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
+        let last_depth = render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
         let shader_binding_table = ShaderBindingTable::new(
             device.clone(),
@@ -185,6 +188,7 @@ impl VulkanRenderer {
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut mesh_bufs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut descriptors = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         Self::init_history_images(
             &context.device,
@@ -214,11 +218,16 @@ impl VulkanRenderer {
             raster_command_buffers[i].name(format!("raster_command_buffers[{}]", i))?;
             compute_command_buffers[i].name(format!("compute_command_buffers[{}]", i))?;
 
+            descriptors.push(Rc::new(RefCell::new(RendererDescriptors::build(
+                &descriptor_pool,
+                &descriptor_layouts,
+            )?)));
+
             let tlas = TopLevelAs::prepare(
                 device.clone(),
                 context.allocator.clone(),
                 context.rt_acc_struct_ext.clone(),
-                &context.compute_command_pool.allocate_cmd_buffers(1)?[0],
+                &tlas_prepare_cmd_buf,
                 &BTreeMap::new(),
                 TlasIndex { index: Vec::new() },
             )?;
@@ -265,7 +274,7 @@ impl VulkanRenderer {
             mesh_bufs.push(mesh_transform_buffer);
 
             writes.extend(Self::init_global_descriptor_set(
-                &descriptors.borrow().global_sets[i].inner,
+                &descriptors[i].borrow().global_set.inner,
                 &uniform_buffers_globals[i].inner,
                 &tlases[i],
                 &uniform_buffers[i].inner,
@@ -279,16 +288,7 @@ impl VulkanRenderer {
             render_finished[i].name(format!("render_finished[{}]", i))?;
         }
 
-        let mut desc_borrow = descriptors.borrow_mut();
-
-        writes.extend(desc_borrow.update_resources(&render_targets)?);
-
         DescriptorWriter::batch_write(&device, writes);
-
-        drop(desc_borrow);
-
-        info!("Storage images: {:?}", descriptors.borrow().storages.len());
-        info!("Sampled images: {:?}", descriptors.borrow().samplers.len());
 
         let gbuf_done = Semaphore::new(device.clone())?;
         gbuf_done.name("gbuf_done")?;
@@ -300,6 +300,7 @@ impl VulkanRenderer {
             context,
             device: device.clone(),
             render_targets,
+            last_depth,
             shader_binding_table,
             tlases,
             _descriptor_pool: descriptor_pool,
@@ -309,6 +310,7 @@ impl VulkanRenderer {
             img_available,
             render_finished,
             descriptors,
+            descriptor_layouts,
             uniform_buffers,
             uniform_buffers_globals,
             env_uniforms,
@@ -330,60 +332,19 @@ impl VulkanRenderer {
 
     fn create_passes(
         device: Rc<Device>,
+        context: Rc<VulkanContext>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<VulkanRendererPasses, AppError> {
-        let sky = SkyPass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let gbuffer = GBufferPass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let tonemap = TonemapPass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let shading = ShadingPass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let denoise = DenoisePass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let taa = TaaPass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let pt = PathTracePass::create(
-            device.clone(),
-            render_targets,
-            pipeline_builder,
-            Ref::clone(&descriptors),
-        )?;
-
-        let depth_debug = DepthDebugPass::create(device.clone(), pipeline_builder, Ref::clone(&descriptors))?;
+        let sky = SkyPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let gbuffer = GBufferPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let tonemap = TonemapPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let shading = ShadingPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let denoise = DenoisePass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let taa = TaaPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let pt = PathTracePass::create(context, render_targets, pipeline_builder, descriptor_layouts)?;
+        let depth_debug = DepthDebugPass::create(device.clone(), pipeline_builder, descriptor_layouts)?;
 
         Ok(VulkanRendererPasses {
             pt,
@@ -541,7 +502,7 @@ impl VulkanRenderer {
     pub fn render_frame(
         &mut self,
         scene: &Scene,
-        mesh_subsystem: &mut MeshSubsystem,
+        resource_subsystem: &mut ResourceSubsystem,
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
@@ -559,22 +520,22 @@ impl VulkanRenderer {
 
         let start = Instant::now();
 
-        if mesh_subsystem.prepare_meshes(scene, &self.tlas_prepare_cmd_buf)? {
-            info!("Mesh first prepare time: {:.3}s", start.elapsed().as_secs_f32());
+        if resource_subsystem.prepare_resources(scene, &self.tlas_prepare_cmd_buf)? {
+            info!("Resource prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
         let prepare_end = start.elapsed().as_secs_f32();
 
         let tlas_start = Instant::now();
 
-        let tlas_index = mesh_subsystem.build_tlas_index(scene);
+        let tlas_index = resource_subsystem.build_tlas_index(scene);
 
         self.tlases[self.current_frame] = TopLevelAs::prepare(
             self.device.clone(),
             self.context.allocator.clone(),
             self.context.rt_acc_struct_ext.clone(),
             &self.tlas_prepare_cmd_buf,
-            &mesh_subsystem.blases,
+            &resource_subsystem.blases,
             tlas_index,
         )?;
 
@@ -644,9 +605,17 @@ impl VulkanRenderer {
 
         let mut writes = Vec::new();
 
+        let mut borrow = self.descriptors[self.current_frame].borrow_mut();
+
+        writes.extend(borrow.update_resources(&self.render_targets, Some(resource_subsystem))?);
+
+        DescriptorWriter::batch_write(&self.device, writes);
+        drop(borrow);
+        let mut writes = Vec::new();
+
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             writes.push(Self::create_tlas_update_descriptor_set(
-                &self.descriptors.borrow().global_sets[i].inner,
+                &self.descriptors[i].borrow().global_set.inner,
                 &self.tlases[i],
             ));
         }
@@ -658,13 +627,14 @@ impl VulkanRenderer {
         let record_start = Instant::now();
 
         self.record_command_buffer(
+            scene,
             command_buffer,
             raster_command_buffer,
             compute_command_buffer,
             &self.context.swap_chain.borrow().images[image_index as usize],
             context,
             &collected_meshes.draws,
-            mesh_subsystem,
+            resource_subsystem,
             (width, height),
         )?;
 
@@ -793,30 +763,30 @@ impl VulkanRenderer {
             &[self.render_targets.get_ref("last_depth").unwrap().image.inner],
         )?;
 
-        let mut desc_borrow = self.descriptors.borrow_mut();
-        let writes = desc_borrow.update_resources(&self.render_targets)?;
-
-        DescriptorWriter::batch_write(&self.device, writes);
-
-        drop(desc_borrow);
-
         Ok(())
     }
 
     fn record_command_buffer(
         &self,
+        scene: &Scene,
         command_buffer: &CommandBuffer,
         raster_command_buffer: &CommandBuffer,
         compute_command_buffer: &CommandBuffer,
         target: &vk::Image,
         context: &FrameContext,
         draw_data: &Vec<DrawData>,
-        mesh_subsystem: &MeshSubsystem,
+        resource_subsystem: &ResourceSubsystem,
         viewport_size: (u32, u32),
     ) -> Result<(), AppError> {
-        self.passes
-            .gbuffer
-            .record(raster_command_buffer, self, mesh_subsystem, draw_data, viewport_size)?;
+        let descriptors = self.descriptors[self.current_frame].borrow();
+
+        self.passes.gbuffer.record(
+            raster_command_buffer,
+            Ref::clone(&descriptors),
+            resource_subsystem,
+            draw_data,
+            viewport_size,
+        )?;
 
         raster_command_buffer.end()?;
 
@@ -832,7 +802,16 @@ impl VulkanRenderer {
         compute_command_buffer.begin()?;
 
         self.tlases[self.current_frame].build(compute_command_buffer)?;
-        self.passes.sky.record(compute_command_buffer, self)?;
+
+        let sky_sampler = match &scene.env.sky.variant {
+            SkyVariant::Shader => {
+                self.passes.sky.record(compute_command_buffer, &descriptors)?;
+
+                self.passes.sky.render_target.borrow().sampler_index.unwrap()
+            }
+            SkyVariant::SingleColor(_) => 0,
+            SkyVariant::Textured(ir) => descriptors.samplers[&ir.id],
+        };
 
         compute_command_buffer.end()?;
 
@@ -847,15 +826,93 @@ impl VulkanRenderer {
         })?;
 
         command_buffer.begin()?;
-        self.passes.pt.record(command_buffer, self, viewport_size)?;
-        self.passes
-            .denoise
-            .record(command_buffer, self, context.clear_taa, viewport_size)?;
-        self.passes.shading.record(command_buffer, self, viewport_size)?;
-        self.passes
-            .taa
-            .record(command_buffer, self, context.clear_taa, viewport_size)?;
-        self.passes.tonemap.record(command_buffer, self, viewport_size)?;
+        self.passes.pt.record(
+            command_buffer,
+            &descriptors,
+            PathTraceInputs {
+                color: &self.passes.gbuffer.render_target_color.borrow(),
+                depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                sky_sampler,
+                sbt: &self.shader_binding_table,
+                bounces: self.quality.pt_bounces,
+                direct_trace_distance: self.quality.rt_direct_trace_distance,
+                indirect_trace_distance: self.quality.rt_indirect_trace_distance,
+            },
+            viewport_size,
+        )?;
+        self.passes.denoise.record(
+            command_buffer,
+            &descriptors,
+            DenoiseInputs {
+                depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                last_depth: &self.last_depth.borrow(),
+                normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                rt_direct: &self.passes.pt.direct_render_target.borrow(),
+                rt_indirect: &self.passes.pt.indirect_render_target.borrow(),
+                clear: context.clear_taa,
+                use_spatial_denoise: self.quality.use_spatial_denoise,
+            },
+            viewport_size,
+        )?;
+        self.passes.shading.record(
+            command_buffer,
+            &descriptors,
+            ShadingInputs {
+                color: &self.passes.gbuffer.render_target_color.borrow(),
+                depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                direct: &self.passes.denoise.direct_render_target_acc.borrow(),
+                indirect: &self.passes.denoise.indirect_render_target_acc.borrow(),
+                sky_sampler,
+            },
+            viewport_size,
+        )?;
+        self.passes.taa.record(
+            command_buffer,
+            &descriptors,
+            TaaInputs {
+                depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                last_depth: &self.last_depth.borrow(),
+                src: &self.passes.shading.render_target.borrow(),
+                clear: context.clear_taa,
+            },
+            viewport_size,
+        )?;
+
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                    dst_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    image: self.passes.tonemap.render_target.borrow().image.inner,
+                    subresource_range: vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    },
+                    ..Default::default()
+                }],
+            );
+        }
+
+        self.passes.tonemap.record(
+            command_buffer,
+            &descriptors,
+            self.passes.taa.render_target.clone(),
+            viewport_size,
+            false,
+        )?;
 
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
@@ -868,6 +925,8 @@ impl VulkanRenderer {
         target: &vk::Image,
         viewport_size: (u32, u32),
     ) -> Result<(), VulkanError> {
+        let descriptors = self.descriptors[self.current_frame].borrow();
+
         let src_image = match self.debug_mode {
             DebugMode::None => self.passes.tonemap.render_target.borrow().image.inner,
             DebugMode::Direct => self.passes.pt.direct_render_target.borrow().image.inner,
@@ -883,7 +942,13 @@ impl VulkanRenderer {
             DebugMode::Raw => self.render_targets.get_ref("tonemap").unwrap().image.inner,
             DebugMode::Depth => {
                 // runs convert, result is in tonemap
-                self.passes.depth_debug.record(command_buffer, self, viewport_size)?;
+                self.passes.depth_debug.record(
+                    command_buffer,
+                    &descriptors,
+                    self.passes.shading.render_target.clone(),
+                    self.passes.gbuffer.render_target_depth.clone(),
+                    viewport_size,
+                )?;
                 self.render_targets.get_ref("tonemap").unwrap().image.inner
             }
         };

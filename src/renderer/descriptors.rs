@@ -1,4 +1,5 @@
 use crate::err::AppError;
+use crate::renderer::ResourceSubsystem;
 use crate::renderer::render_target::RenderTargets;
 use crate::vulkan::{DescriptorPool, DescriptorSet, DescriptorSetLayout, Device, VulkanError};
 use ash::vk;
@@ -7,129 +8,202 @@ use std::collections::{BTreeMap, HashMap};
 use std::ffi::c_void;
 use std::rc::Rc;
 
-pub struct RendererDescriptors {
-    pub global_sets: Vec<DescriptorSet>,
-    pub image_sets: Vec<DescriptorSet>,
-    pub compute_sets: Vec<DescriptorSet>,
-    pub layouts: HashMap<DescLayout, DescriptorSetLayout>,
-    pub samplers: HashMap<String, usize>,
-    pub storages: HashMap<String, usize>,
+pub struct DescriptorLayouts {
+    pub inner: HashMap<DescLayout, DescriptorSetLayout>,
 }
 
-impl RendererDescriptors {
-    pub fn build(device: Rc<Device>, pool: &DescriptorPool, frames_in_flight: u32) -> Result<Self, VulkanError> {
-        let mut layouts = HashMap::new();
+impl DescriptorLayouts {
+    pub fn create(device: Rc<Device>) -> Result<DescriptorLayouts, VulkanError> {
+        let mut inner = HashMap::new();
 
         for layout in [DescLayout::Global, DescLayout::Compute, DescLayout::Image] {
             let l = DescriptorSetLayout::new(device.clone(), &layout.get_bindings(), format!("{layout:?}"))?;
 
-            layouts.insert(layout, l);
+            inner.insert(layout, l);
         }
 
-        let global_sets = pool
-            .allocate_sets(frames_in_flight, layouts.get(&DescLayout::Global).unwrap().inner)?
-            .into_iter()
-            .collect();
+        Ok(Self { inner })
+    }
 
-        let compute_sets = pool
-            .allocate_sets(frames_in_flight, layouts.get(&DescLayout::Compute).unwrap().inner)?
-            .into_iter()
-            .collect::<Vec<_>>();
+    pub fn guess_layout_from_reflection(
+        &self,
+        info: &BTreeMap<u32, DescriptorInfo>,
+    ) -> Result<vk::DescriptorSetLayout, AppError> {
+        for layout in [DescLayout::Global, DescLayout::Compute, DescLayout::Image] {
+            let mut matches = true;
+            let binds = layout.get_bindings();
 
-        let image_sets = pool
-            .allocate_sets(frames_in_flight, layouts.get(&DescLayout::Image).unwrap().inner)?
-            .into_iter()
-            .collect::<Vec<_>>();
+            for (index, bind) in binds.iter().enumerate() {
+                if let Some(di) = info.get(&(index as u32))
+                    && di.ty.0 != bind.descriptor_type.as_raw() as u32
+                {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if matches {
+                return Ok(self.inner[&layout].inner);
+            }
+        }
+
+        Err(AppError::Import(String::from("Unknown layout defined")))
+    }
+
+    pub fn get_layout(&self, layout: DescLayout) -> &DescriptorSetLayout {
+        self.inner.get(&layout).expect("Incorrectly built layouts")
+    }
+}
+
+pub struct RendererDescriptors {
+    pub global_set: DescriptorSet,
+    pub image_set: DescriptorSet,
+    pub compute_set: DescriptorSet,
+    pub samplers: HashMap<uuid::Uuid, u32>,
+    pub storages: HashMap<uuid::Uuid, u32>,
+}
+
+impl RendererDescriptors {
+    pub fn build(pool: &DescriptorPool, layouts: &DescriptorLayouts) -> Result<Self, VulkanError> {
+        let global_set = pool
+            .allocate_sets(1, layouts.get_layout(DescLayout::Global).inner)?
+            .pop()
+            .unwrap();
+
+        let compute_set = pool
+            .allocate_sets(1, layouts.get_layout(DescLayout::Compute).inner)?
+            .pop()
+            .unwrap();
+
+        let image_set = pool
+            .allocate_sets(1, layouts.get_layout(DescLayout::Image).inner)?
+            .pop()
+            .unwrap();
 
         Ok(Self {
-            layouts,
-            global_sets,
-            image_sets,
-            compute_sets,
+            global_set,
+            image_set,
+            compute_set,
             samplers: HashMap::new(),
             storages: HashMap::new(),
         })
     }
 
-    pub fn get_layout(&self, layout: DescLayout) -> &DescriptorSetLayout {
-        self.layouts.get(&layout).expect("Incorrectly built layouts")
-    }
-
-    pub fn update_resources(&mut self, targets: &RenderTargets) -> Result<Vec<DescriptorWrite>, AppError> {
+    pub fn update_resources(
+        &mut self,
+        targets: &RenderTargets,
+        resource_subsystem: Option<&ResourceSubsystem>,
+    ) -> Result<Vec<DescriptorWrite>, AppError> {
         self.samplers = HashMap::new();
         self.storages = HashMap::new();
 
         let mut writes = Vec::new();
 
-        for (name, item) in &targets.targets {
+        for (_name, item) in &targets.targets {
             if item.value.borrow().usage.contains(vk::ImageUsageFlags::STORAGE) {
-                for set in &self.compute_sets {
-                    let image_info = vec![item.value.borrow().descriptor_image_info(vk::ImageLayout::GENERAL)];
+                let image_info = vec![item.value.borrow().descriptor_image_info(vk::ImageLayout::GENERAL)];
+                let index = self.storages.len() as u32;
 
-                    let write = vk::WriteDescriptorSet {
-                        dst_set: set.inner,
-                        dst_binding: 1,
-                        dst_array_element: self.storages.len() as u32,
-                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
-                        ..Default::default()
-                    };
+                let write = vk::WriteDescriptorSet {
+                    dst_set: self.compute_set.inner,
+                    dst_binding: 1,
+                    dst_array_element: index,
+                    descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                    ..Default::default()
+                };
 
-                    writes.push(DescriptorWrite {
-                        write,
-                        buffer_info: None,
-                        image_info: Some(image_info),
-                        tlases: None,
-                    })
-                }
-                self.storages.insert(name.clone(), self.storages.len());
+                writes.push(DescriptorWrite {
+                    write,
+                    buffer_info: None,
+                    image_info: Some(image_info),
+                    tlases: None,
+                });
+
+                self.storages.insert(item.value.borrow().id, index);
+                item.value.borrow_mut().storage_index = Some(index);
             }
 
             if item.value.borrow().usage.contains(vk::ImageUsageFlags::SAMPLED) {
-                for set in &self.compute_sets {
-                    let image_info = vec![
-                        item.value
-                            .borrow()
-                            .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                    ];
+                let image_info = vec![
+                    item.value
+                        .borrow()
+                        .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
+                ];
 
-                    let write = vk::WriteDescriptorSet {
-                        dst_set: set.inner,
-                        dst_binding: 0,
-                        dst_array_element: self.samplers.len() as u32,
-                        descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        ..Default::default()
-                    };
+                let index = self.samplers.len() as u32;
 
-                    writes.push(DescriptorWrite {
-                        write,
-                        buffer_info: None,
-                        image_info: Some(image_info),
-                        tlases: None,
-                    })
-                }
-                for set in &self.image_sets {
-                    let image_info = vec![
-                        item.value
-                            .borrow()
-                            .descriptor_image_info(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL),
-                    ];
+                let write = vk::WriteDescriptorSet {
+                    dst_set: self.compute_set.inner,
+                    dst_binding: 0,
+                    dst_array_element: index,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ..Default::default()
+                };
+                writes.push(DescriptorWrite {
+                    write,
+                    buffer_info: None,
+                    image_info: Some(image_info.clone()),
+                    tlases: None,
+                });
 
-                    let write = vk::WriteDescriptorSet {
-                        dst_set: set.inner,
-                        dst_binding: 0,
-                        dst_array_element: self.samplers.len() as u32,
-                        descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-                        ..Default::default()
-                    };
+                let write = vk::WriteDescriptorSet {
+                    dst_set: self.image_set.inner,
+                    dst_binding: 0,
+                    dst_array_element: index,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ..Default::default()
+                };
+                writes.push(DescriptorWrite {
+                    write,
+                    buffer_info: None,
+                    image_info: Some(image_info),
+                    tlases: None,
+                });
 
-                    writes.push(DescriptorWrite {
-                        write,
-                        buffer_info: None,
-                        image_info: Some(image_info),
-                        tlases: None,
-                    })
-                }
-                self.samplers.insert(name.clone(), self.samplers.len());
+                self.samplers.insert(item.value.borrow().id, index);
+                item.value.borrow_mut().sampler_index = Some(index);
+            }
+        }
+
+        if let Some(rs) = resource_subsystem {
+            for (id, (_, iw, s)) in &rs.textures {
+                let image_info = vec![vk::DescriptorImageInfo {
+                    sampler: s.inner,
+                    image_view: iw.inner,
+                    image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                }];
+
+                let index = self.samplers.len() as u32;
+
+                let write = vk::WriteDescriptorSet {
+                    dst_set: self.compute_set.inner,
+                    dst_binding: 0,
+                    dst_array_element: index,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ..Default::default()
+                };
+                writes.push(DescriptorWrite {
+                    write,
+                    buffer_info: None,
+                    image_info: Some(image_info.clone()),
+                    tlases: None,
+                });
+
+                let write = vk::WriteDescriptorSet {
+                    dst_set: self.image_set.inner,
+                    dst_binding: 0,
+                    dst_array_element: index,
+                    descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
+                    ..Default::default()
+                };
+                writes.push(DescriptorWrite {
+                    write,
+                    buffer_info: None,
+                    image_info: Some(image_info.clone()),
+                    tlases: None,
+                });
+
+                self.samplers.insert(*id, index);
             }
         }
 
@@ -159,31 +233,6 @@ impl RendererDescriptors {
 
         Ok(writes)
     }
-
-    pub fn guess_layout_from_reflection(
-        &self,
-        info: &BTreeMap<u32, DescriptorInfo>,
-    ) -> Result<vk::DescriptorSetLayout, AppError> {
-        for layout in [DescLayout::Global, DescLayout::Compute, DescLayout::Image] {
-            let mut matches = true;
-            let binds = layout.get_bindings();
-
-            for (index, bind) in binds.iter().enumerate() {
-                if let Some(di) = info.get(&(index as u32))
-                    && di.ty.0 != bind.descriptor_type.as_raw() as u32
-                {
-                    matches = false;
-                    break;
-                }
-            }
-
-            if matches {
-                return Ok(self.layouts[&layout].inner);
-            }
-        }
-
-        Err(AppError::Import(String::from("Unknown layout defined")))
-    }
 }
 
 #[derive(Debug, Copy, Clone, Hash, Eq, PartialEq)]
@@ -201,7 +250,8 @@ impl DescLayout {
             stage_flags: vk::ShaderStageFlags::VERTEX
                 | vk::ShaderStageFlags::FRAGMENT
                 | vk::ShaderStageFlags::RAYGEN_KHR
-                | vk::ShaderStageFlags::COMPUTE,
+                | vk::ShaderStageFlags::COMPUTE
+                | vk::ShaderStageFlags::MISS_KHR,
             descriptor_type: vk::DescriptorType::UNIFORM_BUFFER,
             ..Default::default()
         };

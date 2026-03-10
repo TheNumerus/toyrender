@@ -1,11 +1,13 @@
 use crate::args::Args;
 use crate::err::AppError;
+use crate::image::ImageResource;
 use crate::import;
 use crate::import::ImportedScene;
 use crate::input::InputMapper;
-use crate::renderer::{FrameContext, FrameStats, MeshSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
-use crate::scene::Scene;
-use log::{error, info};
+use crate::renderer::{FrameContext, FrameStats, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
+use crate::scene::{Scene, SkyVariant};
+use image::DynamicImage;
+use log::info;
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
@@ -15,6 +17,7 @@ use std::cmp::PartialEq;
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
+use std::str::FromStr;
 use std::time::Instant;
 use zip::ZipArchive;
 
@@ -25,7 +28,7 @@ pub struct App {
     pub vulkan_context: Rc<VulkanContext>,
     pub renderer: VulkanRenderer,
     pub reference_renderer: VulkanMcPathTracer,
-    pub mesh_subsystem: MeshSubsystem,
+    pub resource_subsystem: ResourceSubsystem,
     pub sdl_context: Sdl,
     pub window: Window,
     pub event_pump: EventPump,
@@ -59,7 +62,7 @@ impl App {
         let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
 
         let vulkan_context = Rc::new(VulkanContext::init(&window, &mut imgui, shader_loader)?);
-        let mesh_subsystem = MeshSubsystem::new(vulkan_context.clone());
+        let resource_subsystem = ResourceSubsystem::new(vulkan_context.clone());
         let renderer = VulkanRenderer::init(vulkan_context.clone())?;
         let reference_renderer = VulkanMcPathTracer::init(vulkan_context.clone())?;
 
@@ -73,7 +76,7 @@ impl App {
             event_pump,
             renderer,
             reference_renderer,
-            mesh_subsystem,
+            resource_subsystem,
             vulkan_context,
             input_mapper,
             scene,
@@ -151,7 +154,7 @@ impl App {
             let mut mouse = (0, 0);
             let mut mouse_scroll = 0.0;
             let mut dragging;
-            let mut bounce_adjust = 0;
+            let mut bounce_adjust: i32 = 0;
             let mut exposure_adjust = 0.0;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
@@ -183,7 +186,20 @@ impl App {
                         focused = false;
                     }
                     Event::DropFile { filename, .. } => {
-                        Self::on_file_drop(filename, &mut self.scene)?;
+                        let start = Instant::now();
+
+                        let action = Self::on_file_drop(filename)?;
+
+                        info!("Loaded in {} s", start.elapsed().as_secs_f32());
+
+                        match action {
+                            FileDroppedAction::LoadScene(ls) => {
+                                self.scene.meshes.extend(ls.instances);
+                            }
+                            FileDroppedAction::LoadImage(i) => {
+                                self.scene.env.sky.variant = SkyVariant::Textured(ImageResource::new(i, "sky texture"));
+                            }
+                        }
                     }
                     Event::MouseWheel { y, .. } => {
                         mouse_scroll = y as f32 * scroll_sens;
@@ -257,7 +273,7 @@ impl App {
             };
 
             if bounce_adjust != 0 {
-                let new_bounces = (self.renderer.quality.pt_bounces + bounce_adjust).max(0);
+                let new_bounces = (self.renderer.quality.pt_bounces as i32 + bounce_adjust).max(0) as u32;
                 self.renderer.quality.pt_bounces = new_bounces;
                 info!("new bounce count: {new_bounces}");
             }
@@ -402,14 +418,14 @@ impl App {
             frame_stats[current_stats] = match state.selected_renderer {
                 SelectedRenderer::Realtime => self.renderer.render_frame(
                     &self.scene,
-                    &mut self.mesh_subsystem,
+                    &mut self.resource_subsystem,
                     self.window.drawable_size(),
                     &context,
                     Some(draw_data),
                 )?,
                 SelectedRenderer::Reference => self.reference_renderer.render_frame(
                     &self.scene,
-                    &mut self.mesh_subsystem,
+                    &mut self.resource_subsystem,
                     self.window.drawable_size(),
                     &context,
                     Some(draw_data),
@@ -432,32 +448,21 @@ impl App {
         Ok(())
     }
 
-    fn on_file_drop(filename: String, scene: &mut Scene) -> Result<(), AppError> {
+    fn on_file_drop(filename: String) -> Result<FileDroppedAction, AppError> {
         info!("loading file `{filename}`");
-        let start = Instant::now();
 
         let file = std::fs::read(&filename).map_err(|e| {
             let msg = format!("file {} cannot be read: {e}", filename);
 
             AppError::Import(msg)
-        });
+        })?;
+        let path = std::path::PathBuf::from_str(&filename).unwrap();
 
-        let file = match file {
-            Ok(f) => f,
-            Err(e) => {
-                error!("{e}");
-                return Ok(());
-            }
-        };
-
-        let ImportedScene { instances, .. } = import::extract_scene(&file)?;
-        scene.meshes.extend(instances);
-
-        let end = Instant::now();
-
-        info!("Loaded in {} s", (end - start).as_secs_f32());
-
-        Ok(())
+        match path.extension().map(|ext| ext.to_str().unwrap()) {
+            Some("glb") => Ok(FileDroppedAction::LoadScene(import::extract_scene(&file)?)),
+            Some("exr") | Some("hdr") => Ok(FileDroppedAction::LoadImage(image::load_from_memory(&file)?)),
+            _ => Err(AppError::Import("Unknown file format".to_owned())),
+        }
     }
 
     pub fn setup_input_mapper() -> InputMapper<InputAxes> {
@@ -497,7 +502,7 @@ impl App {
 
             self.renderer.render_frame(
                 &self.scene,
-                &mut self.mesh_subsystem,
+                &mut self.resource_subsystem,
                 self.window.drawable_size(),
                 &context,
                 None,
@@ -567,4 +572,9 @@ pub enum InputAxes {
 enum SelectedRenderer {
     Realtime,
     Reference,
+}
+
+enum FileDroppedAction {
+    LoadScene(ImportedScene),
+    LoadImage(DynamicImage),
 }

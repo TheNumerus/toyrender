@@ -1,5 +1,5 @@
 pub struct QualitySettings {
-    pub pt_bounces: i32,
+    pub pt_bounces: u32,
     pub rt_direct_trace_distance: f32,
     pub rt_indirect_trace_distance: f32,
     pub use_spatial_denoise: bool,

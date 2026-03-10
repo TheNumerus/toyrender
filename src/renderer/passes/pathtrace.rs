@@ -1,15 +1,15 @@
 use crate::err::AppError;
-use crate::renderer::descriptors::RendererDescriptors;
+use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
-use crate::renderer::{PushConstBuilder, VulkanRenderer};
-use crate::vulkan::{CommandBuffer, Device, Pipeline, Rt};
+use crate::renderer::{PushConstBuilder, VulkanContext};
+use crate::vulkan::{CommandBuffer, Pipeline, Rt, ShaderBindingTable};
 use ash::vk;
-use std::cell::{Ref, RefCell};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub(crate) struct PathTracePass {
-    device: Rc<Device>,
+    context: Rc<VulkanContext>,
     pub direct_render_target: Rc<RefCell<RenderTarget>>,
     pub indirect_render_target: Rc<RefCell<RenderTarget>>,
     pub pipeline_handle: Rc<Pipeline<Rt>>,
@@ -19,20 +19,20 @@ impl PathTracePass {
     pub const TARGET_FORMAT: vk::Format = vk::Format::R16G16B16A16_SFLOAT;
 
     pub fn create(
-        device: Rc<Device>,
+        context: Rc<VulkanContext>,
         render_targets: &mut RenderTargets,
         pipeline_builder: &mut PipelineBuilder,
-        descriptors: Ref<RendererDescriptors>,
+        descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
         let [a, b] = Self::render_target_defs();
         let direct_render_target = render_targets.add(a)?;
         let indirect_render_target = render_targets.add(b)?;
 
         let pipeline_handle =
-            pipeline_builder.build_rt("pt_rt", "pt_rt|raygen", "pt_rt|miss", "pt_rt|chit", descriptors)?;
+            pipeline_builder.build_rt("pt_rt", "pt_rt|raygen", "pt_rt|miss", "pt_rt|chit", descriptor_layouts)?;
 
         Ok(Self {
-            device,
+            context,
             direct_render_target,
             indirect_render_target,
             pipeline_handle,
@@ -55,10 +55,11 @@ impl PathTracePass {
     pub fn record(
         &self,
         command_buffer: &CommandBuffer,
-        renderer: &VulkanRenderer,
+        descriptors: &RendererDescriptors,
+        inputs: PathTraceInputs,
         viewport: (u32, u32),
     ) -> Result<(), AppError> {
-        self.device.begin_label("Path Tracing", command_buffer);
+        self.context.device.begin_label("Path Tracing", command_buffer);
 
         let pipeline = &self.pipeline_handle;
 
@@ -66,26 +67,23 @@ impl PathTracePass {
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::RAY_TRACING_KHR,
             pipeline.layout,
-            [
-                renderer.descriptors.borrow().global_sets[renderer.current_frame].inner,
-                renderer.descriptors.borrow().compute_sets[renderer.current_frame].inner,
-            ],
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
         let pc = PushConstBuilder::with_capacity(9 * size_of::<u32>())
-            .add_u32(renderer.quality.pt_bounces as u32)
-            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_color").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_depth").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().samplers.get("gbuffer_normal").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().storages.get("rt_direct").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().storages.get("rt_indirect").unwrap() as u32)
-            .add_u32(*renderer.descriptors.borrow().samplers.get("sky").unwrap() as u32)
-            .add_f32(renderer.quality.rt_direct_trace_distance)
-            .add_f32(renderer.quality.rt_indirect_trace_distance)
+            .add_u32(inputs.bounces)
+            .add_u32(inputs.color.sampler_index.unwrap())
+            .add_u32(inputs.depth.sampler_index.unwrap())
+            .add_u32(inputs.normal.sampler_index.unwrap())
+            .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
+            .add_u32(self.indirect_render_target.borrow().storage_index.unwrap())
+            .add_u32(inputs.sky_sampler)
+            .add_f32(inputs.direct_trace_distance)
+            .add_f32(inputs.indirect_trace_distance)
             .build();
 
         unsafe {
-            self.device.inner.cmd_push_constants(
+            self.context.device.inner.cmd_push_constants(
                 command_buffer.inner,
                 pipeline.layout,
                 vk::ShaderStageFlags::RAYGEN_KHR
@@ -95,12 +93,12 @@ impl PathTracePass {
                 &pc,
             );
 
-            renderer.context.rt_pipeline_ext.loader.cmd_trace_rays(
+            self.context.rt_pipeline_ext.loader.cmd_trace_rays(
                 command_buffer.inner,
-                &renderer.shader_binding_table.raygen_region,
-                &renderer.shader_binding_table.miss_region,
-                &renderer.shader_binding_table.hit_region,
-                &renderer.shader_binding_table.call_region,
+                &inputs.sbt.raygen_region,
+                &inputs.sbt.miss_region,
+                &inputs.sbt.hit_region,
+                &inputs.sbt.call_region,
                 viewport.0,
                 viewport.1,
                 1,
@@ -122,7 +120,7 @@ impl PathTracePass {
                 ..Default::default()
             });
 
-            self.device.inner.cmd_pipeline_barrier(
+            self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
@@ -133,8 +131,19 @@ impl PathTracePass {
             );
         }
 
-        self.device.end_label(command_buffer);
+        self.context.device.end_label(command_buffer);
 
         Ok(())
     }
+}
+
+pub struct PathTraceInputs<'a> {
+    pub color: &'a RenderTarget,
+    pub depth: &'a RenderTarget,
+    pub normal: &'a RenderTarget,
+    pub sky_sampler: u32,
+    pub sbt: &'a ShaderBindingTable,
+    pub bounces: u32,
+    pub direct_trace_distance: f32,
+    pub indirect_trace_distance: f32,
 }

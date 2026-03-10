@@ -25,6 +25,7 @@ imgui-sdl2-support = { version = "0.13.0" }
 imgui-rs-vulkan-renderer = { version = "~1.16.0", features = ["gpu-allocator", "dynamic-rendering"] }
 rspirv-reflect = "0.9.0"
 image = { default-features = false, version = "0.25.9", features = ["exr", "hdr"] }
+uuid = { version = "1.22.0", features = ["v4"] }
 
 [build-dependencies]
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
