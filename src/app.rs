@@ -335,9 +335,21 @@ impl App {
                             self.reference_renderer.quality.pt_bounces = self.renderer.quality.pt_bounces;
                         }
 
+                        if ui.slider(
+                            "Indirect intensity clamp",
+                            0.0,
+                            100.0,
+                            &mut self.renderer.quality.indirect_light_clamp,
+                        ) {
+                            self.reference_renderer.quality.indirect_light_clamp =
+                                self.renderer.quality.indirect_light_clamp;
+                        }
+
                         ui.checkbox("Temporal accumulation", &mut taa_enable);
-                        ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
-                        ui.checkbox("Culling", &mut culling);
+                        if let SelectedRenderer::Realtime = state.selected_renderer {
+                            ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
+                            ui.checkbox("Culling", &mut culling);
+                        }
 
                         ui.input_float3("Camera position", self.scene.camera.position.as_mut())
                             .build();
@@ -383,14 +395,17 @@ impl App {
                             (frame_stats.iter().fold(0.0, |a, x| a + x.record_time) / frame_stats.len() as f32)
                                 * 1000.0
                         ));
-                        ui.text(format!(
-                            "Draw calls: {}",
-                            frame_stats[(current_stats + (frame_stats.len() - 1)) % frame_stats.len()].draw_calls
-                        ));
-                        ui.text(format!(
-                            "Drawn objects: {}",
-                            frame_stats[(current_stats + (frame_stats.len() - 1)) % frame_stats.len()].objects_rendered
-                        ));
+                        if let SelectedRenderer::Realtime = state.selected_renderer {
+                            ui.text(format!(
+                                "Draw calls: {}",
+                                frame_stats[(current_stats + (frame_stats.len() - 1)) % frame_stats.len()].draw_calls
+                            ));
+                            ui.text(format!(
+                                "Drawn objects: {}",
+                                frame_stats[(current_stats + (frame_stats.len() - 1)) % frame_stats.len()]
+                                    .objects_rendered
+                            ));
+                        }
                     }
                     if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty()) {
                         for (index, mesh) in &mut self.scene.meshes.iter_mut().enumerate() {

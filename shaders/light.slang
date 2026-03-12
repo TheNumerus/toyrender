@@ -62,6 +62,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float ratio = global.res_x / global.res_y;
 
     float4 color = images[pc.color_idx].Sample(uv);
+    color.xyz = float3(0.7);
     float3 normal = images[pc.normal_idx].Sample(uv).xyz * 2.0 - 1.0;
     float depth = 1.0 - images[pc.depth_idx].Sample(uv).x;
 

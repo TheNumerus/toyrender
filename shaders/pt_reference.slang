@@ -42,6 +42,7 @@ struct PushConsts {
     float direct_trace_distance;
     float indirect_trace_distance;
     float fov;
+    float indirect_intensity_clamp;
 };
 
 [vk::push_constant]
@@ -345,6 +346,10 @@ void miss(inout Payload payload) {
         payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
     } else {
         payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx]);
+    }
+
+    if (pc.indirect_intensity_clamp != 0.0) {
+        payload.color = min(float3(pc.indirect_intensity_clamp), payload.color);
     }
 
     payload.isMiss = true;

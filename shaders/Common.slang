@@ -17,6 +17,8 @@ public struct ViewProj {
     public float4x4 proj[2];
     public float4x4 view_inverse;
     public float4x4 proj_inverse;
+    public float near;
+    public float far;
 };
 
 public struct Environment {

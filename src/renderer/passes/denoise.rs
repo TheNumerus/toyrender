@@ -19,6 +19,8 @@ pub(crate) struct DenoisePass {
     pub indirect_render_target_history: Rc<RefCell<RenderTarget>>,
     pub moments_direct_render_target: Rc<RefCell<RenderTarget>>,
     pub moments_indirect_render_target: Rc<RefCell<RenderTarget>>,
+    pub moments_direct_history: Rc<RefCell<RenderTarget>>,
+    pub moments_indirect_history: Rc<RefCell<RenderTarget>>,
     temporal_pipeline: Rc<Pipeline<Compute>>,
     spatial_pipeline: Rc<Pipeline<Compute>>,
     variance_estimate_pipeline: Rc<Pipeline<Compute>>,
@@ -53,6 +55,10 @@ impl DenoisePass {
             moments_direct_render_target: render_targets.add(Self::moment_render_target_def())?,
             moments_indirect_render_target: render_targets
                 .add(Self::moment_render_target_def().duplicate("denoise_indirect_moments"))?,
+            moments_direct_history: render_targets
+                .add(Self::moment_render_target_def().duplicate("denoise_direct_moments_history"))?,
+            moments_indirect_history: render_targets
+                .add(Self::moment_render_target_def().duplicate("denoise_indirect_moments_history"))?,
             spatial_pipeline,
             temporal_pipeline,
             variance_estimate_pipeline,
@@ -94,15 +100,16 @@ impl DenoisePass {
 
         let clear = if inputs.clear { 1 } else { 0 };
 
-        let pc = PushConstBuilder::with_capacity(7 * size_of::<u32>())
+        let pc = PushConstBuilder::with_capacity(8 * size_of::<u32>())
             .add_u32(clear as u32)
             .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
             .add_u32(inputs.depth.sampler_index.unwrap())
             .add_u32(inputs.last_depth.sampler_index.unwrap())
             .add_u32(inputs.rt_direct.storage_index.unwrap())
-            .add_u32(self.direct_render_target_history.borrow().sampler_index.unwrap())
+            .add_u32(self.direct_render_target_history.borrow().storage_index.unwrap())
             .add_u32(inputs.normal.sampler_index.unwrap())
-            .add_u32(self.moments_direct_render_target.borrow().storage_index.unwrap());
+            .add_u32(self.moments_direct_render_target.borrow().storage_index.unwrap())
+            .add_u32(self.moments_direct_history.borrow().storage_index.unwrap());
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -114,8 +121,9 @@ impl DenoisePass {
         let pc = pc
             .update_u32(self.indirect_render_target.borrow().storage_index.unwrap(), 4)
             .update_u32(inputs.rt_indirect.storage_index.unwrap(), 16)
-            .update_u32(self.indirect_render_target_history.borrow().sampler_index.unwrap(), 20)
-            .update_u32(self.moments_indirect_render_target.borrow().storage_index.unwrap(), 28);
+            .update_u32(self.indirect_render_target_history.borrow().storage_index.unwrap(), 20)
+            .update_u32(self.moments_indirect_render_target.borrow().storage_index.unwrap(), 28)
+            .update_u32(self.moments_indirect_history.borrow().storage_index.unwrap(), 32);
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -151,6 +159,74 @@ impl DenoisePass {
             );
         }
 
+        unsafe {
+            let extent_3d = vk::Extent3D {
+                width: viewport.0,
+                height: viewport.1,
+                depth: 1,
+            };
+
+            let image_color_res = vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+
+            self.device.inner.cmd_copy_image(
+                command_buffer.inner,
+                self.moments_direct_render_target.borrow().image.inner,
+                vk::ImageLayout::GENERAL,
+                self.moments_direct_history.borrow().image.inner,
+                vk::ImageLayout::GENERAL,
+                &[vk::ImageCopy {
+                    extent: extent_3d,
+                    dst_subresource: image_color_res,
+                    src_subresource: image_color_res,
+                    ..Default::default()
+                }],
+            );
+            self.device.inner.cmd_copy_image(
+                command_buffer.inner,
+                self.moments_indirect_render_target.borrow().image.inner,
+                vk::ImageLayout::GENERAL,
+                self.moments_indirect_history.borrow().image.inner,
+                vk::ImageLayout::GENERAL,
+                &[vk::ImageCopy {
+                    extent: extent_3d,
+                    dst_subresource: image_color_res,
+                    src_subresource: image_color_res,
+                    ..Default::default()
+                }],
+            );
+
+            let barriers = [
+                self.moments_direct_history.borrow().image.inner,
+                self.moments_indirect_history.borrow().image.inner,
+            ]
+            .map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                image,
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
+            });
+
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &barriers,
+            );
+        }
+
         let pipeline = &self.variance_estimate_pipeline;
 
         command_buffer.bind_compute_pipeline(pipeline);
@@ -163,8 +239,8 @@ impl DenoisePass {
         let pc = PushConstBuilder::with_capacity(5 * size_of::<u32>())
             .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
             .add_u32(self.direct_render_target_acc.borrow().storage_index.unwrap())
-            .add_u32(inputs.depth.sampler_index.unwrap())
-            .add_u32(inputs.normal.sampler_index.unwrap())
+            .add_u32(inputs.depth.storage_index.unwrap())
+            .add_u32(inputs.normal.storage_index.unwrap())
             .add_u32(self.moments_direct_render_target.borrow().storage_index.unwrap());
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc.clone().build());
@@ -239,8 +315,8 @@ impl DenoisePass {
 
                 let pc = PushConstBuilder::with_capacity(5 * size_of::<u32>())
                     .add_u32(level)
-                    .add_u32(inputs.normal.sampler_index.unwrap())
-                    .add_u32(inputs.depth.sampler_index.unwrap())
+                    .add_u32(inputs.normal.storage_index.unwrap())
+                    .add_u32(inputs.depth.storage_index.unwrap())
                     .add_u32(src_idx)
                     .add_u32(out_idx);
 
@@ -275,8 +351,8 @@ impl DenoisePass {
 
                 unsafe {
                     let barriers = barriers.map(|image| vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                        dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
                         old_layout: vk::ImageLayout::GENERAL,
                         new_layout: vk::ImageLayout::GENERAL,
                         src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
@@ -315,7 +391,7 @@ impl DenoisePass {
 
                         self.device.inner.cmd_copy_image(
                             command_buffer.inner,
-                            self.direct_render_target_acc.borrow().image.inner,
+                            self.direct_render_target.borrow().image.inner,
                             vk::ImageLayout::GENERAL,
                             self.direct_render_target_history.borrow().image.inner,
                             vk::ImageLayout::GENERAL,
@@ -328,7 +404,7 @@ impl DenoisePass {
                         );
                         self.device.inner.cmd_copy_image(
                             command_buffer.inner,
-                            self.indirect_render_target_acc.borrow().image.inner,
+                            self.indirect_render_target.borrow().image.inner,
                             vk::ImageLayout::GENERAL,
                             self.indirect_render_target_history.borrow().image.inner,
                             vk::ImageLayout::GENERAL,

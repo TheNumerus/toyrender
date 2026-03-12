@@ -556,10 +556,7 @@ impl VulkanRenderer {
         if context.clear_taa {
             offset = (0.5, 0.5);
         }
-        let (offset_x, offset_y) = (
-            (2.0 * offset.0 - 1.0) / width as f32,
-            (2.0 * offset.1 - 1.0) / height as f32,
-        );
+        let (offset_x, offset_y) = ((offset.0 - 0.5) / width as f32, (offset.1 - 0.5) / height as f32);
 
         let mut proj = nalgebra_glm::perspective_rh_zo(aspect_ratio, fovy, 500.0, 0.01);
 
@@ -577,6 +574,8 @@ impl VulkanRenderer {
             projection_prev: self.last_view_proj.projection,
             view_inverse: scene.camera.view().try_inverse().unwrap(),
             projection_inverse: proj.try_inverse().unwrap(),
+            near: 500.0,
+            far: 0.01,
         };
 
         let mesh_start = Instant::now();
@@ -594,6 +593,7 @@ impl VulkanRenderer {
             draw_res_y: height as f32,
             time: context.total_time,
             frame_index: context.frame_index,
+            _padding_0: 0,
             current_jitter: offset,
             prev_jitter: self.prev_jitter,
         };
@@ -838,6 +838,7 @@ impl VulkanRenderer {
                 bounces: self.quality.pt_bounces,
                 direct_trace_distance: self.quality.rt_direct_trace_distance,
                 indirect_trace_distance: self.quality.rt_indirect_trace_distance,
+                indirect_intensity_clamp: self.quality.indirect_light_clamp,
             },
             viewport_size,
         )?;

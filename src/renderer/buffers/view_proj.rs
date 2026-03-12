@@ -8,6 +8,8 @@ pub struct ViewProj {
     pub projection_prev: Mat4,
     pub view_inverse: Mat4,
     pub projection_inverse: Mat4,
+    pub near: f32,
+    pub far: f32,
 }
 
 #[repr(C)]
@@ -18,6 +20,8 @@ struct ViewProjGPU {
     pub projection_prev: Mat4,
     pub view_inverse: Mat4,
     pub projection_inverse: Mat4,
+    pub near: f32,
+    pub far: f32,
 }
 
 impl ViewProj {
@@ -31,6 +35,8 @@ impl ViewProj {
             projection_prev: self.projection_prev,
             view_inverse: self.view_inverse,
             projection_inverse: self.projection_inverse,
+            near: self.near,
+            far: self.far,
         };
 
         let size = size_of::<ViewProjGPU>();

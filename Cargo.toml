@@ -16,7 +16,7 @@ sdl2 = "0.37.0"
 thiserror = "2.0.18"
 nalgebra = "0.34.1"
 nalgebra-glm = "0.20.0"
-gltf = "1.4.1"
+gltf = { version = "1.4.1", features = ["KHR_texture_transform"] }
 clap = { version = "4.5.58", features = ["derive"] }
 gpu-allocator = { version = "0.27.0", features = ["vulkan"], default-features = false }
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }

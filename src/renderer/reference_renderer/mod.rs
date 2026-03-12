@@ -398,6 +398,8 @@ impl VulkanMcPathTracer {
             projection_prev: proj,
             view_inverse: scene.camera.view().try_inverse().unwrap(),
             projection_inverse: proj.try_inverse().unwrap(),
+            near: 500.0,
+            far: 0.01,
         };
 
         let globals = Globals {
@@ -408,6 +410,7 @@ impl VulkanMcPathTracer {
             draw_res_y: height as f32,
             time: context.total_time,
             frame_index: context.frame_index,
+            _padding_0: 0,
             current_jitter: offset,
             // reference renderer does not use this, so it can be safely ignored
             prev_jitter: offset,
@@ -622,6 +625,7 @@ impl VulkanMcPathTracer {
                 direct_trace_distance: self.quality.rt_direct_trace_distance,
                 indirect_trace_distance: self.quality.rt_indirect_trace_distance,
                 fov,
+                indirect_intensity_clamp: self.quality.indirect_light_clamp,
             },
             context,
             viewport_size,

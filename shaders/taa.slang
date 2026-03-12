@@ -101,14 +101,14 @@ void main(uint3 tid: SV_DispatchThreadID) {
     uint y = tid.y;
 
     int2 size = int2(int(global.res_x), int(global.res_y));
-    int2 drawSize = int2(int(global.res_x), int(global.res_y));
+    int2 drawSize = int2(int(global.draw_res_x), int(global.draw_res_y));
 
     float blend_factor = 0.1;
     if (pc.clear == 1) {
         blend_factor = 1.0;
     }
 
-    if (x <= global.res_x && y <= global.res_y) {
+    if (x <= global.draw_res_x && y <= global.draw_res_y) {
         float2 uv = (float2(x, y) + 0.5) / float2(global.res_x, global.res_y);
         float2 sampleUv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
 

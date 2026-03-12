@@ -7,6 +7,7 @@ pub struct Globals {
     pub draw_res_y: f32,
     pub time: f32,
     pub frame_index: u32,
+    pub _padding_0: u32,
     pub current_jitter: (f32, f32),
     pub prev_jitter: (f32, f32),
 }

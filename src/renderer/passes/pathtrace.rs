@@ -70,16 +70,17 @@ impl PathTracePass {
             [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
-        let pc = PushConstBuilder::with_capacity(9 * size_of::<u32>())
+        let pc = PushConstBuilder::with_capacity(10 * size_of::<u32>())
             .add_u32(inputs.bounces)
-            .add_u32(inputs.color.sampler_index.unwrap())
-            .add_u32(inputs.depth.sampler_index.unwrap())
-            .add_u32(inputs.normal.sampler_index.unwrap())
+            .add_u32(inputs.color.storage_index.unwrap())
+            .add_u32(inputs.depth.storage_index.unwrap())
+            .add_u32(inputs.normal.storage_index.unwrap())
             .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
             .add_u32(self.indirect_render_target.borrow().storage_index.unwrap())
             .add_u32(inputs.sky_sampler)
             .add_f32(inputs.direct_trace_distance)
             .add_f32(inputs.indirect_trace_distance)
+            .add_f32(inputs.indirect_intensity_clamp)
             .build();
 
         unsafe {
@@ -146,4 +147,5 @@ pub struct PathTraceInputs<'a> {
     pub bounces: u32,
     pub direct_trace_distance: f32,
     pub indirect_trace_distance: f32,
+    pub indirect_intensity_clamp: f32,
 }

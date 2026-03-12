@@ -68,7 +68,7 @@ impl ReferencePathtracePass {
                 [descriptors.global_set.inner, descriptors.compute_set.inner],
             );
 
-            let pc = PushConstBuilder::with_capacity(7 * size_of::<u32>())
+            let pc = PushConstBuilder::with_capacity(8 * size_of::<u32>())
                 .add_u32(context.frame_index)
                 .add_u32(inputs.bounces)
                 .add_u32(self.render_target.borrow().storage_index.unwrap())
@@ -76,6 +76,7 @@ impl ReferencePathtracePass {
                 .add_f32(inputs.direct_trace_distance)
                 .add_f32(inputs.indirect_trace_distance)
                 .add_f32(inputs.fov)
+                .add_f32(inputs.indirect_intensity_clamp)
                 .build();
 
             command_buffer.push_constants(
@@ -133,4 +134,5 @@ pub struct ReferencePathTraceInputs<'a> {
     pub direct_trace_distance: f32,
     pub indirect_trace_distance: f32,
     pub fov: f32,
+    pub indirect_intensity_clamp: f32,
 }

@@ -27,38 +27,29 @@ float2 uv_to_abs(float2 uv) {
     return float2(uv.x * (global.draw_res_x / global.res_x), uv.y * (global.draw_res_y / global.res_y));
 }
 
-float get_linear_depth(Sampler2D depth, float2 uv) {
-    float curr_depth = depth.Sample(uv_to_abs(uv)).x;
-
-    float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, curr_depth, 1.0));
-    per_pos /= per_pos.w;
-    float3 curr_pos = mul(vp.view_inverse, per_pos).xyz;
-    float4 pos = mul(vp.proj[0], mul(vp.view[0], float4(curr_pos, 1.0)));
-
-    return pos.z * pos.w;
+float to_linear_depth(float depth) {
+    return vp.near * vp.far / (vp.far + depth * (vp.near - vp.far));
 }
 
-float get_depth(Sampler2D depth, float2 uv) {
-    return depth.Sample(uv_to_abs(uv)).x;
+float get_linear_depth(uint2 pos) {
+    return to_linear_depth(storages[pc.curr_depth_idx].Load(pos).x);
 }
 
-float get_depth_gradient(uint x, uint y, Sampler2D depth, int2 size) {
-    float2 uv = float2((x + 0.5) / size.x, (y + 0.5) / size.y);
-    float x_offset = 1.0 / size.x;
-    float y_offset = 1.0 / size.y;
+float get_depth_gradient(int2 uv, int2 size, float m) {
+    float t = get_linear_depth(uv + int2(0, -1));
 
-    float m = get_depth(depth, uv);
-    float t = get_depth(depth, uv + float2(0.0, -y_offset));
-    float b = get_depth(depth, uv + float2(0.0, y_offset));
-    float l = get_depth(depth, uv + float2(-x_offset, 0.0));
-    float r = get_depth(depth, uv + float2(x_offset, 0.0));
+    float l = get_linear_depth(uv + int2(-1, 0));
+    float m = to_linear_depth(m);
+    float r = get_linear_depth(uv + int2(1, 0));
 
-    return max(max(abs(t-m), abs(m-b)), max(abs(l-m), abs(m-r)));
+    float b = get_linear_depth(uv + int2(0, 1));
+
+    return length(float2(((l - m) + (m - r)) / 2.0, ((t - m) + (m - b)) / 2.0));
 }
 
 float get_depth_weight(float base, float sample_depth, float gradient, float dist) {
     float a = abs(base - sample_depth);
-    float b = 1.0 * abs(gradient * dist) + 0.0001;
+    float b = 5.0 * length(gradient * dist) + 0.00001;
 
     return exp(-(a / b));
 }
@@ -75,14 +66,15 @@ float luminance(float3 color) {
 
 float compute_spatial_variance(int2 uv_int, float luma_base, int2 size) {
     float2 uv = (float2(uv_int) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
-    float3 base_normal = normalize(images[pc.normal_idx].Sample(uv_to_abs(uv)).xyz * 2.0 - 1.0);
+    float3 base_normal = normalize(storages[pc.normal_idx].Load(uv_int).xyz * 2.0 - 1.0);
 
-    if (images[pc.curr_depth_idx].Sample(uv_to_abs(uv)).x == 0.0) {
+    let base_depth = to_linear_depth(storages[pc.curr_depth_idx].Load(uv_int).x);
+
+    if (base_depth == 0.0) {
         return 0.0;
     }
 
-    float base_depth = images[pc.curr_depth_idx].Sample(uv_to_abs(uv)).x;
-    float gradient = get_depth_gradient(uv_int.x, uv_int.y, images[pc.curr_depth_idx], size);
+    float gradient = get_depth_gradient(uv_int, size, base_depth);
 
     float sum = 0.0;
     float sum_sq = 0.0;
@@ -95,9 +87,9 @@ float compute_spatial_variance(int2 uv_int, float luma_base, int2 size) {
 
                 float4 current = storages[pc.src_idx].Load(uv);
                 float luma_sample = luminance(current.xyz);
-                float3 normal_sample = normalize(images[pc.normal_idx].Sample(uv_to_abs(texture_uv)).xyz * 2.0 - 1.0);
-                float depth_sample = images[pc.curr_depth_idx].Sample(uv_to_abs(texture_uv)).x;
-                float sample_dist = distance(texture_uv, uv);
+                float3 normal_sample = normalize(storages[pc.normal_idx].Load(uv).xyz * 2.0 - 1.0);
+                float depth_sample = to_linear_depth(storages[pc.curr_depth_idx].Load(uv).x);
+                float sample_dist = length(float2(x, y));
 
                 float normal_weight = pow(max(dot(base_normal, normal_sample), 0.0), 128.0);
                 float depth_weight = get_depth_weight(base_depth, depth_sample, gradient, sample_dist);
@@ -127,25 +119,28 @@ void main(uint3 tid: SV_DispatchThreadID) {
     int2 size = int2(int(global.res_x), int(global.res_y));
     int2 drawSize = int2(int(global.draw_res_x), int(global.draw_res_y));
 
-    if (x <= drawSize.x && y <= drawSize.y) {
-        float2 uv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
-
-        float3 current = storages[pc.src_idx].Load(int2(x, y)).xyz;
-
-        float3 moments = storages[pc.moments_idx].Load(int2(x, y)).xyz;
-
-        float variance;
-        if (moments.z < 4.0) {
-            variance = compute_spatial_variance(int2(x, y), luminance(current), drawSize) * (4.0 / moments.z);
-        } else {
-            variance = (moments.y) - pow(moments.x, 2.0);
-        }
-
-        if (global.debug == DebugMode::DirectVariance || global.debug == DebugMode::IndirectVariance) {
-            storages[pc.out_idx].Store(int2(x, y), float4(float3(variance * 5.0), 1.0));
-            return;
-        }
-
-        storages[pc.out_idx].Store(int2(x, y), float4(current, variance));
+    if (x >= drawSize.x || y >= drawSize.y) {
+        return;
     }
+
+    float2 uv = (float2(x, y) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
+
+    float3 current = storages[pc.src_idx].Load(int2(x, y)).xyz;
+
+    float3 moments = storages[pc.moments_idx].Load(int2(x, y)).xyz;
+
+    float variance;
+    if (moments.z < 4.0) {
+        variance = compute_spatial_variance(int2(x, y), luminance(current), drawSize) * (4.0 / moments.z) + (moments.y) - pow(moments.x, 2.0);
+    } else {
+        variance = (moments.y) - pow(moments.x, 2.0);
+    }
+
+    if (global.debug == DebugMode::DirectVariance || global.debug == DebugMode::IndirectVariance) {
+        storages[pc.out_idx].Store(int2(x, y), float4(float3(variance * 5.0), 1.0));
+        return;
+    }
+
+    storages[pc.out_idx].Store(int2(x, y), float4(current, variance));
+
 }

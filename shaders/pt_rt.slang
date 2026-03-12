@@ -43,6 +43,7 @@ struct PushConsts {
     int sky_idx;
     float direct_trace_distance;
     float indirect_trace_distance;
+    float indirect_intensity_clamp;
 };
 
 [vk::push_constant]
@@ -143,12 +144,10 @@ void raygen() {
     payload.isMiss = false;
     payload.color = float3(0.0);
 
-    uint start = getRealtimeClockLow().x;
-
     float2 sampleUv = (float2(launch_idx.xy) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
     float2 uv = (float2(launch_idx.xy) + 0.5) / float2(global.res_x, global.res_y);
 
-    float depth = images[pc.depth_idx].Sample(uv).x;
+    float depth = storages[pc.depth_idx].Load(launch_idx.xy).x;
 
     if (depth == 0.0) {
         storages[pc.direct_idx].Store(
@@ -162,8 +161,10 @@ void raygen() {
         return;
     }
 
-    float3 color = images[pc.color_idx].Sample(uv).xyz;
-    float3 normal = normalize((images[pc.normal_idx].Sample(uv).xyz - 0.5) * 2.0);
+    uint start = getRealtimeClockLow().x;
+
+    float3 color = storages[pc.color_idx].Load(launch_idx.xy).xyz;
+    float3 normal = normalize((storages[pc.normal_idx].Load(launch_idx.xy).xyz - 0.5) * 2.0);
 
     float4 per_pos = mul(vp.proj_inverse, float4(sampleUv * 2.0 - 1.0, depth, 1.0));
 
@@ -296,14 +297,14 @@ void raygen() {
             int2(launch_idx.xy),
             float4(
                 direct,
-                0.0
+                1.0
             )
         );
         storages[pc.indirect_idx].Store(
             int2(launch_idx.xy),
             float4(
                 indirect,
-                0.0
+                1.0
             )
         );
     }
@@ -318,6 +319,10 @@ void miss(inout Payload payload) {
         payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
     } else {
         payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx]);
+    }
+
+    if (pc.indirect_intensity_clamp != 0.0) {
+        payload.color = min(float3(pc.indirect_intensity_clamp), payload.color);
     }
 }
 

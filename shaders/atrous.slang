@@ -46,56 +46,55 @@ float2 uv_to_abs(float2 uv) {
     return float2(uv.x * (global.draw_res_x / global.res_x), uv.y * (global.draw_res_y / global.res_y));
 }
 
-float get_linear_depth(float4x4 viewproj, Sampler2D depth, float2 uv) {
-    float curr_depth = depth.Sample(uv_to_abs(uv)).x;
-
-    float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, curr_depth, 1.0));
-    per_pos /= per_pos.w;
-    float3 curr_pos = mul(vp.view_inverse, per_pos).xyz;
-    float4 pos = mul(viewproj, float4(curr_pos, 1.0));
-
-    return pos.z * pos.w;
+float to_linear_depth(float depth) {
+    return vp.near * vp.far / (vp.far + depth * (vp.near - vp.far));
 }
 
 float get_depth(Sampler2D depth, float2 uv) {
     return depth.Sample(uv_to_abs(uv)).x;
 }
 
-float get_depth_gradient(uint x, uint y, Sampler2D depth, int2 size) {
-    float2 uv = float2((x + 0.5) / size.x, (y + 0.5) / size.y);
-    float x_offset = 1.0 / size.x;
-    float y_offset = 1.0 / size.y;
+float get_depth_gradient(uint3 localid) {
+    float t = to_linear_depth(depths[localid.y][localid.x + 1]);
 
-    float m = get_depth(depth, uv);
-    float t = get_depth(depth, uv + float2(0.0, -y_offset));
-    float b = get_depth(depth, uv + float2(0.0, y_offset));
-    float l = get_depth(depth, uv + float2(-x_offset, 0.0));
-    float r = get_depth(depth, uv + float2(x_offset, 0.0));
+    float l = to_linear_depth(depths[localid.y + 1][localid.x]);
+    float m = to_linear_depth(depths[localid.y + 1][localid.x + 1]);
+    float r = to_linear_depth(depths[localid.y + 1][localid.x + 2]);
 
-    return max(max(abs(t-m), abs(m-b)), max(abs(l-m), abs(m-r)));
+    float b = to_linear_depth(depths[localid.y + 2][localid.x + 1]);
+
+    return length(float2(((l - m) + (m - r)) / 2.0, ((t - m) + (m - b)) / 2.0));
 }
 
 float get_depth_weight(float base, float sample_depth, float gradient, float dist) {
     float a = abs(base - sample_depth);
-    float b = 1.0 * abs(gradient * dist) + 0.0001;
+    float b = 5.0 * length(gradient * dist) + 0.00001;
 
-    return exp(-(a / b));
+    return -(a / b);
 }
 
 float get_luma_weight(float base, float sample_luma, float variance) {
     float a = abs(base - sample_luma);
-    float b = 4.0 * sqrt(variance) + 0.0001;
-    return exp(-(a / b));
+    float b = 4.0 * sqrt(variance) + 0.00001;
+    return -(a / b);
 }
 
-float get_blurred_variance(int2 uv, int2 size) {
+float get_blurred_variance(uint3 localid) {
     float sum = 0.0;
     float weight = 0.0;
 
-    for (int x = -1; x <= 1; x++) {
-        for (int y = -1; y <= 1; y++) {
-            float val = storages[pc.src_idx].Load(int2(clamp(uv.x + x, 0, size.x - 1), clamp(uv.y + y, 0, size.y - 1))).w;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            int final_y = int(localid.y) + y + 1;
+            int final_x = int(localid.x) + x + 1;
+
+            float val = depths[final_y][final_x];
             float weight_sample = get_gauss_3x3_weight(x) * get_gauss_3x3_weight(y);
+
+            if (val < 0.0) {
+                weight_sample = 0.0;
+            }
+            
             sum += val * weight_sample;
             weight += weight_sample;
         }
@@ -104,22 +103,63 @@ float get_blurred_variance(int2 uv, int2 size) {
     return sum / weight;
 }
 
+groupshared float depths[18][18];
+
+void populateSharedDepths(uint3 localid, uint3 tid) {
+    depths[localid.y + 1][localid.x + 1] = storages[pc.depth_idx].Load(tid.xy).x;
+
+    // this is 4x16 continuous threads, which should be exacly 1 or 2 wavefronts
+    if (localid.y < 4) {
+        uint2 start = tid.xy - localid.xy;
+
+        // 0-15
+        uint posInSequence = localid.x;
+
+        uint vertical = localid.y & 1;
+        uint horizontal = 1 - vertical;
+
+        uint line = (localid.y >> 1) & 1;
+
+        let offset = int2(posInSequence * horizontal + vertical * (17 * line - 1), posInSequence * vertical + horizontal * (17 * line - 1));
+
+        depths[offset.y + 1][offset.x + 1] = storages[pc.depth_idx].Load(start + offset).x;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+}
+
+void populateSharedVariance(uint3 localid, uint3 tid, int2 drawSize) {
+    int2 start = tid.xy - localid.xy;
+
+    int index = localid.x + localid.y * 16;
+    // two iterations whould be enough
+    for (int i_base = 0; i_base <= 1; i_base++) {
+        let total_index = i_base * 16 * 16 + index;
+
+        let offset = int2(total_index % 18, total_index / 18);
+        int2 coords = start + offset - 1;
+        coords = clamp(coords, 0, drawSize - 1);
+
+        if (offset.y >= 18) {
+            break;
+        }
+
+        depths[offset.y][offset.x] = storages[pc.src_idx].Load(coords).w;
+    }
+
+    GroupMemoryBarrierWithGroupSync();
+}
+
 [numthreads(16, 16, 1)]
 [shader("compute")]
-void main(uint3 tid: SV_DispatchThreadID) {
+void main(uint3 tid: SV_DispatchThreadID, uint3 localid: SV_GroupThreadID) {
     uint x_base = tid.x;
     uint y_base = tid.y;
 
     int2 size = int2(global.res_x, global.res_y);
     int2 drawSize = int2(global.draw_res_x, global.draw_res_y);
 
-    if (x_base >= drawSize.x || y_base >= drawSize.y) {
-        return;
-    }
-
-    float4 result = storages[pc.src_idx].Load(int2(x_base, y_base));
-
-    float4 sum = float4(0.0);
+    float3 sum = float3(0.0);
     float weight_sum = 0.0;
 
     float new_variance_sum = 0.0;
@@ -127,50 +167,70 @@ void main(uint3 tid: SV_DispatchThreadID) {
 
     float2 uv = float2((x_base + 0.5) / drawSize.x, (y_base + 0.5) / drawSize.y);
 
-    if (images[pc.depth_idx].Sample(uv_to_abs(uv)).x == 0.0) {
+    populateSharedDepths(localid, tid);
+
+    float expDepth = depths[localid.y + 1][localid.x + 1];
+
+    float gradient = get_depth_gradient(localid);
+
+    //storages[pc.out_idx].Store(int2(x_base, y_base), float4(float2(gradient * 400.0), 0.0, 1.0));
+
+    populateSharedVariance(localid, tid, drawSize);
+
+    float blurred_variance = get_blurred_variance(localid);
+
+    if (x_base >= drawSize.x || y_base >= drawSize.y) {
         return;
     }
 
-    float4x4 viewproj = mul(vp.proj[0], vp.view[0]);
+    if (expDepth == 0.0) {
+        return;
+    }
+
+    float4 result = storages[pc.src_idx].Load(int2(x_base, y_base));
 
     float luma_base = luminance(result.xyz);
-    float3 normal_base = normalize(images[pc.normal_idx].Sample(uv_to_abs(uv)).xyz * 2.0 - 1.0);
-    float depth_base = get_depth(images[pc.depth_idx], uv);
-    float gradient = get_depth_gradient(x_base, y_base, images[pc.depth_idx], drawSize);
-    float blurred_variance = get_blurred_variance(int2(x_base, y_base), drawSize);
+    float3 normal_base = normalize(storages[pc.normal_idx].Load(int2(x_base, y_base)).xyz * 2.0 - 1.0);
+    float depth_base = to_linear_depth(expDepth);
 
     for (int y = -2; y <= 2; y++) {
+        int y_final = int(y_base) + y * stride(pc.level);
         for (int x = -2; x <= 2; x++) {
             int x_final = int(x_base) + x * stride(pc.level);
-            int y_final = int(y_base) + y * stride(pc.level);
-
-            if (x_final >= drawSize.x || x_final < 0 || y_final >= drawSize.y || y_final < 0) {
+            if (y_final >= drawSize.y || y_final < 0 || x_final >= drawSize.x || x_final < 0) {
                 continue;
             }
+            let coords = int2(x_final, y_final);
 
-            float2 sample_uv = float2((x_final + 0.5) / drawSize.x, (y_final + 0.5) / drawSize.y);
-            float3 sample_normal = normalize(images[pc.normal_idx].Sample(uv_to_abs(sample_uv)).xyz * 2.0 - 1.0);
-            float sample_depth = get_depth(images[pc.depth_idx], sample_uv);
-            float sample_dist = distance(sample_uv, uv);
+            float3 sample_normal = normalize(storages[pc.normal_idx].Load(coords).xyz * 2.0 - 1.0);
+            float sample_depth = storages[pc.depth_idx].Load(coords).x;
+            sample_depth = to_linear_depth(sample_depth);
 
-            float4 img_in = storages[pc.src_idx].Load(int2(x_final, y_final));
+            float sample_dist = length(float2(x, y));
+
+            float4 img_in = storages[pc.src_idx].Load(coords);
             float variance = img_in.a;
 
             float normal_weight = pow(max(dot(normal_base, sample_normal), 0.0), 128.0);
             float depth_weight = get_depth_weight(depth_base, sample_depth, gradient, sample_dist);
             float luma_weight = get_luma_weight(luminance(img_in.xyz), luma_base, blurred_variance);
+            float depth_luma_exp = exp(depth_weight + luma_weight);
 
-            float weight = max(get_weight(x) * get_weight(y) * normal_weight * depth_weight * luma_weight, 0.00001);
-            float variance_weight = max(pow(get_weight(x) * get_weight(y), 2.0) * pow(normal_weight * depth_weight * luma_weight, 2.0), 0.00001);
+            float filter_weight = get_weight(x) * get_weight(y);
+            float edge_stops = normal_weight * depth_luma_exp;
 
-            sum += img_in * weight;
+            float weight = max(filter_weight * edge_stops, 0.0000001);
+            float variance_weight = max(pow(weight, 2.0), 0.0000001);
+
+            sum += img_in.xyz * weight;
             weight_sum += weight;
             new_variance_sum += variance * variance_weight;
-            new_variance_weight_sum += get_weight(x) * get_weight(y) * normal_weight * depth_weight * luma_weight;
         }
     }
+    float3 targetColor = max((sum / weight_sum).xyz, float3(0.0));
+    float targetVariance = max(new_variance_sum / pow(weight_sum, 2.0), 0.0);
 
-    float4 total = float4((sum / weight_sum).xyz, max(new_variance_sum / pow(new_variance_weight_sum, 2.0), 0.0));
+    float4 total = float4(targetColor, targetVariance);
 
     storages[pc.out_idx].Store(int2(x_base, y_base), total);
 }
