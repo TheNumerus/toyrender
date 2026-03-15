@@ -239,6 +239,7 @@ impl BottomLevelAs {
         flags: vk::BuildAccelerationStructureFlagsKHR,
     ) -> Result<BTreeMap<u64, Self>, AppError> {
         let mut blases = BTreeMap::new();
+        let mut bufs = BTreeMap::new();
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
@@ -283,6 +284,8 @@ impl BottomLevelAs {
                 device.rt_properties.min_bvh_scratch_alignment as u64,
             )?;
 
+            bufs.insert(*id, buf);
+
             let blas = Self::create(
                 device.clone(),
                 allocator.clone(),
@@ -292,7 +295,7 @@ impl BottomLevelAs {
 
             build_info.dst_acceleration_structure = blas.inner;
             build_info.scratch_data = vk::DeviceOrHostAddressKHR {
-                device_address: buf.get_device_addr(),
+                device_address: bufs[id].get_device_addr(),
             };
 
             unsafe {
