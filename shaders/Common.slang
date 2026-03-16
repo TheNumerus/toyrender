@@ -57,3 +57,16 @@ public enum DebugMode {
     DenoiseIndirect,
     Raw,
 };
+
+public struct Vertex {
+    public float3 pos;
+    public float3 normal;
+    public float4 color;
+    public float2 uv;
+}
+
+public struct MeshInstanceInfo {
+    public float4x4 model_inverse;
+    public float[12] *vertexData;
+    public int *indexData;
+}

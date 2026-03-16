@@ -58,6 +58,7 @@ impl Vertex {
 pub struct VertexIndexBuffer {
     staging: Option<Buffer>,
     pub inner: Buffer,
+    pub addr: vk::DeviceAddress,
 }
 
 impl VertexIndexBuffer {
@@ -126,7 +127,13 @@ impl VertexIndexBuffer {
                 .map_to_err("Cannot wait idle")?;
         }
 
-        Ok(Self { inner, staging: None })
+        let addr = inner.get_device_addr();
+
+        Ok(Self {
+            inner,
+            staging: None,
+            addr,
+        })
     }
 
     pub fn new_nonblocking(
@@ -172,9 +179,12 @@ impl VertexIndexBuffer {
                 .cmd_copy_buffer(cmd_buf.inner, staging.inner, inner.inner, &[region]);
         }
 
+        let addr = inner.get_device_addr();
+
         Ok(Self {
             inner,
             staging: Some(staging),
+            addr,
         })
     }
 

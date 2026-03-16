@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct Buffer {
     pub inner: vk::Buffer,
+    pub size: u64,
     allocation: Option<Allocation>,
     device: Rc<Device>,
     allocator: Arc<Mutex<Allocator>>,
@@ -61,6 +62,7 @@ impl Buffer {
 
         Ok(Self {
             inner,
+            size,
             device,
             allocation: Some(allocation),
             allocator,
@@ -113,6 +115,7 @@ impl Buffer {
 
         Ok(Self {
             inner,
+            size,
             device,
             allocation: Some(allocation),
             allocator,

@@ -22,6 +22,7 @@ use crate::vulkan::{
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
+use nalgebra_glm::Mat4x4;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -47,6 +48,7 @@ pub struct VulkanMcPathTracer {
     pub descriptors: Vec<Rc<RefCell<RendererDescriptors>>>,
     pub uniform_buffers: Vec<Buffer>,
     pub uniform_buffers_globals: Vec<Buffer>,
+    pub mesh_data: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
@@ -168,6 +170,7 @@ impl VulkanMcPathTracer {
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut descriptors = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut mesh_data = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let mut writes = Vec::new();
         let mut tlases = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -227,6 +230,17 @@ impl VulkanMcPathTracer {
 
             env_uniforms.push(env_buf);
 
+            let mesh_buf = Buffer::new(
+                device.clone(),
+                context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                // will get proper size on first frame
+                64,
+            )?;
+
+            mesh_data.push(mesh_buf);
+
             writes.extend(Self::init_global_descriptor_set(
                 &descriptors[i].borrow().global_set.inner,
                 &uniform_buffers_globals[i].inner,
@@ -257,6 +271,7 @@ impl VulkanMcPathTracer {
             uniform_buffers,
             uniform_buffers_globals,
             env_uniforms,
+            mesh_data,
             in_flight,
             quality: QualitySettings::new(),
             debug_mode: DebugMode::None,
@@ -365,8 +380,6 @@ impl VulkanMcPathTracer {
 
         report.log::<stats::TlasTimeStat>(tlas_start.elapsed().as_secs_f32() * 1000.0);
 
-        let command_buffer = &self.command_buffers[self.current_frame];
-
         let width = (drawable_size.0 as f32 * self.render_scale).max(1.0) as u32;
         let height = (drawable_size.1 as f32 * self.render_scale).max(1.0) as u32;
 
@@ -419,6 +432,8 @@ impl VulkanMcPathTracer {
 
         let desc_start = Instant::now();
 
+        self.setup_mesh_data(scene, resource_subsystem)?;
+
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes().as_ref())?;
@@ -435,6 +450,14 @@ impl VulkanMcPathTracer {
 
         let mut writes = Vec::new();
 
+        writes.push(create_buffer_update(
+            &self.mesh_data[self.current_frame].inner,
+            self.mesh_data[self.current_frame].size,
+            &self.descriptors[self.current_frame].borrow().global_set.inner,
+            5,
+            vk::DescriptorType::STORAGE_BUFFER,
+        ));
+
         for i in 0..crate::renderer::MAX_FRAMES_IN_FLIGHT {
             writes.push(Self::create_tlas_update_descriptor_set(
                 &self.descriptors[i].borrow().global_set.inner,
@@ -445,6 +468,8 @@ impl VulkanMcPathTracer {
         DescriptorWriter::batch_write(&self.context.device, writes);
 
         report.log::<stats::DescTimeStat>(desc_start.elapsed().as_secs_f32() * 1000.0);
+
+        let command_buffer = &self.command_buffers[self.current_frame];
 
         command_buffer.begin()?;
 
@@ -767,4 +792,45 @@ impl VulkanMcPathTracer {
 
         Ok(())
     }
+
+    fn setup_mesh_data(&mut self, scene: &Scene, resource_subsystem: &ResourceSubsystem) -> Result<(), AppError> {
+        let mut handles = Vec::with_capacity(scene.meshes.len());
+
+        for mesh in &scene.meshes {
+            let vulkan_mesh = &resource_subsystem.meshes[&mesh.resource.id];
+            let vertex_pointer = vulkan_mesh.buf.addr;
+            let index_pointer = vertex_pointer + vulkan_mesh.indices_offset;
+
+            handles.push(MeshInstanceDataGPU {
+                transform_inverse: mesh.inverse,
+                vertex_pointer,
+                index_pointer,
+            })
+        }
+
+        let target_size = (handles.len() * size_of::<MeshInstanceDataGPU>()) as u64;
+
+        if self.mesh_data[self.current_frame].size < target_size {
+            self.mesh_data[self.current_frame] = Buffer::new(
+                self.context.device.clone(),
+                self.context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                target_size,
+            )?;
+
+            let slice = unsafe { core::slice::from_raw_parts(handles.as_ptr() as *const u8, target_size as usize) };
+
+            self.mesh_data[self.current_frame].fill_host(slice)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[repr(C)]
+struct MeshInstanceDataGPU {
+    transform_inverse: Mat4x4,
+    vertex_pointer: u64,
+    index_pointer: u64,
 }

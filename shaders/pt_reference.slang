@@ -28,6 +28,9 @@ ConstantBuffer<ViewProj> vp;
 [[vk::binding(3, 0)]]
 ConstantBuffer<Environment> env;
 
+[[vk::binding(5, 0)]]
+StructuredBuffer<MeshInstanceInfo> meshData;
+
 [[vk::binding(0, 1)]]
 Sampler2D images[];
 
@@ -217,12 +220,19 @@ void raygen() {
     } else {
         primaryPos = pos;
 
-        if (dot(payload.normal, dir) >= 0.0) {
-            payload.normal = -payload.normal;
-        }
-
         hitNormal = payload.normal;
         primaryNormal = hitNormal;
+    }
+
+    if (global.debug == DebugMode::Normal) {
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                (primaryNormal * 0.5) + 0.5,
+                0.0
+            )
+        );
+        return;
     }
 
     // TODO model proper energy passing from material
@@ -372,13 +382,38 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     float3 edgeA = vertPos1 - vertPos0;
     float3 edgeB = vertPos2 - vertPos0;
 
-    float3 normal = cross(edgeA, edgeB);
-
-    payload.normal = normalize(normal);
+    //payload.normal = normalize(normal);
     payload.hit = attr.barycentrics.x * edgeA + attr.barycentrics.y * edgeB + vertPos0;
+
+    let vertex0 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3];
+    let vertex1 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 1];
+    let vertex2 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 2];
+
+    let color0 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex0][6]);
+    let color1 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex1][6]);
+    let color2 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex2][6]);
+
+    let colorA = color1 - color0;
+    let colorB = color2 - color0;
+
+    payload.color = attr.barycentrics.x * colorA + attr.barycentrics.y * colorB + color0;
+
+    let normal0 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex0][3]);
+    let normal1 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex1][3]);
+    let normal2 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex2][3]);
+
+    float3 normalA = normal1 - normal0;
+    float3 normalB = normal2 - normal0;
+
+    let normalBlend = attr.barycentrics.x * normalA + attr.barycentrics.y * normalB + normal0;
+    payload.normal = normalize(mul(float3x3(transpose(meshData[InstanceIndex()].model_inverse)), normalBlend));
+
+    if (HitKind() == HIT_KIND_TRIANGLE_BACK_FACE) {
+        payload.normal = -payload.normal;
+    }
 
     //hash_state = InstanceID() * 4096;
     //payload.color = pow(float3(pcg_hash(), pcg_hash(), pcg_hash()), 2.2);
 
-    payload.color = float3(0.7);
+    //payload.color = float3(0.7);
 }

@@ -84,13 +84,27 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
                 ))
             .xyz();
             let color = match accessors.color {
-                Some(ac) => Vec4::new(
-                    ac[4 * i] as f32 / u16::MAX as f32,
-                    ac[4 * i + 1] as f32 / u16::MAX as f32,
-                    ac[4 * i + 2] as f32 / u16::MAX as f32,
-                    ac[4 * i + 3] as f32 / u16::MAX as f32,
-                ),
-                None => Vec4::from_element(0.0),
+                Some(ColorAccessor::F32(ac)) => match ac.len() / accessors.len {
+                    3 => Vec4::new(ac[3 * i], ac[3 * i + 1], ac[3 * i + 2], 0.0),
+                    4 => Vec4::new(ac[4 * i], ac[4 * i + 1], ac[4 * i + 2], ac[4 * i + 3]),
+                    _ => return Err(AppError::Import("Found non RGB or RGBA colors".into())),
+                },
+                Some(ColorAccessor::U16(ac)) => match ac.len() / accessors.len {
+                    3 => Vec4::new(
+                        ac[3 * i] as f32 / u16::MAX as f32,
+                        ac[3 * i + 1] as f32 / u16::MAX as f32,
+                        ac[3 * i + 2] as f32 / u16::MAX as f32,
+                        0.0,
+                    ),
+                    4 => Vec4::new(
+                        ac[4 * i] as f32 / u16::MAX as f32,
+                        ac[4 * i + 1] as f32 / u16::MAX as f32,
+                        ac[4 * i + 2] as f32 / u16::MAX as f32,
+                        ac[4 * i + 3] as f32 / u16::MAX as f32,
+                    ),
+                    _ => return Err(AppError::Import("Found non RGB or RGBA colors".into())),
+                },
+                None => Vec4::from_element(1.0),
             };
             let uv = match accessors.uv {
                 Some(ac) => Vec2::new(ac[2 * i], ac[2 * i + 1]),
@@ -256,12 +270,17 @@ enum IndicesAccessor<'a> {
     U32(&'a [u32]),
 }
 
+enum ColorAccessor<'a> {
+    U16(&'a [u16]),
+    F32(&'a [f32]),
+}
+
 struct Accessors<'a> {
     pos: &'a [f32],
     normal: &'a [f32],
     indices: IndicesAccessor<'a>,
     uv: Option<&'a [f32]>,
-    color: Option<&'a [u16]>,
+    color: Option<ColorAccessor<'a>>,
     len: usize,
 }
 
@@ -282,16 +301,13 @@ impl<'a> Accessors<'a> {
         let indices = Self::accessor_to_indices(indices.unwrap(), data);
 
         let uv = uv.map(|uv| Self::accessor_to_slice(uv, data));
-        let color = color.map(|color| Self::accessor_to_slice(color, data));
+        let color = color.map(|color| Self::accessor_to_color(color, data));
 
         let len = pos.len() / 3;
 
         let mut lengths = vec![("normal", normal.len() / 3)];
         if let Some(a) = uv {
             lengths.push(("uv", a.len() / 2));
-        }
-        if let Some(a) = color {
-            lengths.push(("color", a.len() / 4));
         }
 
         for (name, l) in lengths {
@@ -336,6 +352,16 @@ impl<'a> Accessors<'a> {
             ComponentType::U16 => IndicesAccessor::U16(Self::accessor_to_slice(accessor, data)),
             ComponentType::U32 => IndicesAccessor::U32(Self::accessor_to_slice(accessor, data)),
             _ => panic!("invalid indices format in glTF: {}", {
+                accessor.data_type().as_gl_enum()
+            }),
+        }
+    }
+
+    fn accessor_to_color(accessor: Accessor<'a>, data: &[Data]) -> ColorAccessor<'a> {
+        match accessor.data_type() {
+            ComponentType::U16 => ColorAccessor::U16(Self::accessor_to_slice(accessor, data)),
+            ComponentType::F32 => ColorAccessor::F32(Self::accessor_to_slice(accessor, data)),
+            _ => panic!("invalid color format in glTF: {}", {
                 accessor.data_type().as_gl_enum()
             }),
         }

@@ -279,6 +279,13 @@ impl DescLayout {
                         descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
                         ..Default::default()
                     },
+                    vk::DescriptorSetLayoutBinding {
+                        binding: 5,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                        ..Default::default()
+                    },
                 ]
             }
             DescLayout::Image => {
