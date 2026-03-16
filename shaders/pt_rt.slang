@@ -27,6 +27,9 @@ ConstantBuffer<ViewProj> vp;
 [[vk::binding(3, 0)]]
 ConstantBuffer<Environment> env;
 
+[[vk::binding(5, 0)]]
+StructuredBuffer<MeshInstanceInfo> meshData;
+
 [[vk::binding(0, 1)]]
 Sampler2D images[];
 
@@ -206,9 +209,9 @@ void raygen() {
     for (int i = 0; i < samples; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
-        float d = roughness + (1.0 - roughness) * pow(abs(dot(-hitNormal, dir)), 5.0);
+        float d = roughness + (1.0 - roughness) * pow(1.0 - abs(dot(-hitNormal, dir)), 5.0);
 
-        if (pcg_hash() > d) {
+        if (pcg_hash() < d) {
             // specular ray
             float ddot = dot(dir, hitNormal);
             dir = dir - 2.0 * hitNormal * (ddot);
@@ -342,6 +345,18 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
     float3 normal = cross(vertPos1 - vertPos0, vertPos2 - vertPos0);
 
+    let vertex0 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3];
+    let vertex1 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 1];
+    let vertex2 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 2];
+
+    let color0 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex0][6]);
+    let color1 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex1][6]);
+    let color2 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex2][6]);
+
+    let colorA = color1 - color0;
+    let colorB = color2 - color0;
+
+    payload.color = attr.barycentrics.x * colorA + attr.barycentrics.y * colorB + color0;
+
     payload.normal = normalize(normal);
-    payload.color = 0.7;
 }

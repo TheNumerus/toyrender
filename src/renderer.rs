@@ -87,6 +87,7 @@ pub struct VulkanRenderer {
     pub uniform_buffers_globals: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
     pub mesh_bufs: Vec<Buffer>,
+    pub mesh_data: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
@@ -191,6 +192,7 @@ impl VulkanRenderer {
         let mut uniform_buffers_globals = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut mesh_bufs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut mesh_data = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut descriptors = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         Self::init_history_images(
@@ -271,10 +273,22 @@ impl VulkanRenderer {
                 context.allocator.clone(),
                 MemoryLocation::CpuToGpu,
                 vk::BufferUsageFlags::STORAGE_BUFFER,
-                size_of::<Mat4>() as u64 * 8192,
+                // will get proper size on first frame
+                64,
             )?;
 
             mesh_bufs.push(mesh_transform_buffer);
+
+            let mesh_buf = Buffer::new(
+                device.clone(),
+                context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                // will get proper size on first frame
+                64,
+            )?;
+
+            mesh_data.push(mesh_buf);
 
             writes.extend(Self::init_global_descriptor_set(
                 &descriptors[i].borrow().global_set.inner,
@@ -318,6 +332,7 @@ impl VulkanRenderer {
             uniform_buffers_globals,
             env_uniforms,
             mesh_bufs,
+            mesh_data,
             in_flight,
             last_view_proj: ViewProj::default(),
             debug_mode: DebugMode::None,
@@ -492,13 +507,7 @@ impl VulkanRenderer {
                 3,
                 vk::DescriptorType::UNIFORM_BUFFER,
             ),
-            create_buffer_update(
-                mesh,
-                size_of::<Mat4>() as u64 * 8192,
-                desc_set,
-                4,
-                vk::DescriptorType::STORAGE_BUFFER,
-            ),
+            create_buffer_update(mesh, 64, desc_set, 4, vk::DescriptorType::STORAGE_BUFFER),
         ]
     }
 
@@ -546,10 +555,6 @@ impl VulkanRenderer {
 
         report.log::<stats::TlasTimeStat>(tlas_start.elapsed().as_secs_f32() * 1000.0);
 
-        let command_buffer = &self.command_buffers[self.current_frame];
-        let raster_command_buffer = &self.raster_command_buffers[self.current_frame];
-        let compute_command_buffer = &self.compute_command_buffers[self.current_frame];
-
         let width = (drawable_size.0 as f32 * self.render_scale).max(1.0) as u32;
         let height = (drawable_size.1 as f32 * self.render_scale).max(1.0) as u32;
 
@@ -593,6 +598,17 @@ impl VulkanRenderer {
             &mut report,
         );
 
+        let target_size = collected_meshes.data.len() as u64;
+        if self.mesh_bufs[self.current_frame].size < target_size {
+            self.mesh_bufs[self.current_frame] = Buffer::new(
+                self.context.device.clone(),
+                self.context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                target_size,
+            )?;
+        }
+
         report.log::<stats::MeshTimeStat>(mesh_start.elapsed().as_secs_f32() * 1000.0);
 
         let globals = Globals {
@@ -610,6 +626,8 @@ impl VulkanRenderer {
 
         let desc_start = Instant::now();
 
+        self.setup_mesh_data(scene, resource_subsystem)?;
+
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes().as_ref())?;
@@ -625,6 +643,22 @@ impl VulkanRenderer {
         drop(borrow);
         let mut writes = Vec::new();
 
+        writes.push(create_buffer_update(
+            &self.mesh_bufs[self.current_frame].inner,
+            self.mesh_bufs[self.current_frame].size,
+            &self.descriptors[self.current_frame].borrow().global_set.inner,
+            4,
+            vk::DescriptorType::STORAGE_BUFFER,
+        ));
+
+        writes.push(create_buffer_update(
+            &self.mesh_data[self.current_frame].inner,
+            self.mesh_data[self.current_frame].size,
+            &self.descriptors[self.current_frame].borrow().global_set.inner,
+            5,
+            vk::DescriptorType::STORAGE_BUFFER,
+        ));
+
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             writes.push(Self::create_tlas_update_descriptor_set(
                 &self.descriptors[i].borrow().global_set.inner,
@@ -635,6 +669,10 @@ impl VulkanRenderer {
         DescriptorWriter::batch_write(&self.device, writes);
 
         report.log::<stats::DescTimeStat>(desc_start.elapsed().as_secs_f32() * 1000.0);
+
+        let command_buffer = &self.command_buffers[self.current_frame];
+        let raster_command_buffer = &self.raster_command_buffers[self.current_frame];
+        let compute_command_buffer = &self.compute_command_buffers[self.current_frame];
 
         raster_command_buffer.begin()?;
 
@@ -1052,6 +1090,45 @@ impl VulkanRenderer {
 
             Ok(())
         }
+    }
+
+    fn setup_mesh_data(&mut self, scene: &Scene, resource_subsystem: &ResourceSubsystem) -> Result<(), AppError> {
+        let mut handles = Vec::with_capacity(scene.meshes.len());
+
+        for mesh in &scene.meshes {
+            let vulkan_mesh = &resource_subsystem.meshes[&mesh.resource.id];
+            let vertex_pointer = vulkan_mesh.buf.addr;
+            let index_pointer = vertex_pointer + vulkan_mesh.indices_offset;
+
+            if !mesh.visible {
+                continue;
+            }
+
+            handles.push(crate::renderer::reference_renderer::MeshInstanceDataGPU {
+                transform_inverse: mesh.inverse,
+                vertex_pointer,
+                index_pointer,
+            })
+        }
+
+        let target_size =
+            (handles.len() * size_of::<crate::renderer::reference_renderer::MeshInstanceDataGPU>()) as u64;
+
+        if self.mesh_data[self.current_frame].size < target_size {
+            self.mesh_data[self.current_frame] = Buffer::new(
+                self.context.device.clone(),
+                self.context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                target_size,
+            )?;
+        }
+
+        let slice = unsafe { core::slice::from_raw_parts(handles.as_ptr() as *const u8, target_size as usize) };
+
+        self.mesh_data[self.current_frame].fill_host(slice)?;
+
+        Ok(())
     }
 }
 

@@ -89,6 +89,21 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
                     4 => Vec4::new(ac[4 * i], ac[4 * i + 1], ac[4 * i + 2], ac[4 * i + 3]),
                     _ => return Err(AppError::Import("Found non RGB or RGBA colors".into())),
                 },
+                Some(ColorAccessor::U8(ac)) => match ac.len() / accessors.len {
+                    3 => Vec4::new(
+                        ac[3 * i] as f32 / u8::MAX as f32,
+                        ac[3 * i + 1] as f32 / u8::MAX as f32,
+                        ac[3 * i + 2] as f32 / u8::MAX as f32,
+                        0.0,
+                    ),
+                    4 => Vec4::new(
+                        ac[4 * i] as f32 / u8::MAX as f32,
+                        ac[4 * i + 1] as f32 / u8::MAX as f32,
+                        ac[4 * i + 2] as f32 / u8::MAX as f32,
+                        ac[4 * i + 3] as f32 / u8::MAX as f32,
+                    ),
+                    _ => return Err(AppError::Import("Found non RGB or RGBA colors".into())),
+                },
                 Some(ColorAccessor::U16(ac)) => match ac.len() / accessors.len {
                     3 => Vec4::new(
                         ac[3 * i] as f32 / u16::MAX as f32,
@@ -271,6 +286,7 @@ enum IndicesAccessor<'a> {
 }
 
 enum ColorAccessor<'a> {
+    U8(&'a [u8]),
     U16(&'a [u16]),
     F32(&'a [f32]),
 }
@@ -359,6 +375,7 @@ impl<'a> Accessors<'a> {
 
     fn accessor_to_color(accessor: Accessor<'a>, data: &[Data]) -> ColorAccessor<'a> {
         match accessor.data_type() {
+            ComponentType::U8 => ColorAccessor::U8(Self::accessor_to_slice(accessor, data)),
             ComponentType::U16 => ColorAccessor::U16(Self::accessor_to_slice(accessor, data)),
             ComponentType::F32 => ColorAccessor::F32(Self::accessor_to_slice(accessor, data)),
             _ => panic!("invalid color format in glTF: {}", {

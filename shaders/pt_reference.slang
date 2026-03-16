@@ -246,9 +246,9 @@ void raygen() {
     for (int i = 0; i < pc.bounces; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
-        float d = roughness + (1.0 - roughness) * pow(abs(dot(-hitNormal, dir)), 5.0);
+        float d = roughness + (1.0 - roughness) * pow(1.0 - abs(dot(-hitNormal, dir)), 5.0);
 
-        if (pcg_hash() > d) {
+        if (pcg_hash() < d) {
             // specular ray
             float ddot = dot(dir, hitNormal);
             dir = dir - 2.0 * hitNormal * (ddot);

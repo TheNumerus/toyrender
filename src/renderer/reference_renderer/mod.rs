@@ -801,6 +801,10 @@ impl VulkanMcPathTracer {
             let vertex_pointer = vulkan_mesh.buf.addr;
             let index_pointer = vertex_pointer + vulkan_mesh.indices_offset;
 
+            if !mesh.visible {
+                continue;
+            }
+
             handles.push(MeshInstanceDataGPU {
                 transform_inverse: mesh.inverse,
                 vertex_pointer,
@@ -818,19 +822,19 @@ impl VulkanMcPathTracer {
                 vk::BufferUsageFlags::STORAGE_BUFFER,
                 target_size,
             )?;
-
-            let slice = unsafe { core::slice::from_raw_parts(handles.as_ptr() as *const u8, target_size as usize) };
-
-            self.mesh_data[self.current_frame].fill_host(slice)?;
         }
+
+        let slice = unsafe { core::slice::from_raw_parts(handles.as_ptr() as *const u8, target_size as usize) };
+
+        self.mesh_data[self.current_frame].fill_host(slice)?;
 
         Ok(())
     }
 }
 
 #[repr(C)]
-struct MeshInstanceDataGPU {
-    transform_inverse: Mat4x4,
-    vertex_pointer: u64,
-    index_pointer: u64,
+pub struct MeshInstanceDataGPU {
+    pub transform_inverse: Mat4x4,
+    pub vertex_pointer: u64,
+    pub index_pointer: u64,
 }
