@@ -1,3 +1,5 @@
+use crate::app::frame_stats::FrameReport;
+use crate::renderer::stats;
 use crate::scene::Scene;
 use nalgebra_glm::{Mat4, Vec3, vec3, vec4};
 use std::collections::BTreeMap;
@@ -16,10 +18,18 @@ pub struct CollectedResult {
 }
 
 impl MeshCollector {
-    pub fn collect_transforms(scene: &Scene, culling: bool, view: &Mat4, proj_inverse: &Mat4) -> CollectedResult {
+    pub fn collect_transforms(
+        scene: &Scene,
+        culling: bool,
+        view: &Mat4,
+        proj_inverse: &Mat4,
+        report: &mut FrameReport,
+    ) -> CollectedResult {
         let mut transforms = BTreeMap::new();
 
         let frustum_normals = Self::compute_frustum_normals(proj_inverse);
+        let mut total = 0;
+        let mut visible = 0;
 
         'mesh: for mesh in scene.meshes.iter() {
             let id = mesh.resource.id;
@@ -27,6 +37,8 @@ impl MeshCollector {
             if !mesh.visible {
                 continue 'mesh;
             }
+
+            total += 1;
 
             if culling {
                 let viewmodel = view * mesh.transform;
@@ -48,10 +60,14 @@ impl MeshCollector {
 
             let entry = transforms.entry(id).or_insert_with(|| Vec::with_capacity(1));
 
+            visible += 1;
             entry.push((mesh.transform, mesh.inverse));
         }
 
         let count = transforms.values().map(|v| v.len()).sum();
+
+        report.log::<stats::CullPercentageStat>((1.0 - (visible as f32 / total as f32)) * 100.0);
+        report.log::<stats::InstanceCountStat>(visible as u32);
 
         let mut data = Vec::with_capacity(count * 2 * size_of::<Mat4>());
 
@@ -74,6 +90,8 @@ impl MeshCollector {
             });
             index += value.len();
         }
+
+        report.log::<stats::DrawCallStat>(transforms.len() as u32);
 
         CollectedResult { data, draws }
     }

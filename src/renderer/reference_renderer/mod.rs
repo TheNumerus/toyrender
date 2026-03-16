@@ -4,6 +4,7 @@ use acc::{AccumulateInputs, AccumulatePass};
 mod pt;
 use pt::{ReferencePathTraceInputs, ReferencePathtracePass};
 
+use crate::app::frame_stats::FrameReport;
 use crate::err::AppError;
 use crate::math;
 use crate::renderer::buffers::{Globals, ViewProj};
@@ -12,9 +13,7 @@ use crate::renderer::descriptors::{DescriptorLayouts, DescriptorWrite, Descripto
 use crate::renderer::passes::{SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
 use crate::renderer::render_target::RenderTargets;
-use crate::renderer::{
-    FrameContext, FrameStats, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update,
-};
+use crate::renderer::{FrameContext, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update, stats};
 use crate::scene::{Scene, SkyVariant};
 use crate::vulkan::{
     Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore, ShaderBindingTable,
@@ -327,7 +326,7 @@ impl VulkanMcPathTracer {
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
-    ) -> Result<FrameStats, AppError> {
+    ) -> Result<FrameReport, AppError> {
         self.in_flight[self.current_frame].wait()?;
         self.in_flight[self.current_frame].reset()?;
 
@@ -339,13 +338,15 @@ impl VulkanMcPathTracer {
 
         self.command_buffers[self.current_frame].reset()?;
 
+        let mut report = FrameReport::new();
+
         let start = Instant::now();
 
         if resource_subsystem.prepare_resources(scene, &self.tlas_prepare_cmd_buf)? {
             info!("Resource prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
-        let mesh_time = start.elapsed().as_secs_f32();
+        report.log::<stats::ResourcePrepareStat>(start.elapsed().as_secs_f32() * 1000.0);
 
         let tlas_start = Instant::now();
 
@@ -362,7 +363,7 @@ impl VulkanMcPathTracer {
             tlas_index,
         )?;
 
-        let tlas_time = tlas_start.elapsed().as_secs_f32();
+        report.log::<stats::TlasTimeStat>(tlas_start.elapsed().as_secs_f32() * 1000.0);
 
         let command_buffer = &self.command_buffers[self.current_frame];
 
@@ -416,6 +417,8 @@ impl VulkanMcPathTracer {
             prev_jitter: offset,
         };
 
+        let desc_start = Instant::now();
+
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes().as_ref())?;
@@ -440,6 +443,8 @@ impl VulkanMcPathTracer {
         }
 
         DescriptorWriter::batch_write(&self.context.device, writes);
+
+        report.log::<stats::DescTimeStat>(desc_start.elapsed().as_secs_f32() * 1000.0);
 
         command_buffer.begin()?;
 
@@ -508,11 +513,10 @@ impl VulkanMcPathTracer {
 
         command_buffer.end()?;
 
-        let record_time = record_start.elapsed().as_secs_f32();
+        report.log::<stats::RecordTimeStat>(record_start.elapsed().as_secs_f32() * 1000.0);
+        report.log::<stats::CpuTimeStat>(start.elapsed().as_secs_f32() * 1000.0);
 
         let signal_semaphores = [self.render_finished[image_index as usize].inner];
-
-        let end = Instant::now();
 
         self.context.device.queue_submit(SubmitInfo {
             queue: &self.context.device.graphics_queue,
@@ -534,16 +538,19 @@ impl VulkanMcPathTracer {
 
         self.current_frame = (self.current_frame + 1) % self.frames_in_flight;
 
-        let stats = FrameStats {
-            cpu_time: (end - start).as_secs_f32(),
-            tlas_time,
-            record_time,
-            mesh_time,
-            objects_rendered: 0,
-            draw_calls: 0,
-        };
+        report.log::<stats::RenderTargetStat>(self.render_targets.targets.len() as u32);
+        report.log::<stats::VramUsageStat>(
+            self.context
+                .allocator
+                .lock()
+                .unwrap()
+                .generate_report()
+                .total_reserved_bytes as f32
+                / 1024.0
+                / 1024.0,
+        );
 
-        Ok(stats)
+        Ok(report)
     }
 
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), AppError> {

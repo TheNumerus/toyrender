@@ -21,7 +21,7 @@ mod context;
 pub use context::VulkanContext;
 
 mod descriptors;
-use descriptors::{DescriptorWrite, DescriptorWriter, RendererDescriptors};
+use descriptors::{DescriptorLayouts, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
 mod mesh_collector;
 use mesh_collector::{DrawData, MeshCollector};
@@ -30,7 +30,10 @@ mod resource_subsystem;
 pub use resource_subsystem::ResourceSubsystem;
 
 mod passes;
-use passes::{DenoisePass, DepthDebugPass, GBufferPass, PathTracePass, ShadingPass, SkyPass, TaaPass, TonemapPass};
+use passes::{
+    DenoiseInputs, DenoisePass, DepthDebugPass, GBufferPass, PathTraceInputs, PathTracePass, ShadingInputs,
+    ShadingPass, SkyPass, TaaInputs, TaaPass, TonemapPass,
+};
 
 mod pipeline_builder;
 use pipeline_builder::PipelineBuilder;
@@ -39,7 +42,7 @@ mod quality;
 use quality::QualitySettings;
 
 mod render_target;
-use render_target::{RenderTargetBuilder, RenderTargets};
+use render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 
 mod debug;
 use debug::DebugMode;
@@ -48,10 +51,10 @@ mod push_const;
 pub use push_const::PushConstBuilder;
 
 mod reference_renderer;
-use crate::renderer::descriptors::DescriptorLayouts;
-use crate::renderer::passes::{DenoiseInputs, PathTraceInputs, ShadingInputs, TaaInputs};
-use crate::renderer::render_target::RenderTarget;
+use crate::app::frame_stats::FrameReport;
 pub use reference_renderer::VulkanMcPathTracer;
+
+mod stats;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
@@ -506,7 +509,7 @@ impl VulkanRenderer {
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
-    ) -> Result<FrameStats, AppError> {
+    ) -> Result<FrameReport, AppError> {
         self.in_flight[self.current_frame].wait()?;
         self.in_flight[self.current_frame].reset()?;
 
@@ -518,13 +521,15 @@ impl VulkanRenderer {
 
         self.command_buffers[self.current_frame].reset()?;
 
+        let mut report = FrameReport::new();
+
         let start = Instant::now();
 
         if resource_subsystem.prepare_resources(scene, &self.tlas_prepare_cmd_buf)? {
             info!("Resource prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
-        let prepare_end = start.elapsed().as_secs_f32();
+        report.log::<stats::ResourcePrepareStat>(start.elapsed().as_secs_f32() * 1000.0);
 
         let tlas_start = Instant::now();
 
@@ -539,7 +544,7 @@ impl VulkanRenderer {
             tlas_index,
         )?;
 
-        let tlas_time = tlas_start.elapsed().as_secs_f32();
+        report.log::<stats::TlasTimeStat>(tlas_start.elapsed().as_secs_f32() * 1000.0);
 
         let command_buffer = &self.command_buffers[self.current_frame];
         let raster_command_buffer = &self.raster_command_buffers[self.current_frame];
@@ -580,10 +585,15 @@ impl VulkanRenderer {
 
         let mesh_start = Instant::now();
 
-        let collected_meshes =
-            MeshCollector::collect_transforms(scene, context.culling, &view_proj.view, &view_proj.projection_inverse);
+        let collected_meshes = MeshCollector::collect_transforms(
+            scene,
+            context.culling,
+            &view_proj.view,
+            &view_proj.projection_inverse,
+            &mut report,
+        );
 
-        let mesh_time = mesh_start.elapsed().as_secs_f32() + prepare_end;
+        report.log::<stats::MeshTimeStat>(mesh_start.elapsed().as_secs_f32() * 1000.0);
 
         let globals = Globals {
             debug_mode: self.debug_mode as i32,
@@ -597,6 +607,8 @@ impl VulkanRenderer {
             current_jitter: offset,
             prev_jitter: self.prev_jitter,
         };
+
+        let desc_start = Instant::now();
 
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
@@ -621,6 +633,8 @@ impl VulkanRenderer {
         }
 
         DescriptorWriter::batch_write(&self.device, writes);
+
+        report.log::<stats::DescTimeStat>(desc_start.elapsed().as_secs_f32() * 1000.0);
 
         raster_command_buffer.begin()?;
 
@@ -692,9 +706,8 @@ impl VulkanRenderer {
 
         command_buffer.end()?;
 
-        let record_time = record_start.elapsed().as_secs_f32();
-
-        let end = Instant::now();
+        report.log::<stats::RecordTimeStat>(record_start.elapsed().as_secs_f32() * 1000.0);
+        report.log::<stats::CpuTimeStat>(start.elapsed().as_secs_f32() * 1000.0);
 
         let signal_semaphores = [self.render_finished[image_index as usize].inner];
         self.context.device.queue_submit(SubmitInfo {
@@ -723,16 +736,19 @@ impl VulkanRenderer {
         self.last_view_proj = view_proj;
         self.prev_jitter = offset;
 
-        let stats = FrameStats {
-            cpu_time: (end - start).as_secs_f32(),
-            tlas_time,
-            record_time,
-            mesh_time,
-            objects_rendered: collected_meshes.draws.iter().map(|a| a.count).sum(),
-            draw_calls: collected_meshes.draws.len() as u32,
-        };
+        report.log::<stats::RenderTargetStat>(self.render_targets.targets.len() as u32);
+        report.log::<stats::VramUsageStat>(
+            self.context
+                .allocator
+                .lock()
+                .unwrap()
+                .generate_report()
+                .total_reserved_bytes as f32
+                / 1024.0
+                / 1024.0,
+        );
 
-        Ok(stats)
+        Ok(report)
     }
 
     pub fn resize(&mut self, drawable_size: (u32, u32)) -> Result<(), AppError> {
@@ -1085,14 +1101,4 @@ fn create_buffer_update<'a>(
         tlases: None,
         image_info: None,
     }
-}
-
-#[derive(Default, Copy, Clone)]
-pub struct FrameStats {
-    pub cpu_time: f32,
-    pub tlas_time: f32,
-    pub record_time: f32,
-    pub mesh_time: f32,
-    pub objects_rendered: u32,
-    pub draw_calls: u32,
 }
