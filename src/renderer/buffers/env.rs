@@ -10,6 +10,8 @@ pub struct GPUEnv {
     sun_intensity: f32,
     sky_color: [f32; 3],
     sky_intensity: f32,
+    sky_mode: i32,
+    sky_rotation: f32,
     exposure: f32,
     do_distortion: i32,
 }
@@ -25,9 +27,18 @@ impl Environment {
             sky_color: match self.sky.variant {
                 SkyVariant::Shader => Vec3::from_element(1.0).into(),
                 SkyVariant::SingleColor(a) => a.into(),
-                SkyVariant::Textured(_) => Vec3::from_element(1.0).into(),
+                SkyVariant::Textured(_, _) => Vec3::from_element(1.0).into(),
             },
             sky_intensity: self.sky.intensity,
+            sky_mode: match self.sky.variant {
+                SkyVariant::Shader => 0,
+                SkyVariant::SingleColor(_) => 1,
+                SkyVariant::Textured(_, _) => 2,
+            },
+            sky_rotation: match self.sky.variant {
+                SkyVariant::Textured(_, r) => r,
+                _ => 0.0,
+            },
             exposure: self.exposure,
             do_distortion: match self.sky.variant {
                 SkyVariant::Shader => 1,

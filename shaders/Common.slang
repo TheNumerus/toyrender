@@ -21,10 +21,18 @@ public struct ViewProj {
     public float far;
 };
 
+public enum SkyMode {
+    Shader = 0,
+    SingleColor,
+    Textured,
+};
+
 public struct Environment {
     public float4 sun_dir_sun_angle;
     public float4 sun_color_intensity;
     public float4 sky_color_intensity;
+    public SkyMode mode;
+    public float rotation;
     public float exposure;
     public int do_distort;
 };

@@ -6,21 +6,30 @@ use crate::import::ImportedScene;
 use crate::input::InputMapper;
 use crate::renderer::{FrameContext, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
 use crate::scene::{Scene, SkyVariant};
+
 use image::DynamicImage;
+
 use imgui::Ui;
+
 use log::info;
+
+use nalgebra_glm::Vec3;
+
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
 use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
+
 use std::cell::RefCell;
 use std::cmp::PartialEq;
+use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
 use std::str::FromStr;
 use std::time::Instant;
+
 use zip::ZipArchive;
 
 pub(crate) mod shader_loader;
@@ -144,11 +153,16 @@ impl App {
         let mut sel_render = 1;
         let mut renderer_changed = false;
 
+        let mut sel_sky = 0;
+
         let mut frame = 1;
 
         let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui.borrow_mut());
 
         let mut frame_stats = FrameStats::new(20);
+
+        let mut sky_textures = HashMap::new();
+        let mut selected_texture = None;
 
         'running: loop {
             let mut resized = false;
@@ -202,7 +216,11 @@ impl App {
                                 self.scene.meshes.extend(ls.instances);
                             }
                             FileDroppedAction::LoadImage(i) => {
-                                self.scene.env.sky.variant = SkyVariant::Textured(ImageResource::new(i, "sky texture"));
+                                let resource = Rc::new(ImageResource::new(i, "sky texture"));
+                                sky_textures.insert(resource.id, resource.clone());
+                                selected_texture = Some(resource.id);
+                                self.scene.env.sky.variant = SkyVariant::Textured(resource, 0.0);
+                                sel_sky = 2;
                             }
                         }
                     }
@@ -370,9 +388,54 @@ impl App {
                     }
                 }
                 if ui.collapsing_header("Environment", imgui::TreeNodeFlags::DEFAULT_OPEN) {
-                    ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
-                    ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
+                    let variants = if sky_textures.is_empty() {
+                        vec!["Shader", "SingleColor"]
+                    } else {
+                        vec!["Shader", "SingleColor", "Textured"]
+                    };
+
+                    if ui.combo("Sky", &mut sel_sky, &variants, |a| std::borrow::Cow::Borrowed(a)) {
+                        self.scene.env.sky.variant = match sel_sky {
+                            0 => SkyVariant::Shader,
+                            1 => SkyVariant::SingleColor(Vec3::from_element(1.0)),
+                            2 => SkyVariant::Textured(sky_textures[&selected_texture.unwrap()].clone(), 0.0),
+                            _ => unreachable!(),
+                        };
+                        renderer_changed = true;
+                    } else {
+                        renderer_changed = false;
+                    }
+
+                    match &mut self.scene.env.sky.variant {
+                        SkyVariant::Textured(ir, r) => {
+                            if let Some(combo) =
+                                ui.begin_combo("Texture", selected_texture.as_ref().unwrap().to_string())
+                            {
+                                for (k, v) in &sky_textures {
+                                    if ui.selectable_config(k.to_string()).build() {
+                                        selected_texture = Some(*k);
+                                        *ir = v.clone();
+                                    }
+                                }
+                                combo.end();
+                            }
+
+                            ui.slider("Sky rotation", 0.0, 1.0, r);
+                        }
+                        SkyVariant::SingleColor(color) => {
+                            ui.color_edit3("Sky color", color.as_mut());
+                        }
+                        _ => {}
+                    }
                     ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky.intensity);
+
+                    ui.separator();
+
+                    ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
+
+                    ui.separator();
+
+                    ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
                     ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
                         .build();
                     ui.slider(

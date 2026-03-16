@@ -2,6 +2,7 @@ use crate::camera::PerspectiveCamera;
 use crate::image::ImageResource;
 use crate::mesh::MeshInstance;
 use nalgebra_glm::{Mat4, Vec3, vec3};
+use std::rc::Rc;
 
 pub struct PointLight {
     pub color: Vec3,
@@ -43,7 +44,7 @@ impl Scene {
 pub enum SkyVariant {
     Shader,
     SingleColor(Vec3),
-    Textured(ImageResource),
+    Textured(Rc<ImageResource>, f32),
 }
 
 pub struct Sky {

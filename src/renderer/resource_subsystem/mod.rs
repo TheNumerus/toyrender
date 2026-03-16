@@ -52,7 +52,7 @@ impl ResourceSubsystem {
 
         let mut src_buf;
 
-        if let SkyVariant::Textured(ir) = &scene.env.sky.variant
+        if let SkyVariant::Textured(ir, _) = &scene.env.sky.variant
             && let Entry::Vacant(e) = self.textures.entry(ir.id)
         {
             // only run command if needed

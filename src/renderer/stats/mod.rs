@@ -30,5 +30,6 @@ stat!(MeshTimeStat, f32, "mesh_time", "Mesh prepare time (ms)");
 stat!(DescTimeStat, f32, "desc_time", "Descriptor prepare time (ms)");
 stat!(CpuTimeStat, f32, "cpu_time", "CPU time (ms)");
 stat!(RecordTimeStat, f32, "record_time", "Record time (ms)");
-stat!(VramUsageStat, f32, "vram_usage", "VRAM usage (MB)");
+stat!(VramUsageStat, f32, "vram_usage", "VRAM used (MB)");
+stat!(VramAllocatedStat, f32, "vram_allocated", "VRAM allocated (MB)");
 stat!(RenderTargetStat, u32, "rt_count", "Render targets");

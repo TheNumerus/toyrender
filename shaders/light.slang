@@ -73,10 +73,12 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 view_dir = normalize(vertPos - loc);
 
     float3 sky_col;
-    if (env.do_distort == 1) {
+    if (env.mode == SkyMode::Shader) {
         sky_col = Toyrender::Sky::sample_distorted(view_dir, images[pc.sky_idx]) * pow(2.0, env.exposure) * env.sky_color_intensity.w;
+    } else if (env.mode == SkyMode::SingleColor) {
+        sky_col = env.sky_color_intensity.xyz * pow(2.0, env.exposure) * env.sky_color_intensity.w;
     } else {
-        sky_col = Toyrender::Sky::sample(view_dir, images[pc.sky_idx]) * pow(2.0, env.exposure) * env.sky_color_intensity.w;
+        sky_col = Toyrender::Sky::sample(view_dir, images[pc.sky_idx], env.rotation) * pow(2.0, env.exposure) * env.sky_color_intensity.w;
     }
 
     if (color.a == 0.0) {

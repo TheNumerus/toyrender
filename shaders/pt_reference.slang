@@ -342,10 +342,12 @@ void raygen() {
 
 [shader("miss")]
 void miss(inout Payload payload) {
-    if (env.do_distort == 1) {
+    if (env.mode == SkyMode::Shader) {
         payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
+    } else if (env.mode == SkyMode::SingleColor) {
+        payload.color = env.sky_color_intensity.xyz;
     } else {
-        payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx]);
+        payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
     }
 
     if (pc.indirect_intensity_clamp != 0.0) {

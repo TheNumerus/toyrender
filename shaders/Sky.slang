@@ -31,7 +31,7 @@ public float3 sample_distorted(float3 view_dir, Sampler2D image) {
     return image.Sample(float2(u, v)).xyz;
 }
 
-public float3 sample(float3 view_dir, Sampler2D image) {
+public float3 sample(float3 view_dir, Sampler2D image, float rotation) {
     float2 dir = normalize(view_dir.xy);
 
     float u = 0.0;
@@ -54,6 +54,8 @@ public float3 sample(float3 view_dir, Sampler2D image) {
 
     u = clamp(u, 0.0, 1.0);
     v = clamp(v, 0.0, 1.0);
+
+    u = fract(u + rotation);
 
     return image.Sample(float2(u, v)).xyz;
 }

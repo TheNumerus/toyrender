@@ -736,17 +736,11 @@ impl VulkanRenderer {
         self.last_view_proj = view_proj;
         self.prev_jitter = offset;
 
+        let mem_report = self.context.allocator.lock().unwrap().generate_report();
+
         report.log::<stats::RenderTargetStat>(self.render_targets.targets.len() as u32);
-        report.log::<stats::VramUsageStat>(
-            self.context
-                .allocator
-                .lock()
-                .unwrap()
-                .generate_report()
-                .total_reserved_bytes as f32
-                / 1024.0
-                / 1024.0,
-        );
+        report.log::<stats::VramUsageStat>(mem_report.total_allocated_bytes as f32 / 1024.0 / 1024.0);
+        report.log::<stats::VramAllocatedStat>(mem_report.total_reserved_bytes as f32 / 1024.0 / 1024.0);
 
         Ok(report)
     }
@@ -826,7 +820,7 @@ impl VulkanRenderer {
                 self.passes.sky.render_target.borrow().sampler_index.unwrap()
             }
             SkyVariant::SingleColor(_) => 0,
-            SkyVariant::Textured(ir) => descriptors.samplers[&ir.id],
+            SkyVariant::Textured(ir, _) => descriptors.samplers[&ir.id],
         };
 
         compute_command_buffer.end()?;
