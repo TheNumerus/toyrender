@@ -2,25 +2,61 @@ use crate::camera::PerspectiveCamera;
 use crate::image::ImageResource;
 use crate::mesh::MeshInstance;
 use nalgebra_glm::{Mat4, Vec3, vec3};
+use std::any::Any;
 use std::rc::Rc;
 
+pub trait Component: 'static + Clone + Copy + Sized {}
+
+#[derive(Clone, Copy)]
 pub struct PointLight {
     pub color: Vec3,
     pub intensity: f32,
     pub radius: f32,
 }
 
-pub enum Component {
-    Transform(Mat4),
-    MeshInstance,
-    PointLight(PointLight),
-    Camera,
-    Environment,
-}
+impl Component for PointLight {}
+
+#[derive(Clone, Copy)]
+pub struct Transform(pub Mat4);
+impl Component for Transform {}
 
 pub struct Node {
     pub children: Vec<Node>,
-    pub components: Vec<Component>,
+    pub components: Vec<Box<dyn Any>>,
+}
+
+impl Node {
+    pub fn new() -> Self {
+        Self {
+            components: Vec::new(),
+            children: Vec::new(),
+        }
+    }
+
+    pub fn add_component(mut self, component: impl Component) -> Self {
+        self.components.push(Box::new(component) as Box<dyn Any>);
+        self
+    }
+
+    pub fn get_component<T: Component>(&self) -> Option<&T> {
+        for component in &self.components {
+            match component.downcast_ref::<T>() {
+                Some(component) => return Some(component),
+                None => continue,
+            }
+        }
+        None
+    }
+
+    pub fn get_component_mut<T: Component>(&mut self) -> Option<&mut T> {
+        for component in &mut self.components {
+            match component.downcast_mut::<T>() {
+                Some(component) => return Some(component),
+                None => continue,
+            }
+        }
+        None
+    }
 }
 
 pub struct Scene {

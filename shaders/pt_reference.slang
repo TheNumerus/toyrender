@@ -69,6 +69,10 @@ void compute_default_basis(const float3 normal, out float3 x, out float3 y) {
     x = cross(y, z);
 }
 
+float luminance(float3 v) {
+    return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
 void tracePrimary(float3 pos, float3 dir, inout Payload payload) {
     RayDesc ray;
     ray.Direction = dir;
@@ -154,6 +158,84 @@ float3 offset_ray(const float3 p, const float3 n) {
         abs(p.y) < origin ? p.y + float_scale * n.y : p_i.y,
         abs(p.z) < origin ? p.z + float_scale * n.z : p_i.z
     );
+}
+
+float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in Payload payload) {
+    float3 radiance = 0.0;
+
+    // select light
+    float sun_light_intensity = max(dot(dir_ray, normal) * env.sun_color_intensity.w, 0.0) * luminance(env.sky_color_intensity.xyz);
+    float sum = sun_light_intensity;
+
+    float2 rand_vars_sphere = float2(pcg_hash(), pcg_hash());
+
+    for (int i = 0; i < env.point_lights; i++) {
+        let light = env.lights[i];
+        let light_pos = light.pos_radius.xyz + rand_sphere(rand_vars_sphere) * light.pos_radius.w;
+        let dir = normalize(light_pos - pos);
+        let len = distance(light_pos, pos);
+        let intensity = ((light.color_intensity.w * luminance(light.color_intensity.xyz)) / (len * len));
+        let angle = max(dot(normal, dir), 0.0);
+        sum += intensity * angle;
+    }
+
+    float rand_light = pcg_hash() * sum;
+
+    if (rand_light > sun_light_intensity) {
+        sum = sun_light_intensity;
+        var light : Optional<PointLight> = none;
+        float3 light_pos;
+        float3 dir;
+        float len;
+        float angle;
+        float intensity;
+
+        for (int i = 0; i < env.point_lights; i++) {
+            light = env.lights[i];
+            light_pos = light.value.pos_radius.xyz + rand_sphere(rand_vars_sphere) * light.value.pos_radius.w;
+            dir = normalize(light_pos - pos);
+            len = distance(light_pos, pos);
+            intensity = ((light.value.color_intensity.w * luminance(light.value.color_intensity.xyz)) / (len * len));
+            angle = max(dot(normal, dir), 0.0);
+            sum += intensity * angle;
+            if (sum > rand_light) {
+                break;
+            }
+        }
+
+        RayDesc ray;
+        ray.Direction = dir;
+        ray.Origin = pos;
+        ray.TMax = len;
+        ray.TMin = 0.0001;
+
+        TraceRay(
+            tlas,
+            RAY_FLAG_FORCE_OPAQUE,
+            0xFF,
+            0,
+            0,
+            0,
+            ray,
+            payload
+        );
+
+        float compensate = max(sum / max(intensity * angle, 0.000001), 1.0);
+
+        float shadow = float(payload.isMiss) * max(dot(ray.Direction, normal), 0.0);
+        radiance = shadow * intensity * light.value.color_intensity.xyz * color * compensate;
+    } else {
+        float compensate = max(sum / max(sun_light_intensity, 0.000001), 1.0);
+        if (dot(dir_ray, normal) > 0.0 && env.sun_color_intensity.w > 0.0) {
+            payload.isMiss = true;
+            traceShadow(pos, dir_ray, payload);
+        }
+
+        float shadow = float(payload.isMiss) * max(dot(dir_ray, normal), 0.0);
+        radiance = shadow * env.sun_color_intensity.xyz * env.sun_color_intensity.w * color * compensate;
+    }
+
+    return radiance;
 }
 
 
@@ -274,51 +356,28 @@ void raygen() {
         }
 
         trace(offset_ray(pos, hitNormal), dir, payload);
+        pos = payload.hit;
+        hitNormal = payload.normal;
 
         // sky
         if (payload.isMiss) {
             indirect += intensity_indirect * bounce_energy * payload.color * env.sky_color_intensity.w * current_color;
-            intensity_indirect *= bounce_energy * current_color;
             break;
         } else {
-            // try shadow on new position
-            pos = payload.hit;
-            hitNormal = payload.normal;
+            float3 irradiance = intensity_indirect * bounce_energy * lightSample(payload.hit, payload.normal, ray_shadow_dir, payload.color, payload);
 
-            // flip on backface hit
-            if (dot(dir, hitNormal) > 0.0) {
-                hitNormal = -hitNormal;
+            if (pc.indirect_intensity_clamp != 0.0) {
+                irradiance = min(float3(pc.indirect_intensity_clamp), irradiance);
             }
 
-            // ignore shadow rays from unreachable normals
-            if (dot(ray_shadow_dir, hitNormal) <= 0.0 || env.sun_color_intensity.w == 0.0) {
-                intensity_indirect *= bounce_energy * current_color;
-                current_color = payload.color;
-                continue;
-            }
-
-            float3 hit_color = payload.color;
-
-            traceShadow(offset_ray(pos, hitNormal), ray_shadow_dir, payload);
-
-            // sun bounce
-            if (payload.isMiss) {
-                direct += intensity_indirect * bounce_energy * env.sun_color_intensity.xyz * env.sun_color_intensity.w * current_color * hit_color;
-            }
-            current_color = hit_color;
+            indirect += irradiance;
             intensity_indirect *= bounce_energy * current_color * payload.color;
         }
     }
 
     payload.isMiss = false;
 
-    if (dot(ray_shadow_dir, primaryNormal) > 0.0 && env.sun_color_intensity.w > 0.0) {
-        payload.isMiss = true;
-        traceShadow(primaryPos, ray_shadow_dir, payload);
-    }
-
-    float shadow = float(payload.isMiss) * dot(ray_shadow_dir, primaryNormal);
-    direct += shadow * env.sun_color_intensity.xyz * env.sun_color_intensity.w * primaryColor;
+    direct += lightSample(primaryPos, primaryNormal, ray_shadow_dir, primaryColor, payload);
 
     uint end = getRealtimeClockLow().x;
 

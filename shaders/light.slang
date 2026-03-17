@@ -89,7 +89,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 direct = images[pc.direct_idx].Sample(uv).xyz * pow(2.0, env.exposure);
     float3 indirect = images[pc.indirect_idx].Sample(uv).xyz * pow(2.0, env.exposure);
 
-    float3 diffuse_dir = light(normalize(normal), light_dir, direct) + indirect;
+    float3 diffuse_dir = direct + indirect;
     float3 specular = float3(0.0);
     float3 lighted = ((diffuse_dir + specular));
 

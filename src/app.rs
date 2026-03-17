@@ -5,7 +5,7 @@ use crate::import;
 use crate::import::ImportedScene;
 use crate::input::InputMapper;
 use crate::renderer::{FrameContext, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
-use crate::scene::{Scene, SkyVariant};
+use crate::scene::{Node, PointLight, Scene, SkyVariant, Transform};
 
 use image::DynamicImage;
 
@@ -13,7 +13,7 @@ use imgui::Ui;
 
 use log::info;
 
-use nalgebra_glm::Vec3;
+use nalgebra_glm::{Mat4, Vec3};
 
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
@@ -21,7 +21,6 @@ use sdl2::mouse::MouseButton;
 use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 
-use std::cell::RefCell;
 use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::fs::File;
@@ -49,7 +48,7 @@ pub struct App {
     pub event_pump: EventPump,
     pub input_mapper: InputMapper<InputAxes>,
     pub scene: Scene,
-    pub imgui: RefCell<imgui::Context>,
+    pub imgui: imgui::Context,
 }
 
 impl App {
@@ -95,7 +94,7 @@ impl App {
             vulkan_context,
             input_mapper,
             scene,
-            imgui: RefCell::new(imgui),
+            imgui,
         })
     }
 
@@ -157,12 +156,26 @@ impl App {
 
         let mut frame = 1;
 
-        let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui.borrow_mut());
+        let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui);
 
         let mut frame_stats = FrameStats::new(20);
 
         let mut sky_textures = HashMap::new();
         let mut selected_texture = None;
+
+        // need to do this because of borrowing
+        let Self {
+            mut imgui,
+            mut scene,
+            mut input_mapper,
+            window,
+            sdl_context,
+            mut resource_subsystem,
+            mut event_pump,
+            mut reference_renderer,
+            mut renderer,
+            vulkan_context,
+        } = self;
 
         'running: loop {
             let mut resized = false;
@@ -179,11 +192,11 @@ impl App {
             let mut debug_mode_flip = false;
             let mut movement = false;
 
-            for event in self.event_pump.poll_iter() {
-                platform.handle_event(&mut self.imgui.borrow_mut(), &event);
+            for event in event_pump.poll_iter() {
+                platform.handle_event(&mut imgui, &event);
                 match event {
                     Event::Quit { .. } => {
-                        self.renderer.device.wait_idle()?;
+                        renderer.device.wait_idle()?;
                         break 'running;
                     }
                     Event::Window {
@@ -213,13 +226,13 @@ impl App {
 
                         match action {
                             FileDroppedAction::LoadScene(ls) => {
-                                self.scene.meshes.extend(ls.instances);
+                                scene.meshes.extend(ls.instances);
                             }
                             FileDroppedAction::LoadImage(i) => {
                                 let resource = Rc::new(ImageResource::new(i, "sky texture"));
                                 sky_textures.insert(resource.id, resource.clone());
                                 selected_texture = Some(resource.id);
-                                self.scene.env.sky.variant = SkyVariant::Textured(resource, 0.0);
+                                scene.env.sky.variant = SkyVariant::Textured(resource, 0.0);
                                 sel_sky = 2;
                             }
                         }
@@ -232,28 +245,20 @@ impl App {
                         xrel, yrel, mousestate, ..
                     } => {
                         dragging = mousestate.is_mouse_button_pressed(MouseButton::Right);
-                        self.sdl_context.mouse().set_relative_mouse_mode(dragging);
+                        sdl_context.mouse().set_relative_mouse_mode(dragging);
 
                         if dragging {
                             mouse.0 += xrel;
                             mouse.1 += yrel;
                             movement = true;
                         } else {
-                            self.sdl_context.mouse().show_cursor(true);
+                            sdl_context.mouse().show_cursor(true);
                         }
                     }
                     Event::KeyDown { keycode, .. } => match keycode {
-                        Some(Keycode::LeftBracket) => bounce_adjust = -1,
-                        Some(Keycode::RightBracket) => bounce_adjust = 1,
                         Some(Keycode::R) => {
                             debug_mode_flip = true;
                             clear_taa = true;
-                        }
-                        Some(Keycode::KpPlus) => {
-                            exposure_adjust += 0.5;
-                        }
-                        Some(Keycode::KpMinus) => {
-                            exposure_adjust -= 0.5;
                         }
                         _ => {}
                     },
@@ -261,21 +266,21 @@ impl App {
                 }
             }
 
-            self.input_mapper.update(self.event_pump.keyboard_state());
+            input_mapper.update(event_pump.keyboard_state());
 
-            let directions = self.scene.camera.directions();
+            let directions = scene.camera.directions();
 
-            self.scene.camera.fov += mouse_scroll;
-            self.scene.camera.position += (self.input_mapper.get_value(InputAxes::Up) * directions.up
-                + self.input_mapper.get_value(InputAxes::Forward) * directions.forward
-                + self.input_mapper.get_value(InputAxes::Right) * directions.right)
+            scene.camera.fov += mouse_scroll;
+            scene.camera.position += (input_mapper.get_value(InputAxes::Up) * directions.up
+                + input_mapper.get_value(InputAxes::Forward) * directions.forward
+                + input_mapper.get_value(InputAxes::Right) * directions.right)
                 * delta
                 * movement_speed;
 
-            self.scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
-            self.scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
+            scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
+            scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
 
-            if self.input_mapper.inner_state.values().any(|a| *a != 0.0) {
+            if input_mapper.inner_state.values().any(|a| *a != 0.0) {
                 movement = true;
             }
 
@@ -296,35 +301,34 @@ impl App {
             };
 
             if bounce_adjust != 0 {
-                let new_bounces = (self.renderer.quality.pt_bounces as i32 + bounce_adjust).max(0) as u32;
-                self.renderer.quality.pt_bounces = new_bounces;
+                let new_bounces = (renderer.quality.pt_bounces as i32 + bounce_adjust).max(0) as u32;
+                renderer.quality.pt_bounces = new_bounces;
                 info!("new bounce count: {new_bounces}");
             }
 
-            self.scene.env.exposure = (self.scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
+            scene.env.exposure = (scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
 
             if debug_mode_flip {
-                self.renderer.debug_mode = self.renderer.debug_mode.next();
-                self.reference_renderer.debug_mode = self.renderer.debug_mode;
-                eprintln!("debug mode: {:?}", self.renderer.debug_mode);
+                renderer.debug_mode = renderer.debug_mode.next();
+                reference_renderer.debug_mode = renderer.debug_mode;
+                eprintln!("debug mode: {:?}", renderer.debug_mode);
             }
 
             if resized {
-                self.renderer.resize(self.window.drawable_size())?;
-                self.reference_renderer.resize(self.window.drawable_size())?;
+                renderer.resize(window.drawable_size())?;
+                reference_renderer.resize(window.drawable_size())?;
             }
 
             frame_end = Instant::now();
 
-            platform.prepare_frame(&mut self.imgui.borrow_mut(), &self.window, &self.event_pump);
+            platform.prepare_frame(&mut imgui, &window, &event_pump);
 
-            let mut imgui_ref = self.imgui.borrow_mut();
-            let ui = imgui_ref.new_frame();
-            let mut window = ui
+            let ui = imgui.new_frame();
+            let mut imgui_window = ui
                 .window("toyrender controls")
                 .size([300.0, 100.0], imgui::Condition::FirstUseEver)
                 .begin();
-            if window.is_some() {
+            if imgui_window.is_some() {
                 if ui.combo("Renderer", &mut sel_render, &["Realtime", "Reference"], |a| {
                     std::borrow::Cow::Borrowed(a)
                 }) {
@@ -343,48 +347,46 @@ impl App {
                         "Direct trace distance",
                         0.0,
                         500.0,
-                        &mut self.renderer.quality.rt_direct_trace_distance,
+                        &mut renderer.quality.rt_direct_trace_distance,
                     ) {
-                        self.reference_renderer.quality.rt_direct_trace_distance =
-                            self.renderer.quality.rt_direct_trace_distance;
+                        reference_renderer.quality.rt_direct_trace_distance = renderer.quality.rt_direct_trace_distance;
                     }
                     if ui.slider(
                         "Indirect trace distance",
                         0.0,
                         500.0,
-                        &mut self.renderer.quality.rt_indirect_trace_distance,
+                        &mut renderer.quality.rt_indirect_trace_distance,
                     ) {
-                        self.reference_renderer.quality.rt_indirect_trace_distance =
-                            self.renderer.quality.rt_indirect_trace_distance;
+                        reference_renderer.quality.rt_indirect_trace_distance =
+                            renderer.quality.rt_indirect_trace_distance;
                     }
-                    if ui.slider("Bounce count", 0, 10, &mut self.renderer.quality.pt_bounces) {
-                        self.reference_renderer.quality.pt_bounces = self.renderer.quality.pt_bounces;
+                    if ui.slider("Bounce count", 0, 10, &mut renderer.quality.pt_bounces) {
+                        reference_renderer.quality.pt_bounces = renderer.quality.pt_bounces;
                     }
 
                     if ui.slider(
                         "Indirect intensity clamp",
                         0.0,
                         100.0,
-                        &mut self.renderer.quality.indirect_light_clamp,
+                        &mut renderer.quality.indirect_light_clamp,
                     ) {
-                        self.reference_renderer.quality.indirect_light_clamp =
-                            self.renderer.quality.indirect_light_clamp;
+                        reference_renderer.quality.indirect_light_clamp = renderer.quality.indirect_light_clamp;
                     }
 
                     ui.checkbox("Temporal accumulation", &mut taa_enable);
                     if let SelectedRenderer::Realtime = state.selected_renderer {
-                        ui.checkbox("Spatial denoise", &mut self.renderer.quality.use_spatial_denoise);
+                        ui.checkbox("Spatial denoise", &mut renderer.quality.use_spatial_denoise);
                         ui.checkbox("Culling", &mut culling);
                     }
 
-                    ui.input_float3("Camera position", self.scene.camera.position.as_mut())
+                    ui.input_float3("Camera position", scene.camera.position.as_mut())
                         .build();
-                    ui.input_float3("Camera rotation", self.scene.camera.rotation.as_mut())
+                    ui.input_float3("Camera rotation", scene.camera.rotation.as_mut())
                         .build();
-                    ui.slider("Camera FoV", 1.0, 174.0, &mut self.scene.camera.fov);
-                    if ui.slider("Render scale", 0.01, 1.0, &mut self.renderer.render_scale) {
+                    ui.slider("Camera FoV", 1.0, 174.0, &mut scene.camera.fov);
+                    if ui.slider("Render scale", 0.01, 1.0, &mut renderer.render_scale) {
                         context.clear_taa = true;
-                        self.reference_renderer.render_scale = self.renderer.render_scale;
+                        reference_renderer.render_scale = renderer.render_scale;
                     }
                 }
                 if ui.collapsing_header("Environment", imgui::TreeNodeFlags::DEFAULT_OPEN) {
@@ -395,7 +397,7 @@ impl App {
                     };
 
                     if ui.combo("Sky", &mut sel_sky, &variants, |a| std::borrow::Cow::Borrowed(a)) {
-                        self.scene.env.sky.variant = match sel_sky {
+                        scene.env.sky.variant = match sel_sky {
                             0 => SkyVariant::Shader,
                             1 => SkyVariant::SingleColor(Vec3::from_element(1.0)),
                             2 => SkyVariant::Textured(sky_textures[&selected_texture.unwrap()].clone(), 0.0),
@@ -406,7 +408,7 @@ impl App {
                         renderer_changed = false;
                     }
 
-                    match &mut self.scene.env.sky.variant {
+                    match &mut scene.env.sky.variant {
                         SkyVariant::Textured(ir, r) => {
                             if let Some(combo) =
                                 ui.begin_combo("Texture", selected_texture.as_ref().unwrap().to_string())
@@ -427,33 +429,31 @@ impl App {
                         }
                         _ => {}
                     }
-                    ui.slider("Sky intensity", 0.0, 10.0, &mut self.scene.env.sky.intensity);
+                    ui.slider("Sky intensity", 0.0, 10.0, &mut scene.env.sky.intensity);
 
                     ui.separator();
 
-                    ui.slider("Exposure", -10.0, 10.0, &mut self.scene.env.exposure);
+                    ui.slider("Exposure", -10.0, 10.0, &mut scene.env.exposure);
 
                     ui.separator();
 
-                    ui.slider("Sun intensity", 0.0, 10.0, &mut self.scene.env.sun_intensity);
-                    ui.input_float3("Sun direction", self.scene.env.sun_direction.as_mut())
+                    ui.slider("Sun intensity", 0.0, 10.0, &mut scene.env.sun_intensity);
+                    ui.input_float3("Sun direction", scene.env.sun_direction.as_mut())
                         .build();
-                    ui.slider(
-                        "Sun angle",
-                        0.0,
-                        std::f32::consts::FRAC_PI_2,
-                        &mut self.scene.env.sun_angle,
-                    );
-                    ui.color_edit3("Sun color", self.scene.env.sun_color.as_mut());
+                    ui.slider("Sun angle", 0.0, std::f32::consts::FRAC_PI_2, &mut scene.env.sun_angle);
+                    ui.color_edit3("Sun color", scene.env.sun_color.as_mut());
                 }
                 if ui.collapsing_header("Stats", imgui::TreeNodeFlags::DEFAULT_OPEN) {
-                    self.stats_tab(ui, &frame_stats, delta);
+                    Self::stats_tab(ui, &frame_stats, delta);
+                }
+                if ui.collapsing_header("Lights", imgui::TreeNodeFlags::DEFAULT_OPEN) {
+                    Self::lights_tab(ui, &mut scene);
                 }
                 if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty()) {
-                    for (index, mesh) in &mut self.scene.meshes.iter_mut().enumerate() {
+                    for (index, mesh) in &mut scene.meshes.iter_mut().enumerate() {
                         ui.text(format!("'{}'", mesh.resource.name));
                         ui.same_line();
-                        ui.checkbox(format!("{}, visible", index), &mut mesh.visible);
+                        ui.checkbox(format!("visible##{}", index), &mut mesh.visible);
                         ui.same_line();
                         ui.text(format!(
                             "'{:?}'",
@@ -463,17 +463,15 @@ impl App {
                 }
             }
 
-            if window.is_some() {
-                window.take().unwrap().end();
+            if imgui_window.is_some() {
+                imgui_window.take().unwrap().end();
             }
-            drop(window);
-            drop(imgui_ref);
+            drop(imgui_window);
 
-            let mut imgui_ref = self.imgui.borrow_mut();
-            let draw_data = imgui_ref.render();
+            let draw_data = imgui.render();
 
             if renderer_changed {
-                self.vulkan_context.device.wait_idle()?;
+                vulkan_context.device.wait_idle()?;
 
                 context.clear_taa = true;
                 context.frame_index = 0;
@@ -481,17 +479,17 @@ impl App {
             }
 
             let report = match state.selected_renderer {
-                SelectedRenderer::Realtime => self.renderer.render_frame(
-                    &self.scene,
-                    &mut self.resource_subsystem,
-                    self.window.drawable_size(),
+                SelectedRenderer::Realtime => renderer.render_frame(
+                    &scene,
+                    &mut resource_subsystem,
+                    window.drawable_size(),
                     &context,
                     Some(draw_data),
                 )?,
-                SelectedRenderer::Reference => self.reference_renderer.render_frame(
-                    &self.scene,
-                    &mut self.resource_subsystem,
-                    self.window.drawable_size(),
+                SelectedRenderer::Reference => reference_renderer.render_frame(
+                    &scene,
+                    &mut resource_subsystem,
+                    window.drawable_size(),
                     &context,
                     Some(draw_data),
                 )?,
@@ -513,7 +511,7 @@ impl App {
         Ok(())
     }
 
-    fn stats_tab(&self, ui: &Ui, frame_stats: &FrameStats, delta: f32) {
+    fn stats_tab(ui: &Ui, frame_stats: &FrameStats, delta: f32) {
         let stats = frame_stats.compute();
 
         ui.text(format!("FPS: {:>8.3} ms", 1.0 / delta));
@@ -528,6 +526,38 @@ impl App {
                     ui.text(format!("{}: {:>8.3}", desc, f.avg));
                 }
             }
+        }
+    }
+
+    fn lights_tab(ui: &Ui, scene: &mut Scene) {
+        if ui.button("Add light") {
+            scene.nodes.push(
+                Node::new()
+                    .add_component(Transform(Mat4::new_translation(&Vec3::from_element(0.0))))
+                    .add_component(PointLight {
+                        color: Vec3::new(1.0, 0.1, 0.1),
+                        intensity: 10.0,
+                        radius: 0.1,
+                    }),
+            )
+        }
+
+        for (index, node) in &mut scene.nodes.iter_mut().enumerate() {
+            if let Some(pl) = node.get_component_mut::<PointLight>() {
+                ui.color_edit3(format!("Color##{index}"), pl.color.as_mut());
+                ui.input_float(format!("Intensity##{index}"), &mut pl.intensity).build();
+                ui.input_float(format!("Radius##{index}"), &mut pl.radius).build();
+            }
+
+            if let Some(t) = node.get_component_mut::<Transform>() {
+                let mut transform = t.0.data.0[3];
+
+                if ui.input_float4(format!("Pos##{index}"), &mut transform).build() {
+                    t.0.data.0[3] = transform;
+                }
+            }
+
+            ui.separator();
         }
     }
 

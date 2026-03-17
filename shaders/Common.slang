@@ -35,6 +35,8 @@ public struct Environment {
     public float rotation;
     public float exposure;
     public int do_distort;
+    public PointLight* lights;
+    public int point_lights;
 };
 
 public struct MeshTransform {
@@ -69,4 +71,9 @@ public struct MeshInstanceInfo {
     public float4x4 model_inverse;
     public float[12] *vertexData;
     public int *indexData;
+}
+
+public struct PointLight {
+    public float4 color_intensity;
+    public float4 pos_radius;
 }

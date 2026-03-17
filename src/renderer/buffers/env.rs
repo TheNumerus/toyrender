@@ -14,10 +14,12 @@ pub struct GPUEnv {
     sky_rotation: f32,
     exposure: f32,
     do_distortion: i32,
+    point_light_ptr: u64,
+    point_light_count: u32,
 }
 
 impl Environment {
-    pub fn to_bytes(&self) -> Vec<u8> {
+    pub fn to_bytes(&self, point_light_ptr: u64, point_light_count: u32) -> Vec<u8> {
         let size = size_of::<GPUEnv>();
         let gpu = GPUEnv {
             sun_dir: self.sun_direction.normalize().into(),
@@ -44,6 +46,8 @@ impl Environment {
                 SkyVariant::Shader => 1,
                 _ => 0,
             },
+            point_light_ptr,
+            point_light_count,
         };
 
         unsafe { core::slice::from_raw_parts(&gpu as *const GPUEnv as *const u8, size).to_owned() }

@@ -7,14 +7,14 @@ use pt::{ReferencePathTraceInputs, ReferencePathtracePass};
 use crate::app::frame_stats::FrameReport;
 use crate::err::AppError;
 use crate::math;
-use crate::renderer::buffers::{Globals, ViewProj};
+use crate::renderer::buffers::{Globals, PointLightGpu, ViewProj};
 use crate::renderer::debug::DebugMode;
 use crate::renderer::descriptors::{DescriptorLayouts, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 use crate::renderer::passes::{SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
 use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{FrameContext, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update, stats};
-use crate::scene::{Scene, SkyVariant};
+use crate::scene::{PointLight, Scene, SkyVariant, Transform};
 use crate::vulkan::{
     Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore, ShaderBindingTable,
     SubmitInfo, TopLevelAs, VulkanError,
@@ -22,7 +22,7 @@ use crate::vulkan::{
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
-use nalgebra_glm::Mat4x4;
+use nalgebra_glm::{Mat4x4, vec4};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -50,6 +50,7 @@ pub struct VulkanMcPathTracer {
     pub uniform_buffers_globals: Vec<Buffer>,
     pub mesh_data: Vec<Buffer>,
     pub env_uniforms: Vec<Buffer>,
+    pub lights: Vec<Buffer>,
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
@@ -171,6 +172,7 @@ impl VulkanMcPathTracer {
         let mut env_uniforms = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut descriptors = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut mesh_data = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut lights = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         let mut writes = Vec::new();
         let mut tlases = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -241,6 +243,16 @@ impl VulkanMcPathTracer {
 
             mesh_data.push(mesh_buf);
 
+            let light_buffer = Buffer::new(
+                device.clone(),
+                context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+                // will get proper size on first frame
+                64,
+            )?;
+            lights.push(light_buffer);
+
             writes.extend(Self::init_global_descriptor_set(
                 &descriptors[i].borrow().global_set.inner,
                 &uniform_buffers_globals[i].inner,
@@ -272,6 +284,7 @@ impl VulkanMcPathTracer {
             uniform_buffers_globals,
             env_uniforms,
             mesh_data,
+            lights,
             in_flight,
             quality: QualitySettings::new(),
             debug_mode: DebugMode::None,
@@ -433,10 +446,11 @@ impl VulkanMcPathTracer {
         let desc_start = Instant::now();
 
         self.setup_mesh_data(scene, resource_subsystem)?;
+        let (lights_ptr, lights_count) = self.setup_lights(scene)?;
 
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
-        self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes().as_ref())?;
+        self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes(lights_ptr, lights_count).as_ref())?;
 
         let mut writes = Vec::new();
 
@@ -829,6 +843,39 @@ impl VulkanMcPathTracer {
         self.mesh_data[self.current_frame].fill_host(slice)?;
 
         Ok(())
+    }
+
+    fn setup_lights(&mut self, scene: &Scene) -> Result<(u64, u32), AppError> {
+        let mut handles = Vec::new();
+
+        for node in &scene.nodes {
+            if let (Some(pl), Some(t)) = (node.get_component::<PointLight>(), node.get_component::<Transform>()) {
+                handles.push(PointLightGpu {
+                    color: pl.color.data.0[0],
+                    intensity: pl.intensity,
+                    pos: (t.0 * vec4(0.0, 0.0, 0.0, 1.0)).xyz().into(),
+                    radius: pl.radius,
+                })
+            }
+        }
+
+        let target_size = (handles.len() * size_of::<PointLightGpu>()) as u64;
+
+        if self.lights[self.current_frame].size < target_size {
+            self.lights[self.current_frame] = Buffer::new(
+                self.context.device.clone(),
+                self.context.allocator.clone(),
+                MemoryLocation::CpuToGpu,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                target_size,
+            )?;
+        }
+
+        let slice = unsafe { core::slice::from_raw_parts(handles.as_ptr() as *const u8, target_size as usize) };
+
+        self.lights[self.current_frame].fill_host(slice)?;
+
+        Ok((self.lights[self.current_frame].get_device_addr(), handles.len() as u32))
     }
 }
 
