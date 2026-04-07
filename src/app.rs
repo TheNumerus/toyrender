@@ -186,8 +186,6 @@ impl App {
             let mut mouse = (0, 0);
             let mut mouse_scroll = 0.0;
             let mut dragging;
-            let mut bounce_adjust: i32 = 0;
-            let mut exposure_adjust = 0.0;
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
             let mut movement = false;
@@ -266,53 +264,9 @@ impl App {
                 }
             }
 
+            let mut ui_focused = false;
+
             input_mapper.update(event_pump.keyboard_state());
-
-            let directions = scene.camera.directions();
-
-            scene.camera.fov += mouse_scroll;
-            scene.camera.position += (input_mapper.get_value(InputAxes::Up) * directions.up
-                + input_mapper.get_value(InputAxes::Forward) * directions.forward
-                + input_mapper.get_value(InputAxes::Right) * directions.right)
-                * delta
-                * movement_speed;
-
-            scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
-            scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
-
-            if input_mapper.inner_state.values().any(|a| *a != 0.0) {
-                movement = true;
-            }
-
-            if state.selected_renderer == SelectedRenderer::Reference && movement {
-                clear_taa = true;
-            }
-
-            if clear_taa {
-                frame = 0;
-            }
-
-            let mut context = FrameContext {
-                delta_time: delta,
-                total_time: frame_end.duration_since(start).as_secs_f32(),
-                clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
-                frame_index: frame,
-                culling,
-            };
-
-            if bounce_adjust != 0 {
-                let new_bounces = (renderer.quality.pt_bounces as i32 + bounce_adjust).max(0) as u32;
-                renderer.quality.pt_bounces = new_bounces;
-                info!("new bounce count: {new_bounces}");
-            }
-
-            scene.env.exposure = (scene.env.exposure + exposure_adjust).clamp(-32.0, 32.0);
-
-            if debug_mode_flip {
-                renderer.debug_mode = renderer.debug_mode.next();
-                reference_renderer.debug_mode = renderer.debug_mode;
-                eprintln!("debug mode: {:?}", renderer.debug_mode);
-            }
 
             if resized {
                 renderer.resize(window.drawable_size())?;
@@ -322,13 +276,14 @@ impl App {
             frame_end = Instant::now();
 
             platform.prepare_frame(&mut imgui, &window, &event_pump);
-
             let ui = imgui.new_frame();
-            let mut imgui_window = ui
+            let window_builder = ui
                 .window("toyrender controls")
-                .size([300.0, 100.0], imgui::Condition::FirstUseEver)
-                .begin();
-            if imgui_window.is_some() {
+                .size([300.0, 100.0], imgui::Condition::FirstUseEver);
+
+            if let Some(iw) = window_builder.begin() {
+                ui_focused = ui.is_window_focused();
+
                 if ui.combo("Renderer", &mut sel_render, &["Realtime", "Reference"], |a| {
                     std::borrow::Cow::Borrowed(a)
                 }) {
@@ -385,7 +340,7 @@ impl App {
                         .build();
                     ui.slider("Camera FoV", 1.0, 174.0, &mut scene.camera.fov);
                     if ui.slider("Render scale", 0.01, 1.0, &mut renderer.render_scale) {
-                        context.clear_taa = true;
+                        clear_taa = true;
                         reference_renderer.render_scale = renderer.render_scale;
                     }
                 }
@@ -461,14 +416,51 @@ impl App {
                         ));
                     }
                 }
-            }
 
-            if imgui_window.is_some() {
-                imgui_window.take().unwrap().end();
+                iw.end();
             }
-            drop(imgui_window);
 
             let draw_data = imgui.render();
+
+            if !ui_focused {
+                let directions = scene.camera.directions();
+
+                scene.camera.fov += mouse_scroll;
+                scene.camera.position += (input_mapper.get_value(InputAxes::Up) * directions.up
+                    + input_mapper.get_value(InputAxes::Forward) * directions.forward
+                    + input_mapper.get_value(InputAxes::Right) * directions.right)
+                    * delta
+                    * movement_speed;
+
+                scene.camera.rotation.z -= mouse.0 as f32 * mouse_sens;
+                scene.camera.rotation.x -= mouse.1 as f32 * mouse_sens;
+
+                if input_mapper.inner_state.values().any(|a| *a != 0.0) {
+                    movement = true;
+                }
+
+                if state.selected_renderer == SelectedRenderer::Reference && movement {
+                    clear_taa = true;
+                }
+
+                if clear_taa {
+                    frame = 0;
+                }
+
+                if debug_mode_flip {
+                    renderer.debug_mode = renderer.debug_mode.next();
+                    reference_renderer.debug_mode = renderer.debug_mode;
+                    eprintln!("debug mode: {:?}", renderer.debug_mode);
+                }
+            }
+
+            let mut context = FrameContext {
+                delta_time: delta,
+                total_time: frame_end.duration_since(start).as_secs_f32(),
+                clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
+                frame_index: frame,
+                culling,
+            };
 
             if renderer_changed {
                 vulkan_context.device.wait_idle()?;

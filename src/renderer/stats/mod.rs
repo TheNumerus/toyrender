@@ -33,3 +33,4 @@ stat!(RecordTimeStat, f32, "record_time", "Record time (ms)");
 stat!(VramUsageStat, f32, "vram_usage", "VRAM used (MB)");
 stat!(VramAllocatedStat, f32, "vram_allocated", "VRAM allocated (MB)");
 stat!(RenderTargetStat, u32, "rt_count", "Render targets");
+stat!(SampleCountStat, u32, "sample_count", "Samples");

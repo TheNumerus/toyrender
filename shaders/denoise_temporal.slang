@@ -42,15 +42,9 @@ float get_linear_depth(Sampler2D depth, float2 uv) {
     return pos.z * pos.w;
 }
 
-float get_prev_linear_depth(Sampler2D depth, float2 uv) {
+float get_prev_depth(Sampler2D depth, float2 uv) {
     float curr_depth = depth.Sample(uv_to_abs(uv)).x;
-
-    float4 per_pos = mul(vp.proj_inverse, float4(uv * 2.0 - 1.0, curr_depth, 1.0));
-    per_pos /= per_pos.w;
-    float3 curr_pos = mul(vp.view_inverse, per_pos).xyz;
-    float4 pos = mul(vp.proj[1], mul(vp.view[1], float4(curr_pos, 1.0)));
-
-    return pos.z * pos.w;
+    return curr_depth;
 }
 
 float get_depth(Sampler2D depth, float2 uv) {
@@ -70,11 +64,10 @@ Optional<Weights> reproject(float2 uv_in, out float2 uv_out, int2 size) {
     float4 per_pos = mul(vp.proj_inverse, float4(uv_in * 2.0 - 1.0, curr_depth, 1.0));
     per_pos /= per_pos.w;
     float3 curr_pos = mul(vp.view_inverse, per_pos).xyz;
-    float4 pos = mul(vp.proj[0], mul(vp.view[0], float4(curr_pos, 1.0)));
-    float lin_depth = pos.z * pos.w;
 
     float4 prev_uv = mul(vp.proj[1], mul(vp.view[1], float4(curr_pos, 1.0)));
     prev_uv /= prev_uv.w;
+    float prev_depth = prev_uv.z;
     prev_uv = prev_uv * 0.5 + 0.5;
 
     if (prev_uv.x < 0.0 || prev_uv.x > 1.0 || prev_uv.y < 0.0 || prev_uv.y > 1.0) {
@@ -93,26 +86,26 @@ Optional<Weights> reproject(float2 uv_in, out float2 uv_out, int2 size) {
     var matchFound = false;
     var weights = Weights();
 
-    float prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(lx, ly));
-    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+    float prev_lin_depth = get_prev_depth(images[pc.prev_depth_idx], float2(lx, ly));
+    if (abs(prev_depth - prev_lin_depth) <= 0.0001) {
         matchFound = true;
         weights.bottomLeft = 1.0;
     }
 
-    prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(hx, ly));
-    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+    prev_lin_depth = get_prev_depth(images[pc.prev_depth_idx], float2(hx, ly));
+    if (abs(prev_depth - prev_lin_depth) <= 0.0001) {
         matchFound = true;
         weights.bottomRight = 1.0;
     }
 
-    prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(lx, hy));
-    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+    prev_lin_depth = get_prev_depth(images[pc.prev_depth_idx], float2(lx, hy));
+    if (abs(prev_depth - prev_lin_depth) <= 0.0001) {
         matchFound = true;
         weights.topLeft = 1.0;
     }
 
-    prev_lin_depth = get_linear_depth(images[pc.prev_depth_idx], float2(hx, hy));
-    if (abs(lin_depth - prev_lin_depth) <= 0.01) {
+    prev_lin_depth = get_prev_depth(images[pc.prev_depth_idx], float2(hx, hy));
+    if (abs(prev_depth - prev_lin_depth) <= 0.0001) {
         matchFound = true;
         weights.topRight = 1.0;
     }
