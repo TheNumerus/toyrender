@@ -42,6 +42,7 @@ public struct Environment {
 public struct MeshTransform {
     public float4x4 model;
     public float4x4 inverse;
+    public int is_mirrored;
 };
 
 public enum DebugMode {

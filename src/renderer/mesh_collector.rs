@@ -69,7 +69,7 @@ impl MeshCollector {
         report.log::<stats::CullPercentageStat>((1.0 - (visible as f32 / total as f32)) * 100.0);
         report.log::<stats::InstanceCountStat>(visible as u32);
 
-        let mut data = Vec::with_capacity(count * 2 * size_of::<Mat4>());
+        let mut data = Vec::with_capacity(count * (2 * size_of::<Mat4>() + size_of::<i32>() * 4));
 
         let mut index = 0;
         let mut draws = Vec::with_capacity(count);
@@ -81,6 +81,17 @@ impl MeshCollector {
                 data.extend_from_slice(unsafe {
                     std::slice::from_raw_parts(inverse as *const Mat4 as *const u8, size_of::<Mat4>())
                 });
+
+                let is_flipped = if transform.view((0, 0), (3, 3)).determinant() > 0.0 {
+                    0_i32
+                } else {
+                    1_i32
+                };
+
+                data.extend_from_slice(&is_flipped.to_le_bytes());
+
+                // padding
+                data.extend_from_slice(&[0; 12]);
             }
 
             draws.push(DrawData {
