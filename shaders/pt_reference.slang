@@ -207,9 +207,51 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         sum += intensity * angle;
     }
 
+    // add sky
+    float3 hemi = rand_hemi(rand_vars_sphere);
+
+    float sky_intensity;
+    if (pc.use_importance == 1 && env.mode == SkyMode::Textured) {
+        float2 mapped = rand_vars_sphere;
+        mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
+        mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
+
+        float3 dir = octDecode((mapped - 0.5) * 2.0);
+        if (dot(normal, dir) >= 0.0) {
+            trace(offset_ray(pos, normal), dir, payload);
+
+            if (payload.isMiss) {
+                float pdf = images[pc.pdf_idx].Sample(mapped).x;
+                float uniformPdf = 1.0 / (1024.0 * 1024.0);
+                // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
+                float adjust = 4.0 * uniformPdf / (pdf);
+
+                sky_intensity = env.sky_color_intensity.w * adjust * dot(normal, dir) * luminance(payload.color);
+            }
+        }
+    } else {
+        float3 tangent, bitangent;
+        compute_default_basis(normal, tangent, bitangent);
+        let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
+
+        float3 sky_color;
+
+        if (env.mode == SkyMode::Shader) {
+            sky_color = Toyrender::Sky::sample_distorted(dir, images[pc.sky_idx]);
+        } else if (env.mode == SkyMode::SingleColor) {
+            sky_color = env.sky_color_intensity.xyz;
+        } else {
+            sky_color = Toyrender::Sky::sample(dir, images[pc.sky_idx], env.rotation);
+        }
+
+        sky_intensity = env.sky_color_intensity.w * luminance(sky_color);
+    }
+    sum += sky_intensity;
+
+
     float rand_light = pcg_hash() * sum;
 
-    if (rand_light > sun_light_intensity) {
+    if (rand_light > (sun_light_intensity + sky_intensity)) {
         sum = sun_light_intensity;
         var light : Optional<PointLight> = none;
         float3 light_pos;
@@ -252,6 +294,33 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
         float shadow = float(payload.isMiss) * max(dot(ray.Direction, normal), 0.0);
         radiance = shadow * intensity * light.value.color_intensity.xyz * color * compensate;
+    } else if (rand_light > (sun_light_intensity)) {
+        if (pc.use_importance == 1 && env.mode == SkyMode::Textured) {
+            float2 mapped = rand_vars_sphere;
+            mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
+            mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
+
+            float3 dir = octDecode((mapped - 0.5) * 2.0);
+            if (dot(normal, dir) >= 0.0) {
+                trace(offset_ray(pos, normal), dir, payload);
+
+                if (payload.isMiss) {
+                    float pdf = images[pc.pdf_idx].Sample(mapped).x;
+                    float uniformPdf = 1.0 / (1024.0 * 1024.0);
+                    // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
+                    float adjust = 4.0 * uniformPdf / (pdf);
+
+                    radiance += env.sky_color_intensity.w * color * adjust * dot(normal, dir) * payload.color;
+                }
+            }
+        } else {
+            float3 tangent, bitangent;
+            compute_default_basis(normal, tangent, bitangent);
+            let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
+
+            trace(offset_ray(pos, normal), dir, payload);
+            radiance += env.sky_color_intensity.w * color * float(payload.isMiss) * payload.color;
+        }
     } else {
         float compensate = max(sum / max(sun_light_intensity, 0.000001), 1.0);
         if (dot(dir_ray, normal) > 0.0 && env.sun_color_intensity.w > 0.0) {
@@ -353,7 +422,7 @@ void raygen() {
     // current surface_color
     float3 current_color = payload.color;
 
-    /*for (int i = 0; i < pc.bounces; i++) {
+    for (int i = 0; i < pc.bounces; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
         float d = roughness + (1.0 - roughness) * pow(1.0 - abs(dot(-hitNormal, dir)), 5.0);
@@ -389,7 +458,13 @@ void raygen() {
 
         // sky
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * payload.color * env.sky_color_intensity.w * current_color;
+            float3 irradiance = intensity_indirect * bounce_energy * payload.color * env.sky_color_intensity.w * current_color;
+
+            if (pc.indirect_intensity_clamp != 0.0) {
+                irradiance = min(float3(pc.indirect_intensity_clamp), irradiance);
+            }
+
+            indirect += irradiance;
             break;
         } else {
             float3 irradiance = intensity_indirect * bounce_energy * lightSample(payload.hit, payload.normal, ray_shadow_dir, payload.color, payload);
@@ -405,40 +480,7 @@ void raygen() {
 
     payload.isMiss = false;
 
-    direct += lightSample(primaryPos, primaryNormal, ray_shadow_dir, primaryColor, payload);*/
-
-    compute_default_basis(hitNormal, tangent, bitangent);
-
-    float2 r = float2(pcg_hash(), pcg_hash());
-    float3 hemi = rand_hemi(r);
-
-    float select = pcg_hash();
-
-    if (pc.use_importance == 1 && env.mode == SkyMode::Textured) {
-        float2 mapped = r;
-        mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(r.y * 1024)))).x;
-        mapped.x = storages[pc.importance_idx].Load(int2(int(floor(r.x * 1024)), int(floor(mapped.y * 1024)))).x;
-
-        float3 dir = octDecode((mapped - 0.5) * 2.0);
-        if (dot(hitNormal, dir) >= 0.0) {
-            trace(offset_ray(pos, hitNormal), dir, payload);
-
-            if (payload.isMiss) {
-                float pdf = images[pc.pdf_idx].Sample(mapped).x;
-                float uniformPdf = 1.0 / (1024.0 * 1024.0);
-                // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
-                float adjust = 4.0 * uniformPdf / (pdf);
-
-                indirect += payload.color * env.sky_color_intensity.w * current_color * adjust * dot(hitNormal, dir);
-            }
-        }
-    } else {
-        dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
-
-        trace(offset_ray(pos, hitNormal), dir, payload);
-        indirect += payload.color * env.sky_color_intensity.w * current_color * float(payload.isMiss);
-    }
-
+    direct += lightSample(primaryPos, primaryNormal, ray_shadow_dir, primaryColor, payload);
 
     uint end = getRealtimeClockLow().x;
 
@@ -478,10 +520,6 @@ void miss(inout Payload payload) {
         payload.color = env.sky_color_intensity.xyz;
     } else {
         payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
-    }
-
-    if (pc.indirect_intensity_clamp != 0.0) {
-        payload.color = min(float3(pc.indirect_intensity_clamp), payload.color);
     }
 
     payload.isMiss = true;
