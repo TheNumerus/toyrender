@@ -41,6 +41,9 @@ struct PushConsts {
     int sample;
     int bounces;
     int out_idx;
+    int pdf_idx;
+    int importance_idx;
+    int use_importance;
     int sky_idx;
     float direct_trace_distance;
     float indirect_trace_distance;
@@ -129,6 +132,31 @@ void traceShadow(float3 pos, float3 dir, inout Payload payload) {
         ray,
         payload
     );
+}
+
+float signNotZero(in float k) {
+    return (k >= 0.f) ? 1.f : -1.f;
+}
+
+float2 signNotZero(in float2 v) {
+    return float2(signNotZero(v.x), signNotZero(v.y));
+}
+
+float2 octEncode(float3 v) {
+    float l1norm = abs(v.x) + abs(v.y) + abs(v.z);
+    float2 result = v.xy * (1.f / l1norm);
+    if (v.z < 0.f) {
+        result = (1.f - abs(result.yx)) * signNotZero(result.xy);
+    }
+    return result;
+}
+
+float3 octDecode(float2 o) {
+    float3 v = float3(o.x, o.y, 1.f - abs(o.x) - abs(o.y));
+    if (v.z < 0.f) {
+        v.xy = (1.f - abs(v.yx)) * signNotZero(v.xy);
+    }
+    return normalize(v);
 }
 
 uint time_diff(uint startTime, uint endTime) {
@@ -325,7 +353,7 @@ void raygen() {
     // current surface_color
     float3 current_color = payload.color;
 
-    for (int i = 0; i < pc.bounces; i++) {
+    /*for (int i = 0; i < pc.bounces; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
         float d = roughness + (1.0 - roughness) * pow(1.0 - abs(dot(-hitNormal, dir)), 5.0);
@@ -377,7 +405,40 @@ void raygen() {
 
     payload.isMiss = false;
 
-    direct += lightSample(primaryPos, primaryNormal, ray_shadow_dir, primaryColor, payload);
+    direct += lightSample(primaryPos, primaryNormal, ray_shadow_dir, primaryColor, payload);*/
+
+    compute_default_basis(hitNormal, tangent, bitangent);
+
+    float2 r = float2(pcg_hash(), pcg_hash());
+    float3 hemi = rand_hemi(r);
+
+    float select = pcg_hash();
+
+    if (pc.use_importance == 1 && env.mode == SkyMode::Textured) {
+        float2 mapped = r;
+        mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(r.y * 1024)))).x;
+        mapped.x = storages[pc.importance_idx].Load(int2(int(floor(r.x * 1024)), int(floor(mapped.y * 1024)))).x;
+
+        float3 dir = octDecode((mapped - 0.5) * 2.0);
+        if (dot(hitNormal, dir) >= 0.0) {
+            trace(offset_ray(pos, hitNormal), dir, payload);
+
+            if (payload.isMiss) {
+                float pdf = images[pc.pdf_idx].Sample(mapped).x;
+                float uniformPdf = 1.0 / (1024.0 * 1024.0);
+                // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
+                float adjust = 4.0 * uniformPdf / (pdf);
+
+                indirect += payload.color * env.sky_color_intensity.w * current_color * adjust * dot(hitNormal, dir);
+            }
+        }
+    } else {
+        dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
+
+        trace(offset_ray(pos, hitNormal), dir, payload);
+        indirect += payload.color * env.sky_color_intensity.w * current_color * float(payload.isMiss);
+    }
+
 
     uint end = getRealtimeClockLow().x;
 

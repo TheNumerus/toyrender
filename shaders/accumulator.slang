@@ -35,6 +35,12 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     if (pc.clear == 1) {
         storages[pc.acc_idx].Store(tid.xy, float4(inputNew, 1.0));
     } else {
+        var pred = isfinite(inputNew);
+        if (!pred.x || !pred.y || !pred.z) {
+            storages[pc.acc_idx].Store(tid.xy, float4(inputLast, 1.0));
+            return;
+        }
+
         float sampleWeight = float(pc.sample) / float(pc.sample + 1);
 
         storages[pc.acc_idx].Store(tid.xy, float4(lerp(inputNew, inputLast, sampleWeight), 1.0));

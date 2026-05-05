@@ -31,8 +31,8 @@ pub use resource_subsystem::ResourceSubsystem;
 
 mod passes;
 use passes::{
-    DenoiseInputs, DenoisePass, DepthDebugPass, GBufferPass, PathTraceInputs, PathTracePass, ShadingInputs,
-    ShadingPass, SkyPass, TaaInputs, TaaPass, TonemapPass,
+    DenoiseInputs, DenoisePass, DepthDebugPass, GBufferPass, ImportanceMapPass, PathTraceInputs, PathTracePass,
+    ShadingInputs, ShadingPass, SkyPass, TaaInputs, TaaPass, TonemapPass,
 };
 
 mod pipeline_builder;
@@ -62,6 +62,7 @@ pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 struct VulkanRendererPasses {
     gbuffer: GBufferPass,
     sky: SkyPass,
+    importance_map: ImportanceMapPass,
     pt: PathTracePass,
     denoise: DenoisePass,
     shading: ShadingPass,
@@ -370,6 +371,8 @@ impl VulkanRenderer {
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<VulkanRendererPasses, AppError> {
         let sky = SkyPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let importance_map =
+            ImportanceMapPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
         let gbuffer = GBufferPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
         let tonemap = TonemapPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
         let shading = ShadingPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
@@ -382,6 +385,7 @@ impl VulkanRenderer {
             pt,
             tonemap,
             sky,
+            importance_map,
             denoise,
             depth_debug,
             gbuffer,
@@ -1189,6 +1193,7 @@ pub struct FrameContext {
     pub total_time: f32,
     pub clear_taa: bool,
     pub culling: bool,
+    pub importance_sampling: bool,
     pub frame_index: u32,
 }
 

@@ -11,6 +11,8 @@ use ash::vk;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub(crate) mod importance_map;
+
 pub(crate) struct SkyPass {
     device: Rc<Device>,
     pub render_target: Rc<RefCell<RenderTarget>>,

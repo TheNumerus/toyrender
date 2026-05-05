@@ -13,5 +13,6 @@ pub(crate) use gbuf_raster::GBufferPass;
 pub(crate) use pathtrace::{PathTraceInputs, PathTracePass};
 pub(crate) use shading::{ShadingInputs, ShadingPass};
 pub(crate) use sky::SkyPass;
+pub(crate) use sky::importance_map::{ImportanceMapInputs, ImportanceMapPass};
 pub(crate) use taa::{TaaInputs, TaaPass};
 pub(crate) use tonemap::TonemapPass;

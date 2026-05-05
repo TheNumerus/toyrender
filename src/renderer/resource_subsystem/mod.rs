@@ -243,7 +243,7 @@ impl ResourceSubsystem {
                     | vk::BuildAccelerationStructureFlagsKHR::ALLOW_DATA_ACCESS,
             )?;
 
-            self.blases = batch;
+            self.blases.extend(batch);
         }
 
         Ok(changed)

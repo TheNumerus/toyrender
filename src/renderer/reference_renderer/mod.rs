@@ -10,7 +10,7 @@ use crate::math;
 use crate::renderer::buffers::{Globals, PointLightGpu, ViewProj};
 use crate::renderer::debug::DebugMode;
 use crate::renderer::descriptors::{DescriptorLayouts, DescriptorWrite, DescriptorWriter, RendererDescriptors};
-use crate::renderer::passes::{SkyPass, TonemapPass};
+use crate::renderer::passes::{ImportanceMapInputs, ImportanceMapPass, SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
 use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{FrameContext, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update, stats};
@@ -32,6 +32,7 @@ const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
 struct VulkanMcPathTracerPasses {
     sky: SkyPass,
+    importance_map: ImportanceMapPass,
     tonemap: TonemapPass,
     pt: ReferencePathtracePass,
     accumulate: AccumulatePass,
@@ -143,8 +144,16 @@ impl VulkanMcPathTracer {
             &descriptor_layouts,
         )?;
 
+        let importance_map_pass = ImportanceMapPass::create(
+            device.clone(),
+            &mut render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            &descriptor_layouts,
+        )?;
+
         let passes = VulkanMcPathTracerPasses {
             sky: sky_pass,
+            importance_map: importance_map_pass,
             tonemap: tonemap_pass,
             accumulate: accumulate_pass,
             pt: pt_pass,
@@ -644,11 +653,49 @@ impl VulkanMcPathTracer {
             self.context.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[vk::MemoryBarrier {
                     src_access_mask: vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
                     dst_access_mask: vk::AccessFlags::SHADER_READ | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                    ..Default::default()
+                }],
+                &[],
+                &barriers,
+            );
+        }
+
+        self.passes.importance_map.record(
+            command_buffer,
+            &descriptors,
+            ImportanceMapInputs {
+                src_sampler: sky_sampler,
+            },
+        )?;
+
+        unsafe {
+            let barriers = [self.passes.importance_map.cdf_render_target.borrow().image.inner].map(|image| {
+                vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image,
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                    ..Default::default()
+                }
+            });
+
+            self.context.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[vk::MemoryBarrier {
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
                     ..Default::default()
                 }],
                 &[],
@@ -661,6 +708,8 @@ impl VulkanMcPathTracer {
             &descriptors,
             ReferencePathTraceInputs {
                 sky_sampler,
+                sky_pdf: &self.passes.importance_map.octa_render_target.borrow(),
+                sky_importance_map: &self.passes.importance_map.cdf_render_target.borrow(),
                 sbt: &self.shader_binding_table,
                 bounces: self.quality.pt_bounces,
                 direct_trace_distance: self.quality.rt_direct_trace_distance,

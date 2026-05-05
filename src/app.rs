@@ -148,6 +148,7 @@ impl App {
         let mut focused = true;
         let mut taa_enable = true;
         let mut culling = true;
+        let mut importance_sampling = true;
 
         let mut sel_render = 1;
         let mut renderer_changed = false;
@@ -226,12 +227,13 @@ impl App {
                             FileDroppedAction::LoadScene(ls) => {
                                 scene.meshes.extend(ls.instances);
                             }
-                            FileDroppedAction::LoadImage(i) => {
-                                let resource = Rc::new(ImageResource::new(i, "sky texture"));
+                            FileDroppedAction::LoadImage { data, name } => {
+                                let resource = Rc::new(ImageResource::new(data, name));
                                 sky_textures.insert(resource.id, resource.clone());
                                 selected_texture = Some(resource.id);
                                 scene.env.sky.variant = SkyVariant::Textured(resource, 0.0);
                                 sel_sky = 2;
+                                frame = 0;
                             }
                         }
                     }
@@ -328,10 +330,20 @@ impl App {
                         reference_renderer.quality.indirect_light_clamp = renderer.quality.indirect_light_clamp;
                     }
 
-                    ui.checkbox("Temporal accumulation", &mut taa_enable);
-                    if let SelectedRenderer::Realtime = state.selected_renderer {
-                        ui.checkbox("Spatial denoise", &mut renderer.quality.use_spatial_denoise);
-                        ui.checkbox("Culling", &mut culling);
+                    if ui.checkbox("Temporal accumulation", &mut taa_enable) {
+                        frame = 0;
+                    }
+                    match state.selected_renderer {
+                        SelectedRenderer::Realtime => {
+                            ui.checkbox("Spatial denoise", &mut renderer.quality.use_spatial_denoise);
+                            ui.checkbox("Culling", &mut culling);
+                        }
+                        SelectedRenderer::Reference => {
+                            if ui.checkbox("Importance Sampling", &mut importance_sampling) {
+                                clear_taa = true;
+                                frame = 0;
+                            }
+                        }
                     }
 
                     ui.input_float3("Camera position", scene.camera.position.as_mut())
@@ -365,11 +377,9 @@ impl App {
 
                     match &mut scene.env.sky.variant {
                         SkyVariant::Textured(ir, r) => {
-                            if let Some(combo) =
-                                ui.begin_combo("Texture", selected_texture.as_ref().unwrap().to_string())
-                            {
+                            if let Some(combo) = ui.begin_combo("Texture", &ir.name) {
                                 for (k, v) in &sky_textures {
-                                    if ui.selectable_config(k.to_string()).build() {
+                                    if ui.selectable_config(v.name.clone()).build() {
                                         selected_texture = Some(*k);
                                         *ir = v.clone();
                                     }
@@ -460,6 +470,7 @@ impl App {
                 clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
                 frame_index: frame,
                 culling,
+                importance_sampling,
             };
 
             if renderer_changed {
@@ -562,10 +573,14 @@ impl App {
             AppError::Import(msg)
         })?;
         let path = std::path::PathBuf::from_str(&filename).unwrap();
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
 
         match path.extension().map(|ext| ext.to_str().unwrap()) {
             Some("glb") => Ok(FileDroppedAction::LoadScene(import::extract_scene(&file)?)),
-            Some("exr") | Some("hdr") => Ok(FileDroppedAction::LoadImage(image::load_from_memory(&file)?)),
+            Some("exr") | Some("hdr") => Ok(FileDroppedAction::LoadImage {
+                data: image::load_from_memory(&file)?,
+                name,
+            }),
             _ => Err(AppError::Import("Unknown file format".to_owned())),
         }
     }
@@ -603,6 +618,7 @@ impl App {
                 clear_taa: false,
                 frame_index: frame as u32,
                 culling: true,
+                importance_sampling: true,
             };
 
             self.renderer.render_frame(
@@ -681,5 +697,5 @@ enum SelectedRenderer {
 
 enum FileDroppedAction {
     LoadScene(ImportedScene),
-    LoadImage(DynamicImage),
+    LoadImage { data: DynamicImage, name: String },
 }
