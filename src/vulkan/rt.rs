@@ -52,12 +52,10 @@ impl ShaderBindingTable {
         allocator: Arc<Mutex<Allocator>>,
         rt_pipeline: &RayTracingPipeline,
         pipeline: &Pipeline<Rt>,
-        miss_count: usize,
-        hit_count: usize,
     ) -> Result<Self, AppError> {
         let align_up = |size: u32, alignment: u32| (size + (alignment - 1)) & !(alignment - 1);
 
-        let handle_count = 1 + miss_count + hit_count;
+        let handle_count = 1 + pipeline.reflect_data.miss_count as usize + pipeline.reflect_data.hit_count as usize;
         let handle_size_aligned = align_up(
             device.rt_properties.shader_group_handle_size,
             device.rt_properties.shader_group_handle_alignment,
@@ -72,7 +70,7 @@ impl ShaderBindingTable {
         let mut miss_region = vk::StridedDeviceAddressRegionKHR {
             stride: handle_size_aligned as u64,
             size: align_up(
-                handle_size_aligned * miss_count as u32,
+                handle_size_aligned * pipeline.reflect_data.miss_count,
                 device.rt_properties.shader_group_base_alignment,
             ) as u64,
             ..Default::default()
@@ -81,7 +79,7 @@ impl ShaderBindingTable {
         let mut hit_region = vk::StridedDeviceAddressRegionKHR {
             stride: handle_size_aligned as u64,
             size: align_up(
-                handle_size_aligned * hit_count as u32,
+                handle_size_aligned * pipeline.reflect_data.hit_count,
                 device.rt_properties.shader_group_base_alignment,
             ) as u64,
             ..Default::default()
@@ -136,7 +134,7 @@ impl ShaderBindingTable {
             handle_idx += 1;
 
             ptr = data.as_mut_ptr().add(raygen_region.size as usize);
-            for _ in 0..miss_count {
+            for _ in 0..pipeline.reflect_data.miss_count {
                 std::ptr::copy_nonoverlapping(
                     get_handle(handle_idx),
                     ptr,
@@ -149,7 +147,7 @@ impl ShaderBindingTable {
             ptr = data
                 .as_mut_ptr()
                 .add(raygen_region.size as usize + miss_region.size as usize);
-            for _ in 0..hit_count {
+            for _ in 0..pipeline.reflect_data.hit_count {
                 std::ptr::copy_nonoverlapping(
                     get_handle(handle_idx),
                     ptr,

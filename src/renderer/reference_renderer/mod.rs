@@ -164,8 +164,6 @@ impl VulkanMcPathTracer {
             context.allocator.clone(),
             &context.rt_pipeline_ext,
             &passes.pt.pipeline_handle,
-            1,
-            1,
         )?;
 
         let command_buffers = context

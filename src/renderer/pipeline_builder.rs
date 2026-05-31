@@ -150,27 +150,41 @@ impl PipelineBuilder {
         &mut self,
         name: impl AsRef<str>,
         name_raygen: impl AsRef<str>,
-        name_miss: impl AsRef<str>,
-        name_hit: impl AsRef<str>,
+        names_miss: &[impl AsRef<str>],
+        names_hit: &[impl AsRef<str>],
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Rc<Pipeline<Rt>>, AppError> {
         let raygen_name = name_raygen.as_ref();
         let (raygen_module, refl) = self.get_shader(raygen_name, ShaderStage::RayGen)?;
         raygen_module.set_name(raygen_name.to_owned())?;
 
-        let miss_name = name_miss.as_ref();
-        let (miss_module, _) = self.get_shader(miss_name, ShaderStage::RayMiss)?;
-        miss_module.set_name(miss_name.to_owned())?;
+        let mut miss_stages = Vec::with_capacity(names_miss.len());
+        for name_miss in names_miss.iter() {
+            let miss_name = name_miss.as_ref();
+            let (miss_module, _) = self.get_shader(miss_name, ShaderStage::RayMiss)?;
+            miss_module.set_name(miss_name.to_owned())?;
 
-        let hit_name = name_hit.as_ref();
-        let (hit_module, _) = self.get_shader(hit_name, ShaderStage::RayClosestHit)?;
-        hit_module.set_name(hit_name.to_owned())?;
+            miss_stages.push(miss_module);
+        }
 
-        let rt_stages = [
-            raygen_module.stage_info(),
-            miss_module.stage_info(),
-            hit_module.stage_info(),
-        ];
+        let mut hit_stages = Vec::with_capacity(names_hit.len());
+        for name_hit in names_hit.iter() {
+            let hit_name = name_hit.as_ref();
+            let (hit_module, _) = self.get_shader(hit_name, ShaderStage::RayClosestHit)?;
+            hit_module.set_name(hit_name.to_owned())?;
+
+            hit_stages.push(hit_module);
+        }
+
+        let mut rt_stages = vec![raygen_module.stage_info()];
+
+        for module in &miss_stages {
+            rt_stages.push(module.stage_info());
+        }
+
+        for module in &hit_stages {
+            rt_stages.push(module.stage_info());
+        }
 
         let push_consts_size = refl
             .get_push_constant_range()
@@ -198,6 +212,8 @@ impl PipelineBuilder {
             &rt_stages,
             &desc_layouts,
             push_consts_size,
+            miss_stages.len() as u32,
+            hit_stages.len() as u32,
         )?;
         pipeline.name(name.as_ref())?;
 

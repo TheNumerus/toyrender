@@ -28,8 +28,8 @@ impl ReferencePathtracePass {
         let pipeline_handle = pipeline_builder.build_rt(
             "pt",
             "pt_reference|raygen",
-            "pt_reference|miss",
-            "pt_reference|chit",
+            &["pt_reference|miss", "pt_reference|missEmpty"],
+            &["pt_reference|chit", "pt_reference|chitEmpty"],
             descriptor_layouts,
         )?;
 

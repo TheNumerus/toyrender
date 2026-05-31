@@ -173,8 +173,6 @@ impl VulkanRenderer {
             context.allocator.clone(),
             &context.rt_pipeline_ext,
             &passes.pt.pipeline_handle,
-            1,
-            1,
         )?;
 
         let raster_command_buffers = context

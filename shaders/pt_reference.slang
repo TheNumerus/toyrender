@@ -122,13 +122,14 @@ void traceShadow(float3 pos, float3 dir, inout Payload payload) {
     ray.TMax = pc.direct_trace_distance;
     ray.TMin = 0.0001;
 
+    payload.isMiss = false;
     TraceRay(
         tlas,
-        RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,
+        RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
         0xFF,
         0,
         0,
-        0,
+        1,
         ray,
         payload
     );
@@ -218,16 +219,14 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
         float3 dir = octDecode((mapped - 0.5) * 2.0);
         if (dot(normal, dir) >= 0.0) {
-            trace(offset_ray(pos, normal), dir, payload);
+            float3 sky_color = Toyrender::Sky::sample(dir, images[pc.sky_idx], env.rotation);
 
-            if (payload.isMiss) {
-                float pdf = images[pc.pdf_idx].Sample(mapped).x;
-                float uniformPdf = 1.0 / (1024.0 * 1024.0);
-                // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
-                float adjust = 4.0 * uniformPdf / (pdf);
+            float pdf = images[pc.pdf_idx].Sample(mapped).x;
+            const float uniformPdf = 1.0 / (1024.0 * 1024.0);
+            // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
+            float adjust = 4.0 * uniformPdf / (pdf);
 
-                sky_intensity = env.sky_color_intensity.w * adjust * dot(normal, dir) * luminance(payload.color);
-            }
+            sky_intensity = env.sky_color_intensity.w * adjust * dot(normal, dir) * luminance(sky_color);
         }
     } else {
         float3 tangent, bitangent;
@@ -279,13 +278,14 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         ray.TMax = len;
         ray.TMin = 0.0001;
 
+        payload.isMiss = false;
         TraceRay(
             tlas,
-            RAY_FLAG_FORCE_OPAQUE,
+            RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
             0xFF,
             0,
             0,
-            0,
+            1,
             ray,
             payload
         );
@@ -500,6 +500,17 @@ void raygen() {
                 0.0
             )
         );
+    } else if (global.debug == DebugMode::Time) {
+        float time = float(time_diff(start, end)) / 1024 / 128;
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                time * time,
+                -(pow(2.0 * time - 1.0, 2.0)) + 1.0,
+                pow(1.0 - time, 2.0),
+                0.0
+            )
+        );
     } else {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
@@ -522,6 +533,12 @@ void miss(inout Payload payload) {
         payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
     }
 
+    payload.isMiss = true;
+}
+
+
+[shader("miss")]
+void missEmpty(inout Payload payload) {
     payload.isMiss = true;
 }
 
@@ -575,3 +592,10 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
     //payload.color = float3(0.7);
 }
+
+
+[shader("closesthit")]
+void chitEmpty(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+    payload.isMiss = false;
+}
+

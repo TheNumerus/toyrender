@@ -4,7 +4,10 @@ use ash::vk::{Handle, Pipeline as RawPipeline, PipelineLayout, PipelineShaderSta
 use std::rc::Rc;
 
 pub struct Graphics;
-pub struct Rt;
+pub struct Rt {
+    pub miss_count: u32,
+    pub hit_count: u32,
+}
 pub struct Compute {
     pub workgroup_size: (u32, u32, u32),
 }
@@ -166,33 +169,48 @@ impl Pipeline<Rt> {
         stages: &[PipelineShaderStageCreateInfo],
         descriptor_layouts: &[vk::DescriptorSetLayout],
         push_consts_size: u32,
+        miss_count: u32,
+        hit_count: u32,
     ) -> Result<Self, VulkanError> {
+        let mut index = 0;
+
         let gen_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR {
             ty: vk::RayTracingShaderGroupTypeKHR::GENERAL,
-            general_shader: 0,
+            general_shader: index,
             closest_hit_shader: vk::SHADER_UNUSED_KHR,
             any_hit_shader: vk::SHADER_UNUSED_KHR,
             intersection_shader: vk::SHADER_UNUSED_KHR,
             ..Default::default()
         };
+        index += 1;
 
-        let miss_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR {
-            ty: vk::RayTracingShaderGroupTypeKHR::GENERAL,
-            general_shader: 1,
-            closest_hit_shader: vk::SHADER_UNUSED_KHR,
-            any_hit_shader: vk::SHADER_UNUSED_KHR,
-            intersection_shader: vk::SHADER_UNUSED_KHR,
-            ..Default::default()
-        };
+        let mut miss_groups = Vec::with_capacity(miss_count as usize);
 
-        let hit_group_create_info = vk::RayTracingShaderGroupCreateInfoKHR {
-            ty: vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
-            general_shader: vk::SHADER_UNUSED_KHR,
-            closest_hit_shader: 2,
-            any_hit_shader: vk::SHADER_UNUSED_KHR,
-            intersection_shader: vk::SHADER_UNUSED_KHR,
-            ..Default::default()
-        };
+        for _ in 0..miss_count {
+            miss_groups.push(vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: vk::RayTracingShaderGroupTypeKHR::GENERAL,
+                general_shader: index,
+                closest_hit_shader: vk::SHADER_UNUSED_KHR,
+                any_hit_shader: vk::SHADER_UNUSED_KHR,
+                intersection_shader: vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            });
+            index += 1;
+        }
+
+        let mut hit_groups = Vec::with_capacity(hit_count as usize);
+
+        for _ in 0..hit_count {
+            hit_groups.push(vk::RayTracingShaderGroupCreateInfoKHR {
+                ty: vk::RayTracingShaderGroupTypeKHR::TRIANGLES_HIT_GROUP,
+                general_shader: vk::SHADER_UNUSED_KHR,
+                closest_hit_shader: index,
+                any_hit_shader: vk::SHADER_UNUSED_KHR,
+                intersection_shader: vk::SHADER_UNUSED_KHR,
+                ..Default::default()
+            });
+            index += 1;
+        }
 
         let dynamic_state = vk::PipelineDynamicStateCreateInfo {
             dynamic_state_count: 0,
@@ -210,7 +228,9 @@ impl Pipeline<Rt> {
 
         let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 
-        let groups = [gen_group_create_info, miss_group_create_info, hit_group_create_info];
+        let mut groups = vec![gen_group_create_info];
+        groups.extend(miss_groups);
+        groups.extend(hit_groups);
 
         let pipeline_info = vk::RayTracingPipelineCreateInfoKHR {
             stage_count: stages.len() as u32,
@@ -241,7 +261,7 @@ impl Pipeline<Rt> {
             inner: pipeline,
             layout,
             device,
-            reflect_data: Rt,
+            reflect_data: Rt { miss_count, hit_count },
         })
     }
 }

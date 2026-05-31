@@ -28,8 +28,13 @@ impl PathTracePass {
         let direct_render_target = render_targets.add(a)?;
         let indirect_render_target = render_targets.add(b)?;
 
-        let pipeline_handle =
-            pipeline_builder.build_rt("pt_rt", "pt_rt|raygen", "pt_rt|miss", "pt_rt|chit", descriptor_layouts)?;
+        let pipeline_handle = pipeline_builder.build_rt(
+            "pt_rt",
+            "pt_rt|raygen",
+            &["pt_rt|miss"],
+            &["pt_rt|chit"],
+            descriptor_layouts,
+        )?;
 
         Ok(Self {
             context,
