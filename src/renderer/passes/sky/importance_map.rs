@@ -134,10 +134,7 @@ impl ImportanceMapPass {
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
-        let x = math::workgroup_saturate(Self::OCTA_SIZE[0], pipeline.reflect_data.workgroup_size.0);
-        let y = math::workgroup_saturate(Self::OCTA_SIZE[1], pipeline.reflect_data.workgroup_size.1);
-
-        command_buffer.dispatch(x, y, 1);
+        command_buffer.dispatch(1, 1024, 1);
 
         self.intra_barrier(command_buffer, &self.cdf_render_target);
 

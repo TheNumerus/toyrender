@@ -24,7 +24,9 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
-[numthreads(16, 16, 1)]
+groupshared float row[1024];
+
+[numthreads(1024, 1, 1)]
 [shader("compute")]
 void horizontal(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
@@ -35,10 +37,15 @@ void horizontal(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
         return;
     }
 
+    float value = storages[pc.src_idx].Load(int2(x, y)).x;
+    row[x] = value;
+
+    GroupMemoryBarrierWithGroupSync();
+
     float sum = 0.0;
 
     for (int i = 0; i < x; i++) {
-        sum += storages[pc.src_idx].Load(int2(i, y)).x;
+        sum += row[i];
     }
 
     storages[pc.out_idx].Store(int2(x, y), sum);
@@ -56,10 +63,15 @@ void vertical(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
         return;
     }
 
+    float value = storages[pc.src_idx].Load(int2(1023, x)).x;
+    row[x] = value;
+
+    GroupMemoryBarrierWithGroupSync();
+
     float sum = 0.0;
 
     for (int i = 0; i < x; i++) {
-        sum += storages[pc.src_idx].Load(int2(1023, i)).x;
+        sum += row[i];
     }
 
     storages[pc.src_idx].Store(int2(1024, x), sum);

@@ -74,7 +74,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float3 dir = octDecode(pixel);
 
-    float3 sky = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+    float3 sky = Toyrender::Sky::sample(dir, images[pc.src_idx], env.rotation);
 
     storages[pc.out_idx].Store(int2(x, y), luminance(sky));
 }
