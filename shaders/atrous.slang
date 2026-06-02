@@ -16,6 +16,7 @@ struct PushConsts {
     int level;
     int normal_idx;
     int depth_idx;
+    int grad_idx;
     int src_idx;
     int out_idx;
 };
@@ -105,29 +106,6 @@ float get_blurred_variance(uint3 localid) {
 
 groupshared float depths[18][18];
 
-void populateSharedDepths(uint3 localid, uint3 tid) {
-    depths[localid.y + 1][localid.x + 1] = storages[pc.depth_idx].Load(tid.xy).x;
-
-    // this is 4x16 continuous threads, which should be exacly 1 or 2 wavefronts
-    if (localid.y < 4) {
-        uint2 start = tid.xy - localid.xy;
-
-        // 0-15
-        uint posInSequence = localid.x;
-
-        uint vertical = localid.y & 1;
-        uint horizontal = 1 - vertical;
-
-        uint line = (localid.y >> 1) & 1;
-
-        let offset = int2(posInSequence * horizontal + vertical * (17 * line - 1), posInSequence * vertical + horizontal * (17 * line - 1));
-
-        depths[offset.y + 1][offset.x + 1] = storages[pc.depth_idx].Load(start + offset).x;
-    }
-
-    GroupMemoryBarrierWithGroupSync();
-}
-
 void populateSharedVariance(uint3 localid, uint3 tid, int2 drawSize) {
     int2 start = tid.xy - localid.xy;
 
@@ -167,13 +145,8 @@ void main(uint3 tid: SV_DispatchThreadID, uint3 localid: SV_GroupThreadID) {
 
     float2 uv = float2((x_base + 0.5) / drawSize.x, (y_base + 0.5) / drawSize.y);
 
-    populateSharedDepths(localid, tid);
-
-    float expDepth = depths[localid.y + 1][localid.x + 1];
-
-    float gradient = get_depth_gradient(localid);
-
-    //storages[pc.out_idx].Store(int2(x_base, y_base), float4(float2(gradient * 400.0), 0.0, 1.0));
+    float expDepth = storages[pc.depth_idx].Load(tid.xy).x;
+    float gradient = storages[pc.grad_idx].Load(tid.xy).x;
 
     populateSharedVariance(localid, tid, drawSize);
 

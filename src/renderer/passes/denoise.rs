@@ -21,7 +21,9 @@ pub(crate) struct DenoisePass {
     pub moments_indirect_render_target: Rc<RefCell<RenderTarget>>,
     pub moments_direct_history: Rc<RefCell<RenderTarget>>,
     pub moments_indirect_history: Rc<RefCell<RenderTarget>>,
+    pub depth_gradient: Rc<RefCell<RenderTarget>>,
     temporal_pipeline: Rc<Pipeline<Compute>>,
+    depth_gradient_pipeline: Rc<Pipeline<Compute>>,
     spatial_pipeline: Rc<Pipeline<Compute>>,
     variance_estimate_pipeline: Rc<Pipeline<Compute>>,
 }
@@ -38,7 +40,8 @@ impl DenoisePass {
         let spatial_pipeline = pipeline_builder.build_compute("atrous", "atrous|main", descriptor_layouts)?;
         let temporal_pipeline =
             pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptor_layouts)?;
-
+        let depth_gradient_pipeline =
+            pipeline_builder.build_compute("depth_gradient", "depth_gradient|main", descriptor_layouts)?;
         let variance_estimate_pipeline =
             pipeline_builder.build_compute("variance", "variance|main", descriptor_layouts)?;
 
@@ -59,9 +62,11 @@ impl DenoisePass {
                 .add(Self::moment_render_target_def().duplicate("denoise_direct_moments_history"))?,
             moments_indirect_history: render_targets
                 .add(Self::moment_render_target_def().duplicate("denoise_indirect_moments_history"))?,
+            depth_gradient: render_targets.add(Self::depth_gradient_render_target_def())?,
             spatial_pipeline,
             temporal_pipeline,
             variance_estimate_pipeline,
+            depth_gradient_pipeline,
         })
     }
 
@@ -76,6 +81,13 @@ impl DenoisePass {
     fn moment_render_target_def() -> RenderTargetBuilder {
         RenderTargetBuilder::new("denoise_direct_moments")
             .with_format(vk::Format::R16G16B16A16_SFLOAT)
+            .with_transfer()
+            .with_storage()
+    }
+
+    fn depth_gradient_render_target_def() -> RenderTargetBuilder {
+        RenderTargetBuilder::new("depth_gradient")
+            .with_format(vk::Format::R32_SFLOAT)
             .with_transfer()
             .with_storage()
     }
@@ -199,32 +211,6 @@ impl DenoisePass {
                     ..Default::default()
                 }],
             );
-
-            let barriers = [
-                self.moments_direct_history.borrow().image.inner,
-                self.moments_indirect_history.borrow().image.inner,
-            ]
-            .map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                ..Default::default()
-            });
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
         }
 
         let pipeline = &self.variance_estimate_pipeline;
@@ -259,11 +245,33 @@ impl DenoisePass {
 
         command_buffer.dispatch(x, y, 1);
 
+        let pipeline = &self.depth_gradient_pipeline;
+
+        command_buffer.bind_compute_pipeline(pipeline);
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
+        );
+
+        let pc = PushConstBuilder::with_capacity(2 * size_of::<u32>())
+            .add_u32(inputs.depth.storage_index.unwrap())
+            .add_u32(self.depth_gradient.borrow().storage_index.unwrap());
+
+        command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, &pc.clone().build());
+
+        let x = math::workgroup_saturate(viewport.0, pipeline.reflect_data.workgroup_size.0);
+        let y = math::workgroup_saturate(viewport.1, pipeline.reflect_data.workgroup_size.1);
+
+        command_buffer.dispatch(x, y, 1);
+
         unsafe {
-            let barriers = [
+            let mut barriers = [
                 self.direct_render_target_acc.borrow().image.inner,
                 self.indirect_render_target_acc.borrow().image.inner,
+                self.depth_gradient.borrow().image.inner,
             ]
+            .into_iter()
             .map(|image| vk::ImageMemoryBarrier {
                 src_access_mask: vk::AccessFlags::SHADER_WRITE,
                 dst_access_mask: vk::AccessFlags::SHADER_READ,
@@ -274,11 +282,30 @@ impl DenoisePass {
                 image,
                 subresource_range: crate::vulkan::Image::single_color_layer_range(),
                 ..Default::default()
-            });
+            })
+            .collect::<Vec<_>>();
+
+            barriers.extend(
+                [
+                    self.moments_direct_history.borrow().image.inner,
+                    self.moments_indirect_history.borrow().image.inner,
+                ]
+                .map(|image| vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                    image,
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                    ..Default::default()
+                }),
+            );
 
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
                 vk::PipelineStageFlags::COMPUTE_SHADER,
                 vk::DependencyFlags::empty(),
                 &[],
@@ -313,10 +340,11 @@ impl DenoisePass {
                     (out_idx, src_idx) = (src_idx, out_idx);
                 };
 
-                let pc = PushConstBuilder::with_capacity(5 * size_of::<u32>())
+                let pc = PushConstBuilder::with_capacity(6 * size_of::<u32>())
                     .add_u32(level)
                     .add_u32(inputs.normal.storage_index.unwrap())
                     .add_u32(inputs.depth.storage_index.unwrap())
+                    .add_u32(self.depth_gradient.borrow().storage_index.unwrap())
                     .add_u32(src_idx)
                     .add_u32(out_idx);
 
@@ -331,7 +359,7 @@ impl DenoisePass {
                     (out_idx, src_idx) = (src_idx, out_idx);
                 };
 
-                let pc = pc.update_u32(src_idx, 12).update_u32(out_idx, 16);
+                let pc = pc.update_u32(src_idx, 16).update_u32(out_idx, 20);
 
                 command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
@@ -349,28 +377,76 @@ impl DenoisePass {
                     ]
                 };
 
-                unsafe {
-                    let barriers = barriers.map(|image| vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::GENERAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                        image,
-                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                        ..Default::default()
-                    });
+                if level != 1 {
+                    unsafe {
+                        let barriers = barriers.map(|image| vk::ImageMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                            dst_access_mask: vk::AccessFlags::SHADER_READ,
+                            old_layout: vk::ImageLayout::GENERAL,
+                            new_layout: vk::ImageLayout::GENERAL,
+                            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                            image,
+                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                            ..Default::default()
+                        });
 
-                    self.device.inner.cmd_pipeline_barrier(
-                        command_buffer.inner,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &barriers,
-                    );
+                        self.device.inner.cmd_pipeline_barrier(
+                            command_buffer.inner,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &barriers,
+                        );
+                    }
+                } else {
+                    // wait for second level and copy result at the same time
+                    unsafe {
+                        let mut barriers = barriers
+                            .map(|image| vk::ImageMemoryBarrier {
+                                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                                old_layout: vk::ImageLayout::GENERAL,
+                                new_layout: vk::ImageLayout::GENERAL,
+                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                                image,
+                                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                                ..Default::default()
+                            })
+                            .into_iter()
+                            .collect::<Vec<_>>();
+
+                        barriers.extend(
+                            [
+                                self.direct_render_target_history.borrow().image.inner,
+                                self.indirect_render_target_history.borrow().image.inner,
+                            ]
+                            .map(|image| vk::ImageMemoryBarrier {
+                                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                                dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                                old_layout: vk::ImageLayout::GENERAL,
+                                new_layout: vk::ImageLayout::GENERAL,
+                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                                image,
+                                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                                ..Default::default()
+                            }),
+                        );
+
+                        self.device.inner.cmd_pipeline_barrier(
+                            command_buffer.inner,
+                            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::DependencyFlags::empty(),
+                            &[],
+                            &[],
+                            &barriers,
+                        );
+                    }
                 }
 
                 // after first level copy denoised result to history buffer
@@ -414,32 +490,6 @@ impl DenoisePass {
                                 src_subresource: image_color_res,
                                 ..Default::default()
                             }],
-                        );
-
-                        let barriers = [
-                            self.direct_render_target_history.borrow().image.inner,
-                            self.indirect_render_target_history.borrow().image.inner,
-                        ]
-                        .map(|image| vk::ImageMemoryBarrier {
-                            src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                            dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                            old_layout: vk::ImageLayout::GENERAL,
-                            new_layout: vk::ImageLayout::GENERAL,
-                            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                            image,
-                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                            ..Default::default()
-                        });
-
-                        self.device.inner.cmd_pipeline_barrier(
-                            command_buffer.inner,
-                            vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &barriers,
                         );
                     }
                 }
