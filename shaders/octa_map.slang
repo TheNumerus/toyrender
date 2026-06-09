@@ -61,7 +61,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint y = tid.y;
 
     // workaround to force usage of desc set 0
-    if (!env.mode == SkyMode::Textured) {
+    if (env.mode != SkyMode::Textured) {
         return;
     }
 

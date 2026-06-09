@@ -141,7 +141,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     float3 radiance = 0.0;
 
     // select light
-    float sun_light_intensity = max(dot(dir_ray, normal) * env.sun_color_intensity.w, 0.0) * luminance(env.sky_color_intensity.xyz);
+    float sun_light_intensity = max(dot(dir_ray, normal) * env.sun_color_intensity.w, 0.0) * luminance(env.sun_color_intensity.xyz);
     float sum = sun_light_intensity;
 
     float2 rand_vars_sphere = float2(pcg_hash(), pcg_hash());

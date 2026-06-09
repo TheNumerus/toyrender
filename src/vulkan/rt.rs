@@ -1,5 +1,5 @@
 use crate::err::AppError;
-use crate::renderer::TlasIndex;
+use crate::renderer::{TlasIndex, VulkanContext};
 use crate::vulkan::{
     Buffer, CommandBuffer, CommandPool, DebugMarker, Device, Fence, Instance, IntoVulkanError, Pipeline, Rt,
     SubmitInfo, VulkanError,
@@ -44,26 +44,28 @@ pub struct ShaderBindingTable {
     pub miss_region: vk::StridedDeviceAddressRegionKHR,
     pub hit_region: vk::StridedDeviceAddressRegionKHR,
     pub call_region: vk::StridedDeviceAddressRegionKHR,
+    context: Rc<VulkanContext>,
 }
 
 impl ShaderBindingTable {
-    pub fn new(
-        device: Rc<Device>,
-        allocator: Arc<Mutex<Allocator>>,
-        rt_pipeline: &RayTracingPipeline,
-        pipeline: &Pipeline<Rt>,
-    ) -> Result<Self, AppError> {
+    pub fn new(context: Rc<VulkanContext>, pipeline: &Pipeline<Rt>) -> Result<Self, AppError> {
         let align_up = |size: u32, alignment: u32| (size + (alignment - 1)) & !(alignment - 1);
 
         let handle_count = 1 + pipeline.reflect_data.miss_count as usize + pipeline.reflect_data.hit_count as usize;
         let handle_size_aligned = align_up(
-            device.rt_properties.shader_group_handle_size,
-            device.rt_properties.shader_group_handle_alignment,
+            context.device.rt_properties.shader_group_handle_size,
+            context.device.rt_properties.shader_group_handle_alignment,
         );
 
         let mut raygen_region = vk::StridedDeviceAddressRegionKHR {
-            stride: align_up(handle_size_aligned, device.rt_properties.shader_group_base_alignment) as u64,
-            size: align_up(handle_size_aligned, device.rt_properties.shader_group_base_alignment) as u64,
+            stride: align_up(
+                handle_size_aligned,
+                context.device.rt_properties.shader_group_base_alignment,
+            ) as u64,
+            size: align_up(
+                handle_size_aligned,
+                context.device.rt_properties.shader_group_base_alignment,
+            ) as u64,
             ..Default::default()
         };
 
@@ -71,7 +73,7 @@ impl ShaderBindingTable {
             stride: handle_size_aligned as u64,
             size: align_up(
                 handle_size_aligned * pipeline.reflect_data.miss_count,
-                device.rt_properties.shader_group_base_alignment,
+                context.device.rt_properties.shader_group_base_alignment,
             ) as u64,
             ..Default::default()
         };
@@ -80,17 +82,18 @@ impl ShaderBindingTable {
             stride: handle_size_aligned as u64,
             size: align_up(
                 handle_size_aligned * pipeline.reflect_data.hit_count,
-                device.rt_properties.shader_group_base_alignment,
+                context.device.rt_properties.shader_group_base_alignment,
             ) as u64,
             ..Default::default()
         };
 
         let call_region = vk::StridedDeviceAddressRegionKHR { ..Default::default() };
 
-        let size = handle_count * device.rt_properties.shader_group_handle_size as usize;
+        let size = handle_count * context.device.rt_properties.shader_group_handle_size as usize;
 
         let handles = unsafe {
-            rt_pipeline
+            context
+                .rt_pipeline_ext
                 .loader
                 .get_ray_tracing_shader_group_handles(pipeline.inner, 0, handle_count as u32, size)
                 .map_to_err("Cannot get RT shader group handles")?
@@ -99,14 +102,14 @@ impl ShaderBindingTable {
         let buf_size = raygen_region.size + miss_region.size + call_region.size + hit_region.size;
 
         let mut buffer = Buffer::new_with_alignment(
-            device.clone(),
-            allocator.clone(),
+            context.device.clone(),
+            context.allocator.clone(),
             MemoryLocation::CpuToGpu,
             vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_BINDING_TABLE_KHR
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             buf_size,
-            device.rt_properties.shader_group_base_alignment as u64,
+            context.device.rt_properties.shader_group_base_alignment as u64,
         )?;
         buffer.name("SBT")?;
 
@@ -118,7 +121,7 @@ impl ShaderBindingTable {
         let get_handle = |i: usize| unsafe {
             handles
                 .as_ptr()
-                .add(i * device.rt_properties.shader_group_handle_size as usize)
+                .add(i * context.device.rt_properties.shader_group_handle_size as usize)
         };
 
         let mut data = vec![0; buf_size as usize];
@@ -129,7 +132,7 @@ impl ShaderBindingTable {
             std::ptr::copy_nonoverlapping(
                 get_handle(handle_idx),
                 ptr,
-                device.rt_properties.shader_group_handle_size as usize,
+                context.device.rt_properties.shader_group_handle_size as usize,
             );
             handle_idx += 1;
 
@@ -138,7 +141,7 @@ impl ShaderBindingTable {
                 std::ptr::copy_nonoverlapping(
                     get_handle(handle_idx),
                     ptr,
-                    device.rt_properties.shader_group_handle_size as usize,
+                    context.device.rt_properties.shader_group_handle_size as usize,
                 );
                 handle_idx += 1;
                 ptr = ptr.add(miss_region.stride as usize);
@@ -151,7 +154,7 @@ impl ShaderBindingTable {
                 std::ptr::copy_nonoverlapping(
                     get_handle(handle_idx),
                     ptr,
-                    device.rt_properties.shader_group_handle_size as usize,
+                    context.device.rt_properties.shader_group_handle_size as usize,
                 );
                 handle_idx += 1;
                 ptr = ptr.add(hit_region.stride as usize);
@@ -166,7 +169,118 @@ impl ShaderBindingTable {
             miss_region,
             hit_region,
             call_region,
+            context,
         })
+    }
+
+    pub fn refill(&mut self, pipeline: &Pipeline<Rt>) -> Result<(), VulkanError> {
+        let align_up = |size: u32, alignment: u32| (size + (alignment - 1)) & !(alignment - 1);
+
+        let handle_count = 1 + pipeline.reflect_data.miss_count as usize + pipeline.reflect_data.hit_count as usize;
+        let handle_size_aligned = align_up(
+            self.context.device.rt_properties.shader_group_handle_size,
+            self.context.device.rt_properties.shader_group_handle_alignment,
+        );
+
+        let mut raygen_region = vk::StridedDeviceAddressRegionKHR {
+            stride: align_up(
+                handle_size_aligned,
+                self.context.device.rt_properties.shader_group_base_alignment,
+            ) as u64,
+            size: align_up(
+                handle_size_aligned,
+                self.context.device.rt_properties.shader_group_base_alignment,
+            ) as u64,
+            ..Default::default()
+        };
+
+        let mut miss_region = vk::StridedDeviceAddressRegionKHR {
+            stride: handle_size_aligned as u64,
+            size: align_up(
+                handle_size_aligned * pipeline.reflect_data.miss_count,
+                self.context.device.rt_properties.shader_group_base_alignment,
+            ) as u64,
+            ..Default::default()
+        };
+
+        let mut hit_region = vk::StridedDeviceAddressRegionKHR {
+            stride: handle_size_aligned as u64,
+            size: align_up(
+                handle_size_aligned * pipeline.reflect_data.hit_count,
+                self.context.device.rt_properties.shader_group_base_alignment,
+            ) as u64,
+            ..Default::default()
+        };
+
+        let call_region = vk::StridedDeviceAddressRegionKHR { ..Default::default() };
+
+        let size = handle_count * self.context.device.rt_properties.shader_group_handle_size as usize;
+
+        let handles = unsafe {
+            self.context
+                .rt_pipeline_ext
+                .loader
+                .get_ray_tracing_shader_group_handles(pipeline.inner, 0, handle_count as u32, size)
+                .map_to_err("Cannot get RT shader group handles")?
+        };
+
+        let buf_size = raygen_region.size + miss_region.size + call_region.size + hit_region.size;
+
+        if buf_size != self.buffer.size {
+            panic!("TODO implement buffer resizing")
+        }
+
+        let addr = self.buffer.get_device_addr();
+        raygen_region.device_address = addr;
+        miss_region.device_address = addr + raygen_region.size;
+        hit_region.device_address = addr + raygen_region.size + miss_region.size;
+
+        let get_handle = |i: usize| unsafe {
+            handles
+                .as_ptr()
+                .add(i * self.context.device.rt_properties.shader_group_handle_size as usize)
+        };
+
+        let mut data = vec![0; buf_size as usize];
+        let mut ptr = data.as_mut_ptr();
+        let mut handle_idx = 0_usize;
+
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                get_handle(handle_idx),
+                ptr,
+                self.context.device.rt_properties.shader_group_handle_size as usize,
+            );
+            handle_idx += 1;
+
+            ptr = data.as_mut_ptr().add(raygen_region.size as usize);
+            for _ in 0..pipeline.reflect_data.miss_count {
+                std::ptr::copy_nonoverlapping(
+                    get_handle(handle_idx),
+                    ptr,
+                    self.context.device.rt_properties.shader_group_handle_size as usize,
+                );
+                handle_idx += 1;
+                ptr = ptr.add(miss_region.stride as usize);
+            }
+
+            ptr = data
+                .as_mut_ptr()
+                .add(raygen_region.size as usize + miss_region.size as usize);
+            for _ in 0..pipeline.reflect_data.hit_count {
+                std::ptr::copy_nonoverlapping(
+                    get_handle(handle_idx),
+                    ptr,
+                    self.context.device.rt_properties.shader_group_handle_size as usize,
+                );
+                handle_idx += 1;
+                ptr = ptr.add(hit_region.stride as usize);
+            }
+
+            self.buffer.fill_host(&data)?;
+        }
+
+        Ok(())
     }
 }
 

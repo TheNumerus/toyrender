@@ -168,12 +168,7 @@ impl VulkanRenderer {
 
         let last_depth = render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
-        let shader_binding_table = ShaderBindingTable::new(
-            device.clone(),
-            context.allocator.clone(),
-            &context.rt_pipeline_ext,
-            &passes.pt.pipeline_handle,
-        )?;
+        let shader_binding_table = ShaderBindingTable::new(context.clone(), &passes.pt.pipeline_handle)?;
 
         let raster_command_buffers = context
             .graphics_command_pool

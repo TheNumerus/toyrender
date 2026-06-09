@@ -33,7 +33,7 @@ void horizontal(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint y = tid.y;
 
     // workaround to force usage of desc set 0
-    if (!env.mode == SkyMode::Textured) {
+    if (env.mode != SkyMode::Textured) {
         return;
     }
 
@@ -59,7 +59,7 @@ void vertical(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint y = tid.y;
 
     // workaround to force usage of desc set 0
-    if (!env.mode == SkyMode::Textured) {
+    if (env.mode != SkyMode::Textured) {
         return;
     }
 
@@ -85,7 +85,7 @@ void pdfNormalize(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint y = tid.y;
 
     // workaround to force usage of desc set 0
-    if (!env.mode == SkyMode::Textured) {
+    if (env.mode != SkyMode::Textured) {
         return;
     }
 
@@ -105,7 +105,7 @@ void cdfNormalize(uint3 tid: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint in
     float total = storages[pc.src_idx].Load(int2(1024, 1023)).x;
 
     // workaround to force usage of desc set 0
-    if (!env.mode == SkyMode::Textured) {
+    if (env.mode != SkyMode::Textured) {
         return;
     }
 

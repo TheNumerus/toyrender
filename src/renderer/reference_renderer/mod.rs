@@ -41,7 +41,7 @@ struct VulkanMcPathTracerPasses {
 pub struct VulkanMcPathTracer {
     pub context: Rc<VulkanContext>,
     pub render_targets: RenderTargets,
-    pub shader_binding_table: ShaderBindingTable,
+    pub shader_binding_tables: Vec<ShaderBindingTable>,
     pub tlases: Vec<TopLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub command_buffers: Vec<CommandBuffer>,
@@ -159,18 +159,12 @@ impl VulkanMcPathTracer {
             pt: pt_pass,
         };
 
-        let shader_binding_table = ShaderBindingTable::new(
-            device.clone(),
-            context.allocator.clone(),
-            &context.rt_pipeline_ext,
-            &passes.pt.pipeline_handle,
-        )?;
-
         let command_buffers = context
             .graphics_command_pool
             .allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
         let tlas_prepare_cmd_buf = context.compute_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
+        let mut shader_binding_tables = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut img_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut in_flight = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -191,6 +185,9 @@ impl VulkanMcPathTracer {
             img_available[i].name(format!("img_available[{}]", i))?;
             in_flight[i].name(format!("in_flight[{}]", i))?;
             command_buffers[i].name(format!("cmd_buffers[{}]", i))?;
+
+            let shader_binding_table = ShaderBindingTable::new(context.clone(), &passes.pt.shader_pipeline_handle)?;
+            shader_binding_tables.push(shader_binding_table);
 
             {
                 descriptors.push(Rc::new(RefCell::new(RendererDescriptors::build(
@@ -279,7 +276,7 @@ impl VulkanMcPathTracer {
         Ok(Self {
             context: context.clone(),
             render_targets,
-            shader_binding_table,
+            shader_binding_tables,
             tlases,
             _descriptor_pool: descriptor_pool,
             command_buffers,
@@ -386,6 +383,9 @@ impl VulkanMcPathTracer {
         let tlas_start = Instant::now();
 
         let tlas_index = resource_subsystem.build_tlas_index(scene);
+
+        self.shader_binding_tables[self.current_frame]
+            .refill(self.passes.pt.get_active_pipeline(&scene.env.sky.variant))?;
 
         self.tlas_prepare_cmd_buf.reset()?;
 
@@ -663,42 +663,44 @@ impl VulkanMcPathTracer {
             );
         }
 
-        self.passes.importance_map.record(
-            command_buffer,
-            &descriptors,
-            ImportanceMapInputs {
-                src_sampler: sky_sampler,
-            },
-        )?;
+        if let SkyVariant::Textured(_, _) = &scene.env.sky.variant {
+            self.passes.importance_map.record(
+                command_buffer,
+                &descriptors,
+                ImportanceMapInputs {
+                    src_sampler: sky_sampler,
+                },
+            )?;
 
-        unsafe {
-            let barriers = [self.passes.importance_map.cdf_render_target.borrow().image.inner].map(|image| {
-                vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }
-            });
+            unsafe {
+                let barriers = [self.passes.importance_map.cdf_render_target.borrow().image.inner].map(|image| {
+                    vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        old_layout: vk::ImageLayout::GENERAL,
+                        new_layout: vk::ImageLayout::GENERAL,
+                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+                        image,
+                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                        ..Default::default()
+                    }
+                });
 
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[vk::MemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    ..Default::default()
-                }],
-                &[],
-                &barriers,
-            );
+                self.context.device.inner.cmd_pipeline_barrier(
+                    command_buffer.inner,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[vk::MemoryBarrier {
+                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        ..Default::default()
+                    }],
+                    &[],
+                    &barriers,
+                );
+            }
         }
 
         self.passes.pt.record_pt(
@@ -706,9 +708,10 @@ impl VulkanMcPathTracer {
             &descriptors,
             ReferencePathTraceInputs {
                 sky_sampler,
+                sky: &scene.env.sky.variant,
                 sky_pdf: &self.passes.importance_map.octa_render_target.borrow(),
                 sky_importance_map: &self.passes.importance_map.cdf_render_target.borrow(),
-                sbt: &self.shader_binding_table,
+                sbt: &self.shader_binding_tables[self.current_frame],
                 bounces: self.quality.pt_bounces,
                 direct_trace_distance: self.quality.rt_direct_trace_distance,
                 indirect_trace_distance: self.quality.rt_indirect_trace_distance,

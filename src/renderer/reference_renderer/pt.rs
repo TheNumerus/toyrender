@@ -1,8 +1,9 @@
 use crate::err::AppError;
 use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
-use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::pipeline_builder::{PipelineBuilder, SpecConsts};
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{FrameContext, PushConstBuilder, VulkanContext};
+use crate::scene::SkyVariant;
 use crate::vulkan::{CommandBuffer, Pipeline, Rt, ShaderBindingTable, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
@@ -11,7 +12,9 @@ use std::rc::Rc;
 pub struct ReferencePathtracePass {
     context: Rc<VulkanContext>,
     pub render_target: Rc<RefCell<RenderTarget>>,
-    pub pipeline_handle: Rc<Pipeline<Rt>>,
+    pub shader_pipeline_handle: Rc<Pipeline<Rt>>,
+    pub solid_sky_pipeline_handle: Rc<Pipeline<Rt>>,
+    pub texture_sky_pipeline_handle: Rc<Pipeline<Rt>>,
 }
 
 impl ReferencePathtracePass {
@@ -25,18 +28,39 @@ impl ReferencePathtracePass {
     ) -> Result<Self, AppError> {
         let render_target = render_targets.add(Self::render_target_def())?;
 
-        let pipeline_handle = pipeline_builder.build_rt(
-            "pt",
+        let shader_pipeline_handle = pipeline_builder.build_rt(
+            "pt|shader",
             "pt_reference|raygen",
             &["pt_reference|miss", "pt_reference|missEmpty"],
             &["pt_reference|chit", "pt_reference|chitEmpty"],
             descriptor_layouts,
+            Some(SpecConsts::new().push(0)),
+        )?;
+
+        let solid_sky_pipeline_handle = pipeline_builder.build_rt(
+            "pt|solid",
+            "pt_reference|raygen",
+            &["pt_reference|miss", "pt_reference|missEmpty"],
+            &["pt_reference|chit", "pt_reference|chitEmpty"],
+            descriptor_layouts,
+            Some(SpecConsts::new().push(1)),
+        )?;
+
+        let texture_sky_pipeline_handle = pipeline_builder.build_rt(
+            "pt|texture",
+            "pt_reference|raygen",
+            &["pt_reference|miss", "pt_reference|missEmpty"],
+            &["pt_reference|chit", "pt_reference|chitEmpty"],
+            descriptor_layouts,
+            Some(SpecConsts::new().push(2)),
         )?;
 
         Ok(Self {
             context,
             render_target,
-            pipeline_handle,
+            shader_pipeline_handle,
+            solid_sky_pipeline_handle,
+            texture_sky_pipeline_handle,
         })
     }
 
@@ -57,7 +81,11 @@ impl ReferencePathtracePass {
     ) -> Result<(), VulkanError> {
         self.context.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = &self.pipeline_handle;
+        let pipeline = match inputs.sky {
+            SkyVariant::SingleColor(_) => &self.solid_sky_pipeline_handle,
+            SkyVariant::Textured(_, _) => &self.texture_sky_pipeline_handle,
+            _ => &self.shader_pipeline_handle,
+        };
 
         command_buffer.bind_rt_pipeline(pipeline);
 
@@ -128,10 +156,19 @@ impl ReferencePathtracePass {
 
         Ok(())
     }
+
+    pub fn get_active_pipeline(&self, sky: &SkyVariant) -> &Pipeline<Rt> {
+        match sky {
+            SkyVariant::SingleColor(_) => &self.solid_sky_pipeline_handle,
+            SkyVariant::Textured(_, _) => &self.texture_sky_pipeline_handle,
+            _ => &self.shader_pipeline_handle,
+        }
+    }
 }
 
 pub struct ReferencePathTraceInputs<'a> {
     pub sky_sampler: u32,
+    pub sky: &'a SkyVariant,
     pub sky_pdf: &'a RenderTarget,
     pub sky_importance_map: &'a RenderTarget,
     pub sbt: &'a ShaderBindingTable,

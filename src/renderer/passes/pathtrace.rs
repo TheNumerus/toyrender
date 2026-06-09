@@ -34,6 +34,7 @@ impl PathTracePass {
             &["pt_rt|miss"],
             &["pt_rt|chit"],
             descriptor_layouts,
+            None,
         )?;
 
         Ok(Self {

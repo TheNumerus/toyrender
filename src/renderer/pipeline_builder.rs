@@ -146,13 +146,14 @@ impl PipelineBuilder {
         Ok(pipeline.clone())
     }
 
-    pub fn build_rt(
+    pub fn build_rt<'a>(
         &mut self,
         name: impl AsRef<str>,
         name_raygen: impl AsRef<str>,
         names_miss: &[impl AsRef<str>],
         names_hit: &[impl AsRef<str>],
         descriptor_layouts: &DescriptorLayouts,
+        spec_consts: Option<SpecConsts>,
     ) -> Result<Rc<Pipeline<Rt>>, AppError> {
         let raygen_name = name_raygen.as_ref();
         let (raygen_module, refl) = self.get_shader(raygen_name, ShaderStage::RayGen)?;
@@ -176,14 +177,36 @@ impl PipelineBuilder {
             hit_stages.push(hit_module);
         }
 
-        let mut rt_stages = vec![raygen_module.stage_info()];
+        let spec_info = spec_consts.as_ref().map(|s| s.get_internal());
+
+        let mut rt_stages = Vec::with_capacity(1 + names_hit.len() + names_miss.len());
+
+        match &spec_info {
+            Some(spec_info) => {
+                rt_stages.push(raygen_module.stage_info().specialization_info(spec_info));
+            }
+            None => {
+                rt_stages.push(raygen_module.stage_info());
+            }
+        };
 
         for module in &miss_stages {
-            rt_stages.push(module.stage_info());
+            let mut stage_info = module.stage_info();
+            if let Some(spec_info) = spec_info.as_ref() {
+                stage_info.p_specialization_info = spec_info as *const _;
+            }
+            rt_stages.push(stage_info);
         }
 
         for module in &hit_stages {
-            rt_stages.push(module.stage_info());
+            match &spec_info {
+                Some(spec_info) => {
+                    rt_stages.push(module.stage_info().specialization_info(spec_info));
+                }
+                None => {
+                    rt_stages.push(module.stage_info());
+                }
+            };
         }
 
         let push_consts_size = refl
@@ -256,5 +279,41 @@ impl PipelineBuilder {
         }
 
         Ok(sets)
+    }
+}
+
+#[derive(Debug)]
+pub struct SpecConsts {
+    entries: Vec<vk::SpecializationMapEntry>,
+    data: Vec<u8>,
+}
+
+impl SpecConsts {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+            data: Vec::new(),
+        }
+    }
+
+    pub fn push(mut self, value: u32) -> Self {
+        self.entries.push(vk::SpecializationMapEntry {
+            size: std::mem::size_of::<u32>(),
+            offset: (self.entries.len() * std::mem::size_of::<u32>()) as u32,
+            constant_id: self.entries.len() as u32,
+        });
+        self.data.extend_from_slice(&value.to_le_bytes());
+
+        self
+    }
+
+    fn get_internal(&self) -> vk::SpecializationInfo {
+        vk::SpecializationInfo {
+            map_entry_count: self.entries.len() as _,
+            p_map_entries: self.entries.as_ptr() as _,
+            p_data: self.data.as_ptr() as _,
+            data_size: self.data.len() as _,
+            ..Default::default()
+        }
     }
 }

@@ -77,6 +77,7 @@ impl Scene {
     }
 }
 
+#[derive(Debug)]
 pub enum SkyVariant {
     Shader,
     SingleColor(Vec3),

@@ -48,7 +48,7 @@ impl ShaderModule {
         self.device.name_object(name_info)
     }
 
-    pub fn stage_info(&self) -> vk::PipelineShaderStageCreateInfo {
+    pub fn stage_info(&'_ self) -> vk::PipelineShaderStageCreateInfo<'_> {
         vk::PipelineShaderStageCreateInfo {
             stage: self.stage.into(),
             module: self.inner,

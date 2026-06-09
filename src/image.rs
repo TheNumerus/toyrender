@@ -1,4 +1,5 @@
 use image::DynamicImage;
+use std::fmt::Debug;
 
 pub struct ImageResource {
     pub id: uuid::Uuid,
@@ -13,5 +14,14 @@ impl ImageResource {
             data,
             name: name.as_ref().to_owned(),
         }
+    }
+}
+
+impl Debug for ImageResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageResource")
+            .field("id", &self.id)
+            .field("name", &self.name)
+            .finish()
     }
 }

@@ -54,6 +54,9 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
+[vk::constant_id(0)]
+const SkyMode skyVariant;
+
 static uint hash_state;
 
 float pcg_hash() {
@@ -193,7 +196,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     float3 radiance = 0.0;
 
     // select light
-    float sun_light_intensity = max(dot(dir_ray, normal) * env.sun_color_intensity.w, 0.0) * luminance(env.sky_color_intensity.xyz);
+    float sun_light_intensity = max(dot(dir_ray, normal) * env.sun_color_intensity.w, 0.0) * luminance(env.sun_color_intensity.xyz);
     float sum = sun_light_intensity;
 
     float2 rand_vars_sphere = float2(pcg_hash(), pcg_hash());
@@ -212,7 +215,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     float3 hemi = rand_hemi(rand_vars_sphere);
 
     float sky_intensity;
-    if (pc.use_importance == 1 && env.mode == SkyMode::Textured) {
+    if (pc.use_importance == 1 && skyVariant == SkyMode::Textured) {
         float2 mapped = rand_vars_sphere;
         mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
         mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
@@ -221,7 +224,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         if (dot(normal, dir) >= 0.0) {
             float3 sky_color = Toyrender::Sky::sample(dir, images[pc.sky_idx], env.rotation);
 
-            float pdf = images[pc.pdf_idx].Sample(mapped).x;
+            float pdf = images[pc.pdf_idx].SampleLevelZero(mapped).x;
             const float uniformPdf = 1.0 / (1024.0 * 1024.0);
             // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
             float adjust = 4.0 * uniformPdf / (pdf);
@@ -235,12 +238,16 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
         float3 sky_color;
 
-        if (env.mode == SkyMode::Shader) {
+        switch (skyVariant) {
+        case SkyMode::Shader:
             sky_color = Toyrender::Sky::sample_distorted(dir, images[pc.sky_idx]);
-        } else if (env.mode == SkyMode::SingleColor) {
+            break;
+        case SkyMode::SingleColor:
             sky_color = env.sky_color_intensity.xyz;
-        } else {
+            break;
+        case SkyMode::Textured:
             sky_color = Toyrender::Sky::sample(dir, images[pc.sky_idx], env.rotation);
+            break;
         }
 
         sky_intensity = env.sky_color_intensity.w * luminance(sky_color);
@@ -295,7 +302,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         float shadow = float(payload.isMiss) * max(dot(ray.Direction, normal), 0.0);
         radiance = shadow * intensity * light.value.color_intensity.xyz * color * compensate;
     } else if (rand_light > (sun_light_intensity)) {
-        if (pc.use_importance == 1 && env.mode == SkyMode::Textured) {
+        if (pc.use_importance == 1 && skyVariant == SkyMode::Textured) {
             float2 mapped = rand_vars_sphere;
             mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
             mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
@@ -305,7 +312,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
                 trace(offset_ray(pos, normal), dir, payload);
 
                 if (payload.isMiss) {
-                    float pdf = images[pc.pdf_idx].Sample(mapped).x;
+                    float pdf = images[pc.pdf_idx].SampleLevelZero(mapped).x;
                     float uniformPdf = 1.0 / (1024.0 * 1024.0);
                     // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
                     float adjust = 4.0 * uniformPdf / (pdf);
@@ -525,12 +532,16 @@ void raygen() {
 
 [shader("miss")]
 void miss(inout Payload payload) {
-    if (env.mode == SkyMode::Shader) {
+    switch (skyVariant) {
+    case SkyMode::Shader:
         payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
-    } else if (env.mode == SkyMode::SingleColor) {
+        break;
+    case SkyMode::SingleColor:
         payload.color = env.sky_color_intensity.xyz;
-    } else {
+        break;
+    case SkyMode::Textured:
         payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
+        break;
     }
 
     payload.isMiss = true;

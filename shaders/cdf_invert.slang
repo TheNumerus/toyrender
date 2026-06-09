@@ -45,7 +45,7 @@ void main(uint3 tid: SV_DispatchThreadID, uint index: SV_GroupIndex, uniform Pus
     GroupMemoryBarrierWithGroupSync();
 
     // workaround to force usage of desc set 0
-    if (!env.mode == SkyMode::Textured) {
+    if (env.mode != SkyMode::Textured) {
         return;
     }
 
