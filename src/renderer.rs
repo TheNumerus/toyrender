@@ -76,7 +76,7 @@ pub struct VulkanRenderer {
     pub device: Rc<Device>,
     pub render_targets: RenderTargets,
     pub last_depth: Rc<RefCell<RenderTarget>>,
-    pub shader_binding_table: ShaderBindingTable,
+    pub shader_binding_tables: Vec<ShaderBindingTable>,
     pub tlases: Vec<TopLevelAs>,
     pub _descriptor_pool: DescriptorPool,
     pub raster_command_buffers: Vec<CommandBuffer>,
@@ -168,8 +168,6 @@ impl VulkanRenderer {
 
         let last_depth = render_targets.add(RenderTargetBuilder::new_depth("last_depth").with_transfer())?;
 
-        let shader_binding_table = ShaderBindingTable::new(context.clone(), &passes.pt.pipeline_handle)?;
-
         let raster_command_buffers = context
             .graphics_command_pool
             .allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
@@ -181,6 +179,7 @@ impl VulkanRenderer {
             .allocate_cmd_buffers(MAX_FRAMES_IN_FLIGHT as u32)?;
         let tlas_prepare_cmd_buf = context.compute_command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
+        let mut shader_binding_tables = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut img_available = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut render_finished = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut in_flight = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
@@ -219,6 +218,9 @@ impl VulkanRenderer {
             command_buffers[i].name(format!("cmd_buffers[{}]", i))?;
             raster_command_buffers[i].name(format!("raster_command_buffers[{}]", i))?;
             compute_command_buffers[i].name(format!("compute_command_buffers[{}]", i))?;
+
+            let shader_binding_table = ShaderBindingTable::new(context.clone(), &passes.pt.shader_pipeline_handle)?;
+            shader_binding_tables.push(shader_binding_table);
 
             descriptors.push(Rc::new(RefCell::new(RendererDescriptors::build(
                 &descriptor_pool,
@@ -325,7 +327,7 @@ impl VulkanRenderer {
             device: device.clone(),
             render_targets,
             last_depth,
-            shader_binding_table,
+            shader_binding_tables,
             tlases,
             _descriptor_pool: descriptor_pool,
             raster_command_buffers,
@@ -554,6 +556,9 @@ impl VulkanRenderer {
         let tlas_start = Instant::now();
 
         let tlas_index = resource_subsystem.build_tlas_index(scene);
+
+        self.shader_binding_tables[self.current_frame]
+            .refill(self.passes.pt.get_active_pipeline(&scene.env.sky.variant))?;
 
         self.tlases[self.current_frame] = TopLevelAs::prepare(
             self.device.clone(),
@@ -894,7 +899,8 @@ impl VulkanRenderer {
                 depth: &self.passes.gbuffer.render_target_depth.borrow(),
                 normal: &self.passes.gbuffer.render_target_normal.borrow(),
                 sky_sampler,
-                sbt: &self.shader_binding_table,
+                sky: &scene.env.sky.variant,
+                sbt: &self.shader_binding_tables[self.current_frame],
                 bounces: self.quality.pt_bounces,
                 direct_trace_distance: self.quality.rt_direct_trace_distance,
                 indirect_trace_distance: self.quality.rt_indirect_trace_distance,

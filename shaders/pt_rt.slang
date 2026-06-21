@@ -53,6 +53,9 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
+[vk::constant_id(0)]
+const SkyMode skyVariant;
+
 static uint hash_state;
 
 float pcg_hash() {
@@ -378,12 +381,16 @@ void raygen() {
 void miss(inout Payload payload) {
     payload.isMiss = true;
 
-    if (env.mode == SkyMode::Shader) {
+    switch (skyVariant) {
+    case SkyMode::Shader:
         payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
-    } else if (env.mode == SkyMode::SingleColor) {
+        break;
+    case SkyMode::SingleColor:
         payload.color = env.sky_color_intensity.xyz;
-    } else {
+        break;
+    case SkyMode::Textured:
         payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
+        break;
     }
 
     if (pc.indirect_intensity_clamp != 0.0) {

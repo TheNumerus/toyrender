@@ -1,8 +1,9 @@
 use crate::err::AppError;
 use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
-use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::pipeline_builder::{PipelineBuilder, SpecConsts};
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{PushConstBuilder, VulkanContext};
+use crate::scene::SkyVariant;
 use crate::vulkan::{CommandBuffer, Pipeline, Rt, ShaderBindingTable};
 use ash::vk;
 use std::cell::RefCell;
@@ -12,7 +13,9 @@ pub(crate) struct PathTracePass {
     context: Rc<VulkanContext>,
     pub direct_render_target: Rc<RefCell<RenderTarget>>,
     pub indirect_render_target: Rc<RefCell<RenderTarget>>,
-    pub pipeline_handle: Rc<Pipeline<Rt>>,
+    pub shader_pipeline_handle: Rc<Pipeline<Rt>>,
+    pub solid_sky_pipeline_handle: Rc<Pipeline<Rt>>,
+    pub texture_sky_pipeline_handle: Rc<Pipeline<Rt>>,
 }
 
 impl PathTracePass {
@@ -28,20 +31,40 @@ impl PathTracePass {
         let direct_render_target = render_targets.add(a)?;
         let indirect_render_target = render_targets.add(b)?;
 
-        let pipeline_handle = pipeline_builder.build_rt(
-            "pt_rt",
+        let shader_pipeline_handle = pipeline_builder.build_rt(
+            "pt_rt|shader",
             "pt_rt|raygen",
             &["pt_rt|miss"],
             &["pt_rt|chit"],
             descriptor_layouts,
-            None,
+            Some(SpecConsts::new().push(0)),
+        )?;
+
+        let solid_sky_pipeline_handle = pipeline_builder.build_rt(
+            "pt_rt|solid",
+            "pt_rt|raygen",
+            &["pt_rt|miss"],
+            &["pt_rt|chit"],
+            descriptor_layouts,
+            Some(SpecConsts::new().push(1)),
+        )?;
+
+        let texture_sky_pipeline_handle = pipeline_builder.build_rt(
+            "pt_rt|texture",
+            "pt_rt|raygen",
+            &["pt_rt|miss"],
+            &["pt_rt|chit"],
+            descriptor_layouts,
+            Some(SpecConsts::new().push(2)),
         )?;
 
         Ok(Self {
             context,
             direct_render_target,
             indirect_render_target,
-            pipeline_handle,
+            shader_pipeline_handle,
+            solid_sky_pipeline_handle,
+            texture_sky_pipeline_handle,
         })
     }
 
@@ -67,7 +90,11 @@ impl PathTracePass {
     ) -> Result<(), AppError> {
         self.context.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = &self.pipeline_handle;
+        let pipeline = match inputs.sky {
+            SkyVariant::SingleColor(_) => &self.solid_sky_pipeline_handle,
+            SkyVariant::Textured(_, _) => &self.texture_sky_pipeline_handle,
+            _ => &self.shader_pipeline_handle,
+        };
 
         command_buffer.bind_rt_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
@@ -142,6 +169,14 @@ impl PathTracePass {
 
         Ok(())
     }
+
+    pub fn get_active_pipeline(&self, sky: &SkyVariant) -> &Pipeline<Rt> {
+        match sky {
+            SkyVariant::SingleColor(_) => &self.solid_sky_pipeline_handle,
+            SkyVariant::Textured(_, _) => &self.texture_sky_pipeline_handle,
+            _ => &self.shader_pipeline_handle,
+        }
+    }
 }
 
 pub struct PathTraceInputs<'a> {
@@ -149,6 +184,7 @@ pub struct PathTraceInputs<'a> {
     pub depth: &'a RenderTarget,
     pub normal: &'a RenderTarget,
     pub sky_sampler: u32,
+    pub sky: &'a SkyVariant,
     pub sbt: &'a ShaderBindingTable,
     pub bounces: u32,
     pub direct_trace_distance: f32,
