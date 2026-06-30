@@ -13,17 +13,20 @@ pub(crate) struct GBufferPass {
     pub device: Rc<Device>,
     pub render_target_color: Rc<RefCell<RenderTarget>>,
     pub render_target_normal: Rc<RefCell<RenderTarget>>,
+    pub render_target_mat: Rc<RefCell<RenderTarget>>,
     pub render_target_depth: Rc<RefCell<RenderTarget>>,
     pub pipeline_handle: Rc<Pipeline<Graphics>>,
 }
 
 impl GBufferPass {
-    pub const TARGET_FORMATS: [vk::Format; 3] = [
+    pub const TARGET_FORMATS: [vk::Format; 4] = [
+        vk::Format::A2B10G10R10_UNORM_PACK32,
         vk::Format::A2B10G10R10_UNORM_PACK32,
         vk::Format::A2B10G10R10_UNORM_PACK32,
         vk::Format::D32_SFLOAT,
     ];
-    pub const PIPELINE_TARGET_FORMATS: [vk::Format; 2] = [
+    pub const PIPELINE_TARGET_FORMATS: [vk::Format; 3] = [
+        vk::Format::A2B10G10R10_UNORM_PACK32,
         vk::Format::A2B10G10R10_UNORM_PACK32,
         vk::Format::A2B10G10R10_UNORM_PACK32,
     ];
@@ -43,21 +46,23 @@ impl GBufferPass {
             true,
         )?;
 
-        let [a, b, c] = Self::render_target_defs();
+        let [a, b, c, d] = Self::render_target_defs();
         let render_target_color = render_targets.add(a)?;
         let render_target_normal = render_targets.add(b)?;
-        let render_target_depth = render_targets.add(c)?;
+        let render_target_mat = render_targets.add(c)?;
+        let render_target_depth = render_targets.add(d)?;
 
         Ok(Self {
             device,
             render_target_color,
             render_target_normal,
             render_target_depth,
+            render_target_mat,
             pipeline_handle,
         })
     }
 
-    pub fn render_target_defs() -> [RenderTargetBuilder; 3] {
+    pub fn render_target_defs() -> [RenderTargetBuilder; 4] {
         [
             RenderTargetBuilder::new("gbuffer_color")
                 .with_color_attachment()
@@ -71,11 +76,17 @@ impl GBufferPass {
                 .with_storage()
                 .with_transfer()
                 .with_format(Self::TARGET_FORMATS[1]),
-            RenderTargetBuilder::new_depth("gbuffer_depth")
+            RenderTargetBuilder::new("gbuffer_mat")
+                .with_color_attachment()
                 .with_sampled()
                 .with_storage()
                 .with_transfer()
                 .with_format(Self::TARGET_FORMATS[2]),
+            RenderTargetBuilder::new_depth("gbuffer_depth")
+                .with_sampled()
+                .with_storage()
+                .with_transfer()
+                .with_format(Self::TARGET_FORMATS[3]),
         ]
     }
 
@@ -91,6 +102,7 @@ impl GBufferPass {
 
         let color_rt = self.render_target_color.borrow();
         let normal_rt = self.render_target_normal.borrow();
+        let mat_rt = self.render_target_mat.borrow();
         let depth_rt = self.render_target_depth.borrow();
 
         let attachments = [
@@ -103,6 +115,13 @@ impl GBufferPass {
             },
             vk::RenderingAttachmentInfo {
                 image_view: normal_rt.view.inner,
+                image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                load_op: vk::AttachmentLoadOp::DONT_CARE,
+                store_op: vk::AttachmentStoreOp::STORE,
+                ..Default::default()
+            },
+            vk::RenderingAttachmentInfo {
+                image_view: mat_rt.view.inner,
                 image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                 load_op: vk::AttachmentLoadOp::DONT_CARE,
                 store_op: vk::AttachmentStoreOp::STORE,
@@ -175,6 +194,15 @@ impl GBufferPass {
                         ..Default::default()
                     },
                     vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        image: mat_rt.image.inner,
+                        subresource_range: image_color_res,
+                        ..Default::default()
+                    },
+                    vk::ImageMemoryBarrier {
                         src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
                         dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                         old_layout: vk::ImageLayout::UNDEFINED,
@@ -230,6 +258,11 @@ impl GBufferPass {
                     vk::ClearAttachment {
                         aspect_mask: vk::ImageAspectFlags::COLOR,
                         color_attachment: 1,
+                        clear_value: Default::default(),
+                    },
+                    vk::ClearAttachment {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        color_attachment: 2,
                         clear_value: Default::default(),
                     },
                     vk::ClearAttachment {
@@ -316,6 +349,15 @@ impl GBufferPass {
                         old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                         new_layout: vk::ImageLayout::GENERAL,
                         image: normal_rt.image.inner,
+                        subresource_range: image_color_res,
+                        ..Default::default()
+                    },
+                    vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        new_layout: vk::ImageLayout::GENERAL,
+                        image: mat_rt.image.inner,
                         subresource_range: image_color_res,
                         ..Default::default()
                     },

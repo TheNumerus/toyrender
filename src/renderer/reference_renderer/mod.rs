@@ -870,14 +870,18 @@ impl VulkanMcPathTracer {
                 continue;
             }
 
-            handles.push(MeshInstanceDataGPU {
+            handles.push(RtMeshInstanceDataGPU {
                 transform_inverse: mesh.inverse,
                 vertex_pointer,
                 index_pointer,
+                base_color: mesh.resource.material.base_color.data.0[0],
+                roughness: mesh.resource.material.roughness,
+                metallic: mesh.resource.material.metallic,
+                _pad_0: [0; 3],
             })
         }
 
-        let target_size = (handles.len() * size_of::<MeshInstanceDataGPU>()) as u64;
+        let target_size = (handles.len() * size_of::<RtMeshInstanceDataGPU>()) as u64;
 
         if self.mesh_data[self.current_frame].size < target_size {
             self.mesh_data[self.current_frame] = Buffer::new(
@@ -931,8 +935,12 @@ impl VulkanMcPathTracer {
 }
 
 #[repr(C)]
-pub struct MeshInstanceDataGPU {
+pub struct RtMeshInstanceDataGPU {
     pub transform_inverse: Mat4x4,
     pub vertex_pointer: u64,
     pub index_pointer: u64,
+    pub base_color: [f32; 3],
+    pub roughness: f32,
+    pub metallic: f32,
+    pub _pad_0: [i32; 3],
 }

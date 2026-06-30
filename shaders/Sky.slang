@@ -8,9 +8,9 @@ public float3 sample_distorted(float3 view_dir, Sampler2D image) {
 
     float u = 0.0;
     if (dir.y >= 0.0) {
-        u = acos(dir.x);
-    } else {
         u = -acos(dir.x);
+    } else {
+        u = acos(dir.x);
     }
 
     u = (u + PI) / (2.0 * PI);
@@ -36,9 +36,9 @@ public float3 sample(float3 view_dir, Sampler2D image, float rotation) {
 
     float u = 0.0;
     if (dir.y >= 0.0) {
-        u = acos(dir.x);
-    } else {
         u = -acos(dir.x);
+    } else {
+        u = acos(dir.x);
     }
 
     u = (u + PI) / (2.0 * PI);

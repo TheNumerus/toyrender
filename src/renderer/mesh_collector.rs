@@ -12,8 +12,18 @@ pub struct DrawData {
     pub offset: u32,
 }
 
+#[repr(C)]
+pub struct RasterMeshInstanceDataGPU {
+    pub model: Mat4,
+    pub inverse: Mat4,
+    pub base_color: [f32; 3],
+    pub roughness: f32,
+    pub is_flipped: i32,
+    pub _pad_0: [i32; 3],
+}
+
 pub struct CollectedResult {
-    pub data: Vec<u8>,
+    pub data: Vec<RasterMeshInstanceDataGPU>,
     pub draws: Vec<DrawData>,
 }
 
@@ -61,7 +71,7 @@ impl MeshCollector {
             let entry = transforms.entry(id).or_insert_with(|| Vec::with_capacity(1));
 
             visible += 1;
-            entry.push((mesh.transform, mesh.inverse));
+            entry.push((mesh.transform, mesh.inverse, mesh.resource.material));
         }
 
         let count = transforms.values().map(|v| v.len()).sum();
@@ -69,29 +79,27 @@ impl MeshCollector {
         report.log::<stats::CullPercentageStat>((1.0 - (visible as f32 / total as f32)) * 100.0);
         report.log::<stats::InstanceCountStat>(visible as u32);
 
-        let mut data = Vec::with_capacity(count * (2 * size_of::<Mat4>() + size_of::<i32>() * 4));
+        let mut data = Vec::with_capacity(count);
 
         let mut index = 0;
         let mut draws = Vec::with_capacity(count);
         for (key, value) in transforms.iter() {
-            for (transform, inverse) in value {
-                data.extend_from_slice(unsafe {
-                    std::slice::from_raw_parts(transform as *const Mat4 as *const u8, size_of::<Mat4>())
-                });
-                data.extend_from_slice(unsafe {
-                    std::slice::from_raw_parts(inverse as *const Mat4 as *const u8, size_of::<Mat4>())
-                });
-
+            for (transform, inverse, mat) in value {
                 let is_flipped = if transform.view((0, 0), (3, 3)).determinant() > 0.0 {
                     0_i32
                 } else {
                     1_i32
                 };
 
-                data.extend_from_slice(&is_flipped.to_le_bytes());
-
-                // padding
-                data.extend_from_slice(&[0; 12]);
+                let instance_data = RasterMeshInstanceDataGPU {
+                    model: *transform,
+                    inverse: *inverse,
+                    base_color: mat.base_color.data.0[0],
+                    roughness: mat.roughness,
+                    is_flipped,
+                    _pad_0: [0; 3],
+                };
+                data.push(instance_data);
             }
 
             draws.push(DrawData {

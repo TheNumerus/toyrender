@@ -53,6 +53,7 @@ pub use push_const::PushConstBuilder;
 mod reference_renderer;
 use crate::app::frame_stats::FrameReport;
 use crate::renderer::buffers::PointLightGpu;
+use crate::renderer::mesh_collector::RasterMeshInstanceDataGPU;
 pub use reference_renderer::VulkanMcPathTracer;
 
 mod stats;
@@ -614,7 +615,7 @@ impl VulkanRenderer {
             &mut report,
         );
 
-        let target_size = collected_meshes.data.len() as u64;
+        let target_size = (collected_meshes.data.len() * size_of::<RasterMeshInstanceDataGPU>()) as u64;
         if self.mesh_bufs[self.current_frame].size < target_size {
             self.mesh_bufs[self.current_frame] = Buffer::new(
                 self.context.device.clone(),
@@ -648,7 +649,12 @@ impl VulkanRenderer {
         self.uniform_buffers[self.current_frame].fill_host(view_proj.to_bytes().as_ref())?;
         self.uniform_buffers_globals[self.current_frame].fill_host(globals.to_bytes().as_ref())?;
         self.env_uniforms[self.current_frame].fill_host(scene.env.to_bytes(lights_ptr, lights_count).as_ref())?;
-        self.mesh_bufs[self.current_frame].fill_host(collected_meshes.data.as_ref())?;
+        self.mesh_bufs[self.current_frame].fill_host(unsafe {
+            std::slice::from_raw_parts(
+                collected_meshes.data.as_ptr() as *const u8,
+                size_of::<RasterMeshInstanceDataGPU>() * collected_meshes.data.len(),
+            )
+        })?;
 
         let mut writes = Vec::new();
 
@@ -1122,15 +1128,19 @@ impl VulkanRenderer {
                 continue;
             }
 
-            handles.push(crate::renderer::reference_renderer::MeshInstanceDataGPU {
+            handles.push(crate::renderer::reference_renderer::RtMeshInstanceDataGPU {
                 transform_inverse: mesh.inverse,
                 vertex_pointer,
                 index_pointer,
+                base_color: mesh.resource.material.base_color.data.0[0],
+                roughness: mesh.resource.material.roughness,
+                metallic: mesh.resource.material.metallic,
+                _pad_0: [0; 3],
             })
         }
 
         let target_size =
-            (handles.len() * size_of::<crate::renderer::reference_renderer::MeshInstanceDataGPU>()) as u64;
+            (handles.len() * size_of::<crate::renderer::reference_renderer::RtMeshInstanceDataGPU>()) as u64;
 
         if self.mesh_data[self.current_frame].size < target_size {
             self.mesh_data[self.current_frame] = Buffer::new(

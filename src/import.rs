@@ -1,6 +1,6 @@
 use crate::err::AppError;
 use crate::math;
-use crate::mesh::{Indices, MeshCullingInfo, MeshInstance, MeshResource};
+use crate::mesh::{Indices, Material, MeshCullingInfo, MeshInstance, MeshResource};
 use crate::vulkan::Vertex;
 use gltf::buffer::Data;
 use gltf::json::accessor::ComponentType;
@@ -55,10 +55,20 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
 
     let mut offset = 0;
 
+    let mut material = Material::default();
+
     for primitive in mesh.primitives().filter(|p| p.mode() == Mode::Triangles) {
         let accessors = Accessors::new(&primitive, buffers)?;
 
         let mut vertices = Vec::with_capacity(accessors.len);
+
+        let mat = primitive.material();
+
+        material.base_color.x = mat.pbr_metallic_roughness().base_color_factor()[0];
+        material.base_color.y = mat.pbr_metallic_roughness().base_color_factor()[1];
+        material.base_color.z = mat.pbr_metallic_roughness().base_color_factor()[2];
+        material.roughness = mat.pbr_metallic_roughness().roughness_factor();
+        material.metallic = mat.pbr_metallic_roughness().metallic_factor();
 
         for i in 0..accessors.len {
             let pos = (gltf_convert_matrix
@@ -154,7 +164,13 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
 
     let name = mesh.name().unwrap_or_default();
 
-    Ok(MeshResource::new(vertices_total, indices_total, culling_info, name))
+    Ok(MeshResource::new(
+        vertices_total,
+        indices_total,
+        culling_info,
+        name,
+        material,
+    ))
 }
 
 pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {

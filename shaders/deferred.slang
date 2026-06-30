@@ -17,6 +17,7 @@ struct FSInput {
     float4 pos : SV_Position;
     float3 worldPos;
     float3 color;
+    float3 mat;
     float2 uv;
     float3 normal;
 };
@@ -24,6 +25,7 @@ struct FSInput {
 struct FSOutput {
     float4 color : SV_Target0;
     float4 normal : SV_Target1;
+    float4 mat : SV_Target2;
 };
 
 [shader("vertex")]
@@ -31,8 +33,9 @@ FSInput vertMain(VSInput input, uint inst: SV_InstanceID, uniform uint first) {
     FSInput output;
 
     output.pos = mul(vp.proj[0], mul(vp.view[0], mul(mesh[inst + first].model, float4(input.pos, 1.0))));
-    output.color = input.color.xyz;
+    output.color = mesh[inst + first].color_rough.xyz * input.color.xyz;
     output.worldPos = mul(mesh[inst + first].model, float4(input.pos, 1.0)).xyz;
+    output.mat = mesh[inst + first].color_rough.w;
 
     int is_mirrored = mesh[inst + first].is_mirrored;
 
@@ -50,6 +53,7 @@ FSOutput fragMain(FSInput input, uint ff: SV_IsFrontFace) {
 
     output.color = float4(input.color, 1.0);
     output.normal = float4((input.normal + 1.0) * 0.5, 1.0);
+    output.mat = float4(input.mat, 1.0);
 
     if (ff == 0) {
         output.normal = float4((-input.normal + 1.0) * 0.5, 1.0);

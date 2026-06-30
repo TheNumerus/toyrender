@@ -12,22 +12,48 @@ pub struct MeshCullingInfo {
     pub bb_max: Vec3,
 }
 
+#[derive(Copy, Clone)]
+pub struct Material {
+    pub base_color: Vec3,
+    pub metallic: f32,
+    pub roughness: f32,
+    pub emissive: Vec3,
+}
+impl Default for Material {
+    fn default() -> Self {
+        Self {
+            base_color: Vec3::from_element(0.8),
+            metallic: 0.0,
+            roughness: 0.5,
+            emissive: Vec3::from_element(0.0),
+        }
+    }
+}
+
 pub struct MeshResource {
     pub id: u64,
     pub vertices: Vec<Vertex>,
     pub indices: Indices,
     pub culling_info: MeshCullingInfo,
     pub name: String,
+    pub material: Material,
 }
 
 impl MeshResource {
-    pub fn new(vertices: Vec<Vertex>, indices: Indices, culling_info: MeshCullingInfo, name: impl AsRef<str>) -> Self {
+    pub fn new(
+        vertices: Vec<Vertex>,
+        indices: Indices,
+        culling_info: MeshCullingInfo,
+        name: impl AsRef<str>,
+        material: Material,
+    ) -> Self {
         Self {
             id: MESH_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
             vertices,
             indices,
             culling_info,
             name: name.as_ref().to_owned(),
+            material,
         }
     }
 }

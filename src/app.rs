@@ -151,7 +151,6 @@ impl App {
         let mut importance_sampling = true;
 
         let mut sel_render = 1;
-        let mut renderer_changed = false;
 
         let mut sel_sky = 0;
 
@@ -190,6 +189,7 @@ impl App {
             let mut clear_taa = false;
             let mut debug_mode_flip = false;
             let mut movement = false;
+            let mut renderer_changed = false;
 
             for event in event_pump.poll_iter() {
                 platform.handle_event(&mut imgui, &event);
@@ -295,8 +295,6 @@ impl App {
                         _ => unreachable!(),
                     };
                     renderer_changed = true;
-                } else {
-                    renderer_changed = false;
                 }
 
                 if ui.collapsing_header("RT Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
@@ -371,8 +369,6 @@ impl App {
                             _ => unreachable!(),
                         };
                         renderer_changed = true;
-                    } else {
-                        renderer_changed = false;
                     }
 
                     match &mut scene.env.sky.variant {

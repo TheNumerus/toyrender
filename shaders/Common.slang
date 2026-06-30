@@ -42,6 +42,7 @@ public struct Environment {
 public struct MeshTransform {
     public float4x4 model;
     public float4x4 inverse;
+    public float4 color_rough;
     public int is_mirrored;
 };
 
@@ -72,6 +73,8 @@ public struct MeshInstanceInfo {
     public float4x4 model_inverse;
     public float[12] *vertexData;
     public int *indexData;
+    public float4 color_rough;
+    public float metallic;
 }
 
 public struct PointLight {

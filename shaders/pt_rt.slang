@@ -422,14 +422,7 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     let vertex1 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 1];
     let vertex2 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 2];
 
-    let color0 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex0][6]);
-    let color1 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex1][6]);
-    let color2 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex2][6]);
-
-    let colorA = color1 - color0;
-    let colorB = color2 - color0;
-
-    payload.color = attr.barycentrics.x * colorA + attr.barycentrics.y * colorB + color0;
+    payload.color = meshData[InstanceIndex()].color_rough.xyz;
 
     payload.normal = normalize(normal);
 }
