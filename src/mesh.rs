@@ -6,6 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static MESH_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+pub static PRIMITIVE_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 pub struct MeshCullingInfo {
     pub bb_min: Vec3,
@@ -30,13 +31,41 @@ impl Default for Material {
     }
 }
 
+pub struct Primitive {
+    pub id: u64,
+    pub index_count: usize,
+    pub index_offset: usize,
+    pub vertex_count: usize,
+    pub vertex_offset: usize,
+    pub material: Material,
+}
+
+impl Primitive {
+    pub fn new(
+        index_count: usize,
+        index_offset: usize,
+        vertex_count: usize,
+        vertex_offset: usize,
+        material: Material,
+    ) -> Self {
+        Self {
+            id: PRIMITIVE_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
+            index_count,
+            index_offset,
+            vertex_count,
+            vertex_offset,
+            material,
+        }
+    }
+}
+
 pub struct MeshResource {
     pub id: u64,
     pub vertices: Vec<Vertex>,
     pub indices: Indices,
     pub culling_info: MeshCullingInfo,
     pub name: String,
-    pub material: Material,
+    pub primitives: Vec<Primitive>,
 }
 
 impl MeshResource {
@@ -45,7 +74,7 @@ impl MeshResource {
         indices: Indices,
         culling_info: MeshCullingInfo,
         name: impl AsRef<str>,
-        material: Material,
+        primitives: Vec<Primitive>,
     ) -> Self {
         Self {
             id: MESH_ID_COUNTER.fetch_add(1, Ordering::SeqCst),
@@ -53,7 +82,7 @@ impl MeshResource {
             indices,
             culling_info,
             name: name.as_ref().to_owned(),
-            material,
+            primitives,
         }
     }
 }
@@ -75,6 +104,13 @@ impl Indices {
         match self {
             Indices::U16(_) => std::mem::size_of::<u16>(),
             Indices::U32(_) => std::mem::size_of::<u32>(),
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Indices::U16(v) => v.len(),
+            Indices::U32(v) => v.len(),
         }
     }
 }

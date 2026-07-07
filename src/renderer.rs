@@ -1128,15 +1128,17 @@ impl VulkanRenderer {
                 continue;
             }
 
-            handles.push(crate::renderer::reference_renderer::RtMeshInstanceDataGPU {
-                transform_inverse: mesh.inverse,
-                vertex_pointer,
-                index_pointer,
-                base_color: mesh.resource.material.base_color.data.0[0],
-                roughness: mesh.resource.material.roughness,
-                metallic: mesh.resource.material.metallic,
-                _pad_0: [0; 3],
-            })
+            for primitive in &mesh.resource.primitives {
+                handles.push(crate::renderer::reference_renderer::RtMeshInstanceDataGPU {
+                    transform_inverse: mesh.inverse,
+                    vertex_pointer,
+                    index_pointer,
+                    base_color: primitive.material.base_color.data.0[0],
+                    roughness: primitive.material.roughness,
+                    emissive: primitive.material.emissive.data.0[0],
+                    metallic: primitive.material.metallic,
+                })
+            }
         }
 
         let target_size =
@@ -1194,7 +1196,7 @@ impl VulkanRenderer {
 }
 
 pub struct TlasIndex {
-    pub index: Vec<(u64, Mat4)>,
+    pub index: Vec<(u64, u64, Mat4)>,
 }
 
 pub struct FrameContext {

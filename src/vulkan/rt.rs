@@ -472,8 +472,8 @@ impl TopLevelAs {
     ) -> Result<Self, AppError> {
         let mut instances = Vec::with_capacity(tlas_index.index.len());
 
-        for (id, transform) in tlas_index.index {
-            let blas = &blases[&id];
+        for (mesh_id, primitive_id, transform) in tlas_index.index {
+            let blas = &blases[&primitive_id];
 
             let instance = vk::AccelerationStructureInstanceKHR {
                 transform: vk::TransformMatrixKHR {
@@ -492,7 +492,7 @@ impl TopLevelAs {
                         transform.m34,
                     ],
                 },
-                instance_custom_index_and_mask: Packed24_8::new(id as u32, 0xFF),
+                instance_custom_index_and_mask: Packed24_8::new(primitive_id as u32, 0xFF),
                 instance_shader_binding_table_record_offset_and_flags: Packed24_8::new(0, 1),
                 acceleration_structure_reference: vk::AccelerationStructureReferenceKHR {
                     device_handle: blas.get_device_addr(),

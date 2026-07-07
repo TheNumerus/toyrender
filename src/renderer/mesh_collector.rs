@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub struct MeshCollector {}
 
 pub struct DrawData {
+    pub primitive_id: u64,
     pub mesh_id: u64,
     pub count: u32,
     pub offset: u32,
@@ -42,8 +43,6 @@ impl MeshCollector {
         let mut visible = 0;
 
         'mesh: for mesh in scene.meshes.iter() {
-            let id = mesh.resource.id;
-
             if !mesh.visible {
                 continue 'mesh;
             }
@@ -68,13 +67,18 @@ impl MeshCollector {
                 }
             }
 
-            let entry = transforms.entry(id).or_insert_with(|| Vec::with_capacity(1));
-
             visible += 1;
-            entry.push((mesh.transform, mesh.inverse, mesh.resource.material));
+
+            for primitive in &mesh.resource.primitives {
+                let id = primitive.id;
+                let (_, entry) = transforms
+                    .entry(id)
+                    .or_insert_with(|| (mesh.resource.id, Vec::with_capacity(1)));
+                entry.push((mesh.transform, mesh.inverse, primitive.material));
+            }
         }
 
-        let count = transforms.values().map(|v| v.len()).sum();
+        let count = transforms.values().map(|(_, v)| v.len()).sum();
 
         report.log::<stats::CullPercentageStat>((1.0 - (visible as f32 / total as f32)) * 100.0);
         report.log::<stats::InstanceCountStat>(visible as u32);
@@ -83,7 +87,7 @@ impl MeshCollector {
 
         let mut index = 0;
         let mut draws = Vec::with_capacity(count);
-        for (key, value) in transforms.iter() {
+        for (key, (mesh_id, value)) in transforms.iter() {
             for (transform, inverse, mat) in value {
                 let is_flipped = if transform.view((0, 0), (3, 3)).determinant() > 0.0 {
                     0_i32
@@ -103,7 +107,8 @@ impl MeshCollector {
             }
 
             draws.push(DrawData {
-                mesh_id: *key,
+                primitive_id: *key,
+                mesh_id: *mesh_id,
                 count: value.len() as u32,
                 offset: index as u32,
             });

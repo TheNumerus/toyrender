@@ -13,6 +13,7 @@ struct Payload {
     float dist;
     float3 normal;
     float3 color;
+    float3 emissive;
     float rough;
     float metallic;
     float3 hit;
@@ -225,19 +226,24 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     float sum = sunLw.weight;
 
     float2 rand_vars_sphere = float2(pcg_hash(), pcg_hash());
+    float3 hemi = rand_hemi(rand_vars_sphere);
 
     for (int i = 0; i < env.point_lights; i++) {
         let light = env.lights[i];
-        let light_pos = light.pos_radius.xyz + rand_sphere(rand_vars_sphere) * light.pos_radius.w;
+
+        let light_main_dir = normalize(light.pos_radius.xyz - pos);
+
+        float3 tangent, bitangent;
+        compute_default_basis(light_main_dir, tangent, bitangent);
+        let hemi_dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * light_main_dir;
+
+        let light_pos = light.pos_radius.xyz + hemi_dir * light.pos_radius.w;
         let dir = normalize(light_pos - pos);
         let len = distance(light_pos, pos);
         let intensity = ((light.color_intensity.w * luminance(light.color_intensity.xyz)) / (len * len));
         let angle = max(dot(normal, dir), 0.0);
         sum += intensity * angle;
     }
-
-    // add sky
-    float3 hemi = rand_hemi(rand_vars_sphere);
 
     float sky_intensity;
     if (pc.use_importance == 1 && skyVariant == SkyMode::Textured) {
@@ -293,7 +299,15 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
         for (int i = 0; i < env.point_lights; i++) {
             light = env.lights[i];
-            light_pos = light.value.pos_radius.xyz + rand_sphere(rand_vars_sphere) * light.value.pos_radius.w;
+
+            let light_main_dir = normalize(light.value.pos_radius.xyz - pos);
+
+            float3 tangent, bitangent;
+            compute_default_basis(light_main_dir, tangent, bitangent);
+            let hemi_dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * light_main_dir;
+
+            light_pos = light.value.pos_radius.xyz + hemi_dir * light.value.pos_radius.w;
+
             dir = normalize(light_pos - pos);
             len = distance(light_pos, pos);
             intensity = ((light.value.color_intensity.w * luminance(light.value.color_intensity.xyz)) / (len * len));
@@ -442,6 +456,7 @@ void raygen() {
     float3 primaryColor = payload.color;
     float primaryRoughness = payload.rough;
     float primaryMetallic = payload.metallic;
+    float3 primaryEmissive = payload.emissive;
 
     pos = payload.hit;
 
@@ -454,9 +469,17 @@ void raygen() {
             )
         );
         return;
+    } else if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0) {
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                payload.emissive,
+                0.0
+            )
+        );
+        return;
     } else {
         primaryPos = pos;
-
         hitNormal = payload.normal;
         primaryNormal = hitNormal;
     }
@@ -486,6 +509,8 @@ void raygen() {
 
         float3 dirInc = dir;
         float3 specColor = lerp(float3(1.0), current_color, metallic);
+        // TODO replace for proper BRDF result
+        float3 bounceColor = lerp(float3(1.0), current_color, specular);
 
         if (specular) {
             float ddot = dot(dir, hitNormal);
@@ -523,7 +548,7 @@ void raygen() {
         float alpha = roughness * roughness;
 
         float3 f0 = lerp(0.04, current_color, metallic);
-        float3 F = fresnel(lightHalfDot, current_color);
+        float3 F = fresnel(lightHalfDot, f0);
 
         float3 diffuseLobe = lightNormalDot * (current_color / PI) * (1.0 - metallic);
         float3 specularLobe = F * GGX(alpha, normalHalfDot) * GGX_Vis(normalViewDot, lightNormalDot, alpha) * lightNormalDot;
@@ -540,7 +565,7 @@ void raygen() {
         trace(offset_ray(pos, hitNormal), dir, payload);
 
         if (payload.isMiss) {
-            float3 radiance = intensity_indirect * payload.color * env.sky_color_intensity.w / (4.0 / PI) * specColor;
+            float3 radiance = intensity_indirect * payload.color * env.sky_color_intensity.w / (4.0 / PI);
 
             if (pc.indirect_intensity_clamp != 0.0) {
                 radiance = min(float3(pc.indirect_intensity_clamp), radiance);
@@ -549,6 +574,17 @@ void raygen() {
             indirect += radiance;
             break;
         } else {
+            if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0) {
+                float3 radiance = intensity_indirect * payload.emissive;
+
+                if (pc.indirect_intensity_clamp != 0.0) {
+                    radiance = min(float3(pc.indirect_intensity_clamp), radiance);
+                }
+
+                indirect += radiance;
+                break;
+            }
+
             pos = payload.hit;
             current_color = payload.color;
             hitNormal = payload.normal;
@@ -645,7 +681,8 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
     payload.color = meshData[InstanceIndex()].color_rough.xyz;
     payload.rough = meshData[InstanceIndex()].color_rough.w;
-    payload.metallic = meshData[InstanceIndex()].metallic;
+    payload.metallic = meshData[InstanceIndex()].emissive_metallic.w;
+    payload.emissive = meshData[InstanceIndex()].emissive_metallic.xyz;
 
     let normal0 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex0][3]);
     let normal1 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex1][3]);

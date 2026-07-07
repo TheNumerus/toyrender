@@ -1,11 +1,11 @@
 use crate::err::AppError;
 use crate::math;
-use crate::mesh::{Indices, Material, MeshCullingInfo, MeshInstance, MeshResource};
+use crate::mesh::{Indices, Material, MeshCullingInfo, MeshInstance, MeshResource, Primitive};
 use crate::vulkan::Vertex;
 use gltf::buffer::Data;
 use gltf::json::accessor::ComponentType;
 use gltf::mesh::Mode;
-use gltf::{Accessor, Gltf, Primitive, Semantic};
+use gltf::{Accessor, Gltf, Primitive as GltfPrimitive, Semantic};
 use log::info;
 use nalgebra::{Point3, Quaternion, Rotation3};
 use nalgebra_glm::{Mat4, Vec2, Vec3, Vec4, inverse, quat_cast, vec3};
@@ -38,6 +38,8 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
     let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
     let gltf_normal_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
 
+    let mut primitives = Vec::with_capacity(mesh.primitives().count());
+
     let mut vertices_total = Vec::new();
     let indices_type = get_mesh_indices_type(&mesh, buffers)?;
     let mut indices_total = match indices_type {
@@ -55,9 +57,9 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
 
     let mut offset = 0;
 
-    let mut material = Material::default();
-
     for primitive in mesh.primitives().filter(|p| p.mode() == Mode::Triangles) {
+        let mut material = Material::default();
+
         let accessors = Accessors::new(&primitive, buffers)?;
 
         let mut vertices = Vec::with_capacity(accessors.len);
@@ -69,6 +71,9 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
         material.base_color.z = mat.pbr_metallic_roughness().base_color_factor()[2];
         material.roughness = mat.pbr_metallic_roughness().roughness_factor();
         material.metallic = mat.pbr_metallic_roughness().metallic_factor();
+        material.emissive = mat.emissive_factor().into();
+
+        let vertex_offset = vertices_total.len();
 
         for i in 0..accessors.len {
             let pos = (gltf_convert_matrix
@@ -141,6 +146,10 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
             vertices.push(vertex);
         }
 
+        let vertex_count = vertices.len();
+        let index_offset = indices_total.len();
+        let index_count = accessors.indices.len();
+
         match accessors.indices {
             IndicesAccessor::U16(i) => match &mut indices_total {
                 Indices::U16(t) => t.extend(i.iter().map(|&a| a + offset as u16)),
@@ -152,11 +161,13 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
             },
         };
 
-        let len = vertices.len();
-
         vertices_total.extend(vertices);
 
-        offset += len as u32;
+        offset += vertex_count as u32;
+
+        let primitive = Primitive::new(index_count, index_offset, vertex_count, vertex_offset, material);
+
+        primitives.push(primitive);
     }
 
     culling_info.bb_min = min_pos;
@@ -169,7 +180,7 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
         indices_total,
         culling_info,
         name,
-        material,
+        primitives,
     ))
 }
 
@@ -301,6 +312,15 @@ enum IndicesAccessor<'a> {
     U32(&'a [u32]),
 }
 
+impl<'a> IndicesAccessor<'a> {
+    pub fn len(&'a self) -> usize {
+        match self {
+            IndicesAccessor::U16(a) => a.len(),
+            IndicesAccessor::U32(a) => a.len(),
+        }
+    }
+}
+
 enum ColorAccessor<'a> {
     U8(&'a [u8]),
     U16(&'a [u16]),
@@ -317,7 +337,7 @@ struct Accessors<'a> {
 }
 
 impl<'a> Accessors<'a> {
-    pub fn new(primitive: &'a Primitive, data: &[Data]) -> Result<Self, AppError> {
+    pub fn new(primitive: &'a GltfPrimitive, data: &[Data]) -> Result<Self, AppError> {
         let pos = primitive.get(&Semantic::Positions);
         let normal = primitive.get(&Semantic::Normals);
         let uv = primitive.get(&Semantic::TexCoords(0));

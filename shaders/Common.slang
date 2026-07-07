@@ -74,7 +74,7 @@ public struct MeshInstanceInfo {
     public float[12] *vertexData;
     public int *indexData;
     public float4 color_rough;
-    public float metallic;
+    public float4 emissive_metallic;
 }
 
 public struct PointLight {

@@ -863,22 +863,26 @@ impl VulkanMcPathTracer {
 
         for mesh in &scene.meshes {
             let vulkan_mesh = &resource_subsystem.meshes[&mesh.resource.id];
-            let vertex_pointer = vulkan_mesh.buf.addr;
-            let index_pointer = vertex_pointer + vulkan_mesh.indices_offset;
 
             if !mesh.visible {
                 continue;
             }
 
-            handles.push(RtMeshInstanceDataGPU {
-                transform_inverse: mesh.inverse,
-                vertex_pointer,
-                index_pointer,
-                base_color: mesh.resource.material.base_color.data.0[0],
-                roughness: mesh.resource.material.roughness,
-                metallic: mesh.resource.material.metallic,
-                _pad_0: [0; 3],
-            })
+            for primitive in &mesh.resource.primitives {
+                let vertex_pointer = vulkan_mesh.buf.addr;
+                let index_pointer =
+                    vertex_pointer + vulkan_mesh.indices_offset + (primitive.index_offset * size_of::<u32>()) as u64;
+
+                handles.push(RtMeshInstanceDataGPU {
+                    transform_inverse: mesh.inverse,
+                    vertex_pointer,
+                    index_pointer,
+                    base_color: primitive.material.base_color.data.0[0],
+                    roughness: primitive.material.roughness,
+                    emissive: primitive.material.emissive.data.0[0],
+                    metallic: primitive.material.metallic,
+                })
+            }
         }
 
         let target_size = (handles.len() * size_of::<RtMeshInstanceDataGPU>()) as u64;
@@ -941,6 +945,6 @@ pub struct RtMeshInstanceDataGPU {
     pub index_pointer: u64,
     pub base_color: [f32; 3],
     pub roughness: f32,
+    pub emissive: [f32; 3],
     pub metallic: f32,
-    pub _pad_0: [i32; 3],
 }

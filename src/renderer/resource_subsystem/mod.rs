@@ -200,35 +200,39 @@ impl ResourceSubsystem {
                 let res = self.meshes.get(&mesh.resource.id).unwrap();
 
                 let addr = res.buf.inner.get_device_addr();
-                let max_prim_count = res.index_count / 3;
 
-                let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR {
-                    vertex_format: vk::Format::R32G32B32_SFLOAT,
-                    vertex_data: vk::DeviceOrHostAddressConstKHR { device_address: addr },
-                    vertex_stride: std::mem::size_of::<Vertex>() as vk::DeviceSize,
-                    max_vertex: mesh.resource.vertices.len() as u32 - 1,
-                    index_type: vk::IndexType::UINT32,
-                    index_data: vk::DeviceOrHostAddressConstKHR {
-                        device_address: addr + (res.indices_offset),
-                    },
-                    ..Default::default()
-                };
+                for primitive in &mesh.resource.primitives {
+                    let max_prim_count = primitive.index_count / 3;
 
-                let geo = vk::AccelerationStructureGeometryKHR {
-                    geometry_type: vk::GeometryTypeKHR::TRIANGLES,
-                    geometry: vk::AccelerationStructureGeometryDataKHR { triangles },
-                    flags: vk::GeometryFlagsKHR::OPAQUE,
-                    ..Default::default()
-                };
-                geos.insert(mesh.resource.id, geo);
+                    let triangles = vk::AccelerationStructureGeometryTrianglesDataKHR {
+                        vertex_format: vk::Format::R32G32B32_SFLOAT,
+                        vertex_data: vk::DeviceOrHostAddressConstKHR { device_address: addr },
+                        vertex_stride: std::mem::size_of::<Vertex>() as vk::DeviceSize,
+                        max_vertex: mesh.resource.vertices.len() as u32 - 1,
+                        index_type: vk::IndexType::UINT32,
+                        index_data: vk::DeviceOrHostAddressConstKHR {
+                            device_address: addr + (res.indices_offset),
+                        },
+                        ..Default::default()
+                    };
 
-                let range = vk::AccelerationStructureBuildRangeInfoKHR {
-                    primitive_count: max_prim_count as u32,
-                    primitive_offset: 0,
-                    first_vertex: 0,
-                    transform_offset: 0,
-                };
-                ranges.insert(mesh.resource.id, range);
+                    let geo = vk::AccelerationStructureGeometryKHR {
+                        geometry_type: vk::GeometryTypeKHR::TRIANGLES,
+                        geometry: vk::AccelerationStructureGeometryDataKHR { triangles },
+                        flags: vk::GeometryFlagsKHR::OPAQUE,
+                        ..Default::default()
+                    };
+                    geos.insert(primitive.id, geo);
+
+                    let range = vk::AccelerationStructureBuildRangeInfoKHR {
+                        primitive_count: max_prim_count as u32,
+                        primitive_offset: primitive.index_offset as u32 * size_of::<u32>() as u32,
+                        first_vertex: 0,
+                        transform_offset: 0,
+                    };
+                    ranges.insert(primitive.id, range);
+                }
+
                 processed.insert(mesh.resource.id);
             }
 
@@ -254,13 +258,15 @@ impl ResourceSubsystem {
 
         for mesh in &scene.meshes {
             let transform = mesh.transform;
-            let id = mesh.resource.id;
+            let mesh_id = mesh.resource.id;
 
             if !mesh.visible {
                 continue;
             }
 
-            index.push((id, transform));
+            for primitive in &mesh.resource.primitives {
+                index.push((mesh_id, primitive.id, transform));
+            }
         }
 
         TlasIndex { index }
