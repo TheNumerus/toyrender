@@ -26,6 +26,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
+use std::slice::Iter;
 use std::str::FromStr;
 use std::time::Instant;
 
@@ -37,6 +38,8 @@ use shader_loader::ShaderLoader;
 pub(crate) mod frame_stats;
 use crate::app::frame_stats::StatStorage;
 use frame_stats::FrameStats;
+
+static FONT: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
 
 pub struct App {
     pub vulkan_context: Rc<VulkanContext>,
@@ -58,7 +61,7 @@ impl App {
         let video_subsystem = sdl_context.video().expect("cannot init video");
 
         let mut window = video_subsystem
-            .window("Vulkan Demo", 1920, 1080)
+            .window("Toyrender", 1920, 1080)
             .allow_highdpi()
             .resizable()
             .position_centered()
@@ -71,6 +74,12 @@ impl App {
         let event_pump = sdl_context.event_pump().expect("cannot get event pump");
 
         let mut imgui = imgui::Context::create();
+        imgui.io_mut().config_flags |= imgui::ConfigFlags::DOCKING_ENABLE;
+        imgui.fonts().add_font(&[imgui::FontSource::TtfData {
+            data: FONT,
+            config: None,
+            size_pixels: 14.0,
+        }]);
         Self::set_ui_style(imgui.style_mut());
 
         let shader_loader = ShaderLoader::from_zip(open_shader_zip("shaders.zip")?)?;
@@ -120,6 +129,10 @@ impl App {
 
             info!("Loaded in {} s", (end - start).as_secs_f32());
 
+            self.window
+                .set_title(&format!("Toyrender - [{}]", path.to_string_lossy()))
+                .unwrap();
+
             if let Some(camera) = camera {
                 self.scene.camera.fov = camera.fov;
                 self.scene.camera.position = camera.position;
@@ -149,8 +162,6 @@ impl App {
         let mut taa_enable = true;
         let mut culling = true;
         let mut importance_sampling = true;
-
-        let mut sel_render = 1;
 
         let mut sel_sky = 0;
 
@@ -190,9 +201,16 @@ impl App {
             let mut debug_mode_flip = false;
             let mut movement = false;
             let mut renderer_changed = false;
+            let mut ui_focused = false;
+
+            let mut reset_ref_render = false;
 
             for event in event_pump.poll_iter() {
-                platform.handle_event(&mut imgui, &event);
+                if state.ui_visible {
+                    platform.handle_event(&mut imgui, &event);
+                } else {
+                    ui_focused = false;
+                }
                 match event {
                     Event::Quit { .. } => {
                         renderer.device.wait_idle()?;
@@ -260,41 +278,52 @@ impl App {
                             debug_mode_flip = true;
                             clear_taa = true;
                         }
+                        Some(Keycode::H) => {
+                            state.ui_visible = !state.ui_visible;
+                        }
                         _ => {}
                     },
                     _ => {}
                 }
             }
 
-            let mut ui_focused = false;
-
             input_mapper.update(event_pump.keyboard_state());
 
             if resized {
                 renderer.resize(window.drawable_size())?;
                 reference_renderer.resize(window.drawable_size())?;
+                reset_ref_render = true;
             }
 
             frame_end = Instant::now();
 
             platform.prepare_frame(&mut imgui, &window, &event_pump);
             let ui = imgui.new_frame();
+            ui.dockspace_over_main_viewport();
             let window_builder = ui
                 .window("toyrender controls")
                 .size([300.0, 100.0], imgui::Condition::FirstUseEver);
 
             if let Some(iw) = window_builder.begin() {
-                ui_focused = ui.is_window_focused();
+                ui_focused = ui.is_window_focused() && state.ui_visible;
 
-                if ui.combo("Renderer", &mut sel_render, &["Realtime", "Reference"], |a| {
-                    std::borrow::Cow::Borrowed(a)
-                }) {
-                    state.selected_renderer = match sel_render {
-                        0 => SelectedRenderer::Realtime,
-                        1 => SelectedRenderer::Reference,
-                        _ => unreachable!(),
-                    };
-                    renderer_changed = true;
+                if let Some(cb) = ui.begin_combo("Renderer", format!("{:?}", state.selected_renderer)) {
+                    for cur in SelectedRenderer::iterator() {
+                        if state.selected_renderer == *cur {
+                            ui.set_item_default_focus();
+                        }
+
+                        let clicked = ui
+                            .selectable_config(format!("{:?}", cur))
+                            .selected(state.selected_renderer == *cur)
+                            .build();
+
+                        if clicked {
+                            state.selected_renderer = *cur;
+                            renderer_changed = true;
+                        }
+                    }
+                    cb.end();
                 }
 
                 if ui.collapsing_header("RT Settings", imgui::TreeNodeFlags::DEFAULT_OPEN) {
@@ -305,6 +334,7 @@ impl App {
                         &mut renderer.quality.rt_direct_trace_distance,
                     ) {
                         reference_renderer.quality.rt_direct_trace_distance = renderer.quality.rt_direct_trace_distance;
+                        reset_ref_render = true;
                     }
                     if ui.slider(
                         "Indirect trace distance",
@@ -314,9 +344,11 @@ impl App {
                     ) {
                         reference_renderer.quality.rt_indirect_trace_distance =
                             renderer.quality.rt_indirect_trace_distance;
+                        reset_ref_render = true;
                     }
                     if ui.slider("Bounce count", 0, 10, &mut renderer.quality.pt_bounces) {
                         reference_renderer.quality.pt_bounces = renderer.quality.pt_bounces;
+                        reset_ref_render = true;
                     }
 
                     if ui.slider(
@@ -326,6 +358,7 @@ impl App {
                         &mut renderer.quality.indirect_light_clamp,
                     ) {
                         reference_renderer.quality.indirect_light_clamp = renderer.quality.indirect_light_clamp;
+                        reset_ref_render = true;
                     }
 
                     if ui.checkbox("Temporal accumulation", &mut taa_enable) {
@@ -348,10 +381,11 @@ impl App {
                         .build();
                     ui.input_float3("Camera rotation", scene.camera.rotation.as_mut())
                         .build();
-                    ui.slider("Camera FoV", 1.0, 174.0, &mut scene.camera.fov);
+                    reset_ref_render |= ui.slider("Camera FoV", 1.0, 174.0, &mut scene.camera.fov);
                     if ui.slider("Render scale", 0.01, 1.0, &mut renderer.render_scale) {
                         clear_taa = true;
                         reference_renderer.render_scale = renderer.render_scale;
+                        reset_ref_render = true;
                     }
                 }
                 if ui.collapsing_header("Environment", imgui::TreeNodeFlags::DEFAULT_OPEN) {
@@ -383,14 +417,17 @@ impl App {
                                 combo.end();
                             }
 
-                            ui.slider("Sky rotation", 0.0, 1.0, r);
+                            reset_ref_render |= ui.slider("Sky rotation", 0.0, 1.0, r);
                         }
                         SkyVariant::SingleColor(color) => {
-                            ui.color_edit3("Sky color", color.as_mut());
+                            if ui.color_edit3("Sky color", color.as_mut()) {
+                                reset_ref_render = true;
+                            }
                         }
                         _ => {}
                     }
-                    ui.slider("Sky intensity", 0.0, 10.0, &mut scene.env.sky.intensity);
+
+                    reset_ref_render |= ui.slider("Sky intensity", 0.0, 10.0, &mut scene.env.sky.intensity);
 
                     ui.separator();
 
@@ -398,11 +435,14 @@ impl App {
 
                     ui.separator();
 
-                    ui.slider("Sun intensity", 0.0, 10.0, &mut scene.env.sun_intensity);
-                    ui.input_float3("Sun direction", scene.env.sun_direction.as_mut())
+                    reset_ref_render |= ui.slider("Sun intensity", 0.0, 10.0, &mut scene.env.sun_intensity);
+                    reset_ref_render |= ui
+                        .input_float3("Sun direction", scene.env.sun_direction.as_mut())
                         .build();
-                    ui.slider("Sun angle", 0.0, std::f32::consts::FRAC_PI_2, &mut scene.env.sun_angle);
-                    ui.color_edit3("Sun color", scene.env.sun_color.as_mut());
+
+                    reset_ref_render |=
+                        ui.slider("Sun angle", 0.0, std::f32::consts::FRAC_PI_2, &mut scene.env.sun_angle);
+                    reset_ref_render |= ui.color_edit3("Sun color", scene.env.sun_color.as_mut());
                 }
                 if ui.collapsing_header("Stats", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                     Self::stats_tab(ui, &frame_stats, delta);
@@ -410,17 +450,23 @@ impl App {
                 if ui.collapsing_header("Lights", imgui::TreeNodeFlags::DEFAULT_OPEN) {
                     Self::lights_tab(ui, &mut scene);
                 }
-                if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty()) {
+                if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty())
+                    && let Some(tt) = ui.begin_table_with_flags("Scene", 3, imgui::TableFlags::SIZING_FIXED_FIT)
+                {
                     for (index, mesh) in &mut scene.meshes.iter_mut().enumerate() {
+                        ui.table_next_column();
+                        reset_ref_render |= ui.checkbox(format!("##{}", index), &mut mesh.visible);
+                        ui.table_next_column();
                         ui.text(format!("'{}'", mesh.resource.name));
-                        ui.same_line();
-                        ui.checkbox(format!("visible##{}", index), &mut mesh.visible);
-                        ui.same_line();
+                        ui.table_next_column();
                         ui.text(format!(
                             "'{:?}'",
                             mesh.resource.culling_info.bb_max - mesh.resource.culling_info.bb_min
                         ));
+
+                        ui.table_next_row();
                     }
+                    tt.end();
                 }
 
                 iw.end();
@@ -446,7 +492,7 @@ impl App {
                 }
 
                 if state.selected_renderer == SelectedRenderer::Reference && movement {
-                    clear_taa = true;
+                    reset_ref_render = true;
                 }
 
                 if clear_taa {
@@ -458,6 +504,11 @@ impl App {
                     reference_renderer.debug_mode = renderer.debug_mode;
                     eprintln!("debug mode: {:?}", renderer.debug_mode);
                 }
+            }
+
+            if state.selected_renderer == SelectedRenderer::Reference && reset_ref_render {
+                clear_taa = true;
+                frame = 0;
             }
 
             let mut context = FrameContext {
@@ -477,20 +528,25 @@ impl App {
                 frame = 0;
             }
 
+            let draw_data = match state.ui_visible {
+                true => Some(draw_data),
+                false => None,
+            };
+
             let report = match state.selected_renderer {
                 SelectedRenderer::Realtime => renderer.render_frame(
                     &scene,
                     &mut resource_subsystem,
                     window.drawable_size(),
                     &context,
-                    Some(draw_data),
+                    draw_data,
                 )?,
                 SelectedRenderer::Reference => reference_renderer.render_frame(
                     &scene,
                     &mut resource_subsystem,
                     window.drawable_size(),
                     &context,
-                    Some(draw_data),
+                    draw_data,
                 )?,
             };
 
@@ -505,7 +561,6 @@ impl App {
             };
             frame += 1;
         }
-        eprintln!();
 
         Ok(())
     }
@@ -668,12 +723,14 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
 
 pub struct AppState {
     selected_renderer: SelectedRenderer,
+    ui_visible: bool,
 }
 
 impl AppState {
     pub fn new() -> Self {
         Self {
             selected_renderer: SelectedRenderer::Reference,
+            ui_visible: true,
         }
     }
 }
@@ -685,10 +742,17 @@ pub enum InputAxes {
     Up,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Debug, Copy, Clone)]
 enum SelectedRenderer {
     Realtime,
     Reference,
+}
+
+impl SelectedRenderer {
+    pub fn iterator() -> Iter<'static, Self> {
+        static CASES: [SelectedRenderer; 2] = [SelectedRenderer::Realtime, SelectedRenderer::Reference];
+        CASES.iter()
+    }
 }
 
 enum FileDroppedAction {

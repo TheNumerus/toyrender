@@ -58,6 +58,7 @@ impl FrameStats {
     fn compute_float(&self, id: &'static str) -> Stat<f32> {
         let mut history = 0.0;
         let mut latest = None;
+        let mut values = Vec::with_capacity(self.storage.len());
         let mut min = f32::MAX;
         let mut max = f32::MIN;
         let mut avg = 0.0;
@@ -73,6 +74,7 @@ impl FrameStats {
 
             match value {
                 Some(FrameStatStorage::Float(value)) => {
+                    values.push(*value);
                     avg += value;
                     history += 1.0;
                     min = min.min(*value);
@@ -94,12 +96,13 @@ impl FrameStats {
             min,
             max,
             avg,
+            values,
         }
     }
 
     fn compute_int(&self, id: &'static str) -> Stat<u32> {
         let mut latest = None;
-        let mut values = vec![];
+        let mut values = Vec::with_capacity(self.storage.len());
         let mut min = u32::MAX;
         let mut max = u32::MIN;
 
@@ -127,14 +130,17 @@ impl FrameStats {
             }
         }
 
-        values.sort();
-        let avg = values[values.len() / 2];
+        let mut values_to_sort = values.clone();
+        values_to_sort.sort();
+
+        let avg = values[values_to_sort.len() / 2];
 
         Stat {
             latest: latest.unwrap(),
             min,
             max,
             avg,
+            values,
         }
     }
 }
@@ -149,6 +155,7 @@ pub struct Stat<T> {
     pub min: T,
     pub max: T,
     pub avg: T,
+    pub values: Vec<T>,
 }
 
 pub trait FrameStatValue {
