@@ -16,6 +16,8 @@ pub struct MeshCullingInfo {
 #[derive(Copy, Clone)]
 pub struct Material {
     pub base_color: Vec3,
+    pub base_color_texture: Option<uuid::Uuid>,
+    pub orm_texture: Option<uuid::Uuid>,
     pub metallic: f32,
     pub roughness: f32,
     pub emissive: Vec3,
@@ -24,6 +26,8 @@ impl Default for Material {
     fn default() -> Self {
         Self {
             base_color: Vec3::from_element(0.8),
+            base_color_texture: None,
+            orm_texture: None,
             metallic: 0.0,
             roughness: 0.5,
             emissive: Vec3::from_element(0.0),

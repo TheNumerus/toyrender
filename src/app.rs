@@ -7,7 +7,7 @@ use crate::input::InputMapper;
 use crate::renderer::{FrameContext, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
 use crate::scene::{Node, PointLight, Scene, SkyVariant, Transform};
 
-use image::DynamicImage;
+use image::{DynamicImage, GenericImageView};
 
 use imgui::Ui;
 
@@ -108,6 +108,7 @@ impl App {
     }
 
     pub fn run(mut self, args: Args) -> Result<(), AppError> {
+        let mut textures = Vec::new();
         if let Some(path) = args.file_to_open {
             info!("loading file `{:?}`", path);
             let start = Instant::now();
@@ -122,8 +123,10 @@ impl App {
                 resources: _resources,
                 instances,
                 camera,
+                textures: tex,
             } = import::extract_scene(&file)?;
             self.scene.meshes.extend(instances);
+            textures = tex;
 
             let end = Instant::now();
 
@@ -162,6 +165,7 @@ impl App {
         let mut taa_enable = true;
         let mut culling = true;
         let mut importance_sampling = true;
+        let mut fixed_sample = false;
 
         let mut sel_sky = 0;
 
@@ -364,6 +368,9 @@ impl App {
                     if ui.checkbox("Temporal accumulation", &mut taa_enable) {
                         frame = 0;
                     }
+
+                    ui.checkbox("Fixed sample", &mut fixed_sample);
+
                     match state.selected_renderer {
                         SelectedRenderer::Realtime => {
                             ui.checkbox("Spatial denoise", &mut renderer.quality.use_spatial_denoise);
@@ -399,7 +406,14 @@ impl App {
                         scene.env.sky.variant = match sel_sky {
                             0 => SkyVariant::Shader,
                             1 => SkyVariant::SingleColor(Vec3::from_element(1.0)),
-                            2 => SkyVariant::Textured(sky_textures[&selected_texture.unwrap()].clone(), 0.0),
+                            2 => {
+                                let curr_rot = match &scene.env.sky.variant {
+                                    SkyVariant::Textured(_, r) => *r,
+                                    _ => 0.0,
+                                };
+
+                                SkyVariant::Textured(sky_textures[&selected_texture.unwrap()].clone(), curr_rot)
+                            }
                             _ => unreachable!(),
                         };
                         renderer_changed = true;
@@ -469,6 +483,27 @@ impl App {
                     tt.end();
                 }
 
+                if ui.collapsing_header("Textures", imgui::TreeNodeFlags::empty())
+                    && let Some(tt) = ui.begin_table_with_flags("Scene", 4, imgui::TableFlags::SIZING_FIXED_FIT)
+                {
+                    for tex in &textures {
+                        ui.table_next_column();
+                        ui.text(&tex.name);
+                        ui.table_next_column();
+                        ui.text(format!("{}x{}", tex.data.width(), tex.data.height()));
+                        ui.table_next_column();
+                        ui.text(format!(
+                            "CPU Mem: {:.02}MB",
+                            (tex.data.as_bytes().len() as f32) / 1024.0 / 1024.0
+                        ));
+                        ui.table_next_column();
+                        ui.text(format!("{:?}", tex.data.color()));
+
+                        ui.table_next_row();
+                    }
+                    tt.end();
+                }
+
                 iw.end();
             }
 
@@ -511,6 +546,10 @@ impl App {
                 frame = 0;
             }
 
+            if fixed_sample {
+                frame = 0;
+            }
+
             let mut context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
@@ -537,6 +576,7 @@ impl App {
                 SelectedRenderer::Realtime => renderer.render_frame(
                     &scene,
                     &mut resource_subsystem,
+                    &textures,
                     window.drawable_size(),
                     &context,
                     draw_data,
@@ -544,6 +584,7 @@ impl App {
                 SelectedRenderer::Reference => reference_renderer.render_frame(
                     &scene,
                     &mut resource_subsystem,
+                    &textures,
                     window.drawable_size(),
                     &context,
                     draw_data,
@@ -675,6 +716,7 @@ impl App {
             self.renderer.render_frame(
                 &self.scene,
                 &mut self.resource_subsystem,
+                &[],
                 self.window.drawable_size(),
                 &context,
                 None,

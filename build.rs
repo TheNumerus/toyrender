@@ -1,7 +1,7 @@
 use std::io::{ErrorKind, Write};
 use std::path::Path;
 use zip::ZipWriter;
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 
 const ENTRY_REGEX: &str = r##"\[shader\("[a-z]+"\)\][\sa-zA-Z0-9]+ ([A-Za-z]+)\("##;
 
@@ -57,7 +57,7 @@ fn main() -> Result<(), std::io::Error> {
 
             println!("Compiling {stem}|{entry}");
 
-            archive.start_file(&name, FileOptions::default())?;
+            archive.start_file(&name, SimpleFileOptions::default())?;
             archive.write_all(&res.stdout)?;
         }
     }

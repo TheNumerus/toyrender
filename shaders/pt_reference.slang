@@ -694,6 +694,27 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     let normalBlend = attr.barycentrics.x * normalA + attr.barycentrics.y * normalB + normal0;
     payload.normal = normalize(mul(float3x3(transpose(meshData[InstanceIndex()].model_inverse)), normalBlend));
 
+    let uv0 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex0][8])).zw;
+    let uv1 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex1][8])).zw;
+    let uv2 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex2][8])).zw;
+
+    float2 uvA = uv1 - uv0;
+    float2 uvB = uv2 - uv0;
+
+    let uvBlend = attr.barycentrics.x * uvA + attr.barycentrics.y * uvB + uv0;
+
+    let color_idx = NonUniformResourceIndex(meshData[NonUniformResourceIndex(InstanceIndex())].color_idx);
+    if (color_idx != -1) {
+        payload.color *= images[NonUniformResourceIndex(color_idx)].Sample(uvBlend).xyz;
+    }
+
+    let orm_idx = NonUniformResourceIndex(meshData[NonUniformResourceIndex(InstanceIndex())].orm_idx);
+    if (orm_idx != -1) {
+        let orm = images[NonUniformResourceIndex(orm_idx)].Sample(uvBlend).xyz;
+        payload.rough *= orm.g;
+        payload.metallic *= orm.b;
+    }
+
     if (HitKind() == HIT_KIND_TRIANGLE_BACK_FACE) {
         payload.normal = -payload.normal;
     }

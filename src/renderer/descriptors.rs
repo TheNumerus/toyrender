@@ -291,7 +291,7 @@ impl DescLayout {
             DescLayout::Image => {
                 vec![vk::DescriptorSetLayoutBinding {
                     binding: 0,
-                    descriptor_count: 28,
+                    descriptor_count: 400,
                     stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::RAYGEN_KHR,
                     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     ..Default::default()
@@ -301,7 +301,7 @@ impl DescLayout {
                 vec![
                     vk::DescriptorSetLayoutBinding {
                         binding: 0,
-                        descriptor_count: 28,
+                        descriptor_count: 400,
                         stage_flags: vk::ShaderStageFlags::COMPUTE
                             | vk::ShaderStageFlags::RAYGEN_KHR
                             | vk::ShaderStageFlags::MISS_KHR,
@@ -310,7 +310,7 @@ impl DescLayout {
                     },
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
-                        descriptor_count: 28,
+                        descriptor_count: 40,
                         stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()

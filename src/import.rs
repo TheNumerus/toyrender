@@ -1,15 +1,21 @@
 use crate::err::AppError;
+use crate::image::ImageResource;
 use crate::math;
 use crate::mesh::{Indices, Material, MeshCullingInfo, MeshInstance, MeshResource, Primitive};
 use crate::vulkan::Vertex;
 use gltf::buffer::Data;
+use gltf::image::Source;
 use gltf::json::accessor::ComponentType;
 use gltf::mesh::Mode;
 use gltf::{Accessor, Gltf, Primitive as GltfPrimitive, Semantic};
 use log::info;
 use nalgebra::{Point3, Quaternion, Rotation3};
 use nalgebra_glm::{Mat4, Vec2, Vec3, Vec4, inverse, quat_cast, vec3};
+use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::rc::Rc;
+use std::sync::mpsc::channel;
+use std::thread;
 
 fn get_mesh_indices_type(mesh: &gltf::Mesh, buffers: &[Data]) -> Result<IndexType, AppError> {
     let mut total = 0;
@@ -34,7 +40,11 @@ fn get_mesh_indices_type(mesh: &gltf::Mesh, buffers: &[Data]) -> Result<IndexTyp
     Ok(IndexType::U16)
 }
 
-fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppError> {
+fn extract_mesh(
+    mesh: gltf::Mesh,
+    buffers: &[Data],
+    texture_map: &BTreeMap<usize, uuid::Uuid>,
+) -> Result<MeshResource, AppError> {
     let gltf_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
     let gltf_normal_convert_matrix = Mat4::from_euler_angles(std::f32::consts::FRAC_PI_2, 0.0, 0.0);
 
@@ -72,6 +82,17 @@ fn extract_mesh(mesh: gltf::Mesh, buffers: &[Data]) -> Result<MeshResource, AppE
         material.roughness = mat.pbr_metallic_roughness().roughness_factor();
         material.metallic = mat.pbr_metallic_roughness().metallic_factor();
         material.emissive = mat.emissive_factor().into();
+        material.emissive *= mat.emissive_strength().unwrap_or(1.0);
+
+        material.base_color_texture = match mat.pbr_metallic_roughness().base_color_texture() {
+            Some(info) => texture_map.get(&info.texture().source().index()).copied(),
+            None => None,
+        };
+
+        material.orm_texture = match mat.pbr_metallic_roughness().metallic_roughness_texture() {
+            Some(info) => texture_map.get(&info.texture().source().index()).copied(),
+            None => None,
+        };
 
         let vertex_offset = vertices_total.len();
 
@@ -234,9 +255,43 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
 
     let mut meshes = Vec::new();
     let mut instances = Vec::new();
+    let mut textures = Vec::new();
+    let mut texture_map = BTreeMap::new();
+
+    let (tx, rx) = channel();
+
+    let tex_stubs = gltf
+        .document
+        .textures()
+        .map(|t| (t.source().index(), t))
+        .collect::<BTreeMap<_, _>>();
+
+    thread::scope(|s| {
+        for (idx, texture) in tex_stubs {
+            let txc = tx.clone();
+            let texture = texture.clone();
+            let buffers = &buffers;
+            s.spawn(move || {
+                let res = extract_texture(texture, buffers).map(|a| (a, idx));
+
+                txc.send(res).unwrap();
+            });
+        }
+    });
+    drop(tx);
+
+    for recv in rx {
+        match recv {
+            Ok((ir, idx)) => {
+                texture_map.insert(idx, ir.id);
+                textures.push(ir);
+            }
+            Err(e) => return Err(e),
+        }
+    }
 
     for mesh in gltf.document.meshes() {
-        let m = Rc::new(extract_mesh(mesh, &buffers)?);
+        let m = Rc::new(extract_mesh(mesh, &buffers, &texture_map)?);
 
         meshes.push(m);
     }
@@ -250,10 +305,16 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
     );
 
     info!("Loaded {} meshes in {} instances", meshes.len(), instances.len());
+    info!(
+        "Loaded {} textures, total size {:.3} MB",
+        textures.len(),
+        textures.iter().fold(0, |acc, t| acc + t.data.as_bytes().len()) as f32 / 1024.0 / 1024.0
+    );
 
     Ok(ImportedScene {
         resources: meshes,
         instances,
+        textures,
         camera,
     })
 }
@@ -289,9 +350,34 @@ fn extract_instances<'a, T: ExactSizeIterator<Item = gltf::Node<'a>>>(
     }
 }
 
+fn extract_texture(texture: gltf::Texture, buffers: &[Data]) -> Result<ImageResource, AppError> {
+    let src = texture.source();
+    let name = src.name().unwrap_or_default().to_owned();
+
+    let (data, _mime_type) = match src.source() {
+        Source::View { view, mime_type } => {
+            let buf = &buffers[view.buffer().index()];
+            let slice = buf.0.as_slice();
+            let end = slice.split_at(view.offset()).1;
+            let img_data = end.split_at(view.length()).0;
+
+            let mut data = Vec::with_capacity(view.length());
+            data.extend_from_slice(img_data);
+
+            (data, mime_type.to_owned())
+        }
+        Source::Uri { .. } => return Err(AppError::Import("Uri textures not supported".into())),
+    };
+
+    let image = image::load_from_memory(&data)?;
+
+    Ok(ImageResource::new(image, name))
+}
+
 pub struct ImportedScene {
     pub resources: Vec<Rc<MeshResource>>,
     pub instances: Vec<MeshInstance>,
+    pub textures: Vec<ImageResource>,
     pub camera: Option<ImportedCamera>,
 }
 

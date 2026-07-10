@@ -1,4 +1,5 @@
 use crate::err::AppError;
+use crate::image::ImageResource;
 use crate::renderer::{TlasIndex, VulkanContext};
 use crate::scene::{Scene, SkyVariant};
 use crate::vulkan::{
@@ -6,7 +7,7 @@ use crate::vulkan::{
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
-use image::EncodableLayout;
+use image::{ColorType, EncodableLayout};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
@@ -28,7 +29,12 @@ impl ResourceSubsystem {
         }
     }
 
-    pub fn prepare_resources(&mut self, scene: &Scene, command_buffer: &CommandBuffer) -> Result<bool, AppError> {
+    pub fn prepare_resources(
+        &mut self,
+        scene: &Scene,
+        command_buffer: &CommandBuffer,
+        textures: &[ImageResource],
+    ) -> Result<bool, AppError> {
         let mut changed = false;
 
         for instance in &scene.meshes {
@@ -50,7 +56,7 @@ impl ResourceSubsystem {
             }
         }
 
-        let mut src_buf;
+        let mut src_bufs = Vec::new();
 
         if let SkyVariant::Textured(ir, _) = &scene.env.sky.variant
             && let Entry::Vacant(e) = self.textures.entry(ir.id)
@@ -105,7 +111,7 @@ impl ResourceSubsystem {
                 );
             }
 
-            src_buf = Buffer::new(
+            let mut src_buf = Buffer::new(
                 self.context.device.clone(),
                 self.context.allocator.clone(),
                 MemoryLocation::CpuToGpu,
@@ -134,6 +140,8 @@ impl ResourceSubsystem {
                 },
             );
 
+            src_bufs.push(src_buf);
+
             unsafe {
                 self.context.device.inner.cmd_pipeline_barrier(
                     command_buffer.inner,
@@ -159,6 +167,120 @@ impl ResourceSubsystem {
                 view,
                 Rc::new(Sampler::new_repeat_x_only(self.context.device.clone())?),
             ));
+        }
+
+        for ir in textures {
+            if let Entry::Vacant(e) = self.textures.entry(ir.id) {
+                // only run command if needed
+                if !changed {
+                    command_buffer.reset()?;
+                    command_buffer.begin_one_time()?;
+                    changed = true;
+                }
+
+                let extent = vk::Extent3D {
+                    width: ir.data.width(),
+                    height: ir.data.height(),
+                    depth: 1,
+                };
+
+                let format = match ir.data.color() {
+                    ColorType::L8 | ColorType::La8 => vk::Format::R8_SRGB,
+                    ColorType::Rgb8 => vk::Format::R8G8B8A8_SRGB,
+                    ColorType::Rgba8 => vk::Format::R8G8B8A8_SRGB,
+                    a => panic!("unimplemented image format: {:?}", a),
+                };
+
+                let image = Image::new(
+                    self.context.device.clone(),
+                    self.context.allocator.clone(),
+                    format,
+                    extent,
+                    vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                )?;
+                image.name(format!("Texture {}", ir.name))?;
+
+                let view = ImageView::new(
+                    self.context.device.clone(),
+                    image.inner,
+                    format,
+                    vk::ImageAspectFlags::COLOR,
+                )?;
+                view.name(format!("Texture imageview {}", ir.name))?;
+
+                unsafe {
+                    self.context.device.inner.cmd_pipeline_barrier(
+                        command_buffer.inner,
+                        vk::PipelineStageFlags::TOP_OF_PIPE,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[vk::ImageMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::NONE,
+                            dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                            old_layout: vk::ImageLayout::UNDEFINED,
+                            new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            image: image.inner,
+                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                            ..Default::default()
+                        }],
+                    );
+                }
+
+                let mut src_buf = Buffer::new(
+                    self.context.device.clone(),
+                    self.context.allocator.clone(),
+                    MemoryLocation::CpuToGpu,
+                    vk::BufferUsageFlags::TRANSFER_SRC,
+                    ir.data.width() as u64 * ir.data.height() as u64 * 4,
+                )?;
+
+                src_buf.fill_host(&ir.data.clone().into_rgba8())?;
+
+                command_buffer.copy_buffer_to_image(
+                    &src_buf,
+                    &image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &vk::BufferImageCopy {
+                        buffer_offset: 0,
+                        buffer_row_length: ir.data.width(),
+                        buffer_image_height: ir.data.height(),
+                        image_subresource: vk::ImageSubresourceLayers {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            mip_level: 0,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        },
+                        image_offset: Default::default(),
+                        image_extent: extent,
+                    },
+                );
+
+                src_bufs.push(src_buf);
+
+                unsafe {
+                    self.context.device.inner.cmd_pipeline_barrier(
+                        command_buffer.inner,
+                        vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[vk::ImageMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                            dst_access_mask: vk::AccessFlags::SHADER_READ,
+                            old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                            new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                            image: image.inner,
+                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                            ..Default::default()
+                        }],
+                    );
+                }
+
+                e.insert((image, view, Rc::new(Sampler::new_repeat(self.context.device.clone())?)));
+            }
         }
 
         if changed {

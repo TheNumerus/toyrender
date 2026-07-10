@@ -52,6 +52,7 @@ pub use push_const::PushConstBuilder;
 
 mod reference_renderer;
 use crate::app::frame_stats::FrameReport;
+use crate::image::ImageResource;
 use crate::renderer::buffers::PointLightGpu;
 use crate::renderer::mesh_collector::RasterMeshInstanceDataGPU;
 pub use reference_renderer::VulkanMcPathTracer;
@@ -123,7 +124,7 @@ impl VulkanRenderer {
                     ty: vk::DescriptorType::UNIFORM_BUFFER,
                 },
                 vk::DescriptorPoolSize {
-                    descriptor_count: 40 * MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 800 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                 },
                 vk::DescriptorPoolSize {
@@ -139,7 +140,7 @@ impl VulkanRenderer {
                     ty: vk::DescriptorType::STORAGE_BUFFER,
                 },
             ],
-            200 * MAX_FRAMES_IN_FLIGHT as u32,
+            4000 * MAX_FRAMES_IN_FLIGHT as u32,
         )?;
 
         let descriptor_layouts = DescriptorLayouts::create(device.clone())?;
@@ -529,6 +530,7 @@ impl VulkanRenderer {
         &mut self,
         scene: &Scene,
         resource_subsystem: &mut ResourceSubsystem,
+        textures: &[ImageResource],
         drawable_size: (u32, u32),
         context: &FrameContext,
         ui: Option<&imgui::DrawData>,
@@ -548,7 +550,7 @@ impl VulkanRenderer {
 
         let start = Instant::now();
 
-        if resource_subsystem.prepare_resources(scene, &self.tlas_prepare_cmd_buf)? {
+        if resource_subsystem.prepare_resources(scene, &self.tlas_prepare_cmd_buf, textures)? {
             info!("Resource prepare time: {:.3}s", start.elapsed().as_secs_f32());
         }
 
@@ -1119,16 +1121,30 @@ impl VulkanRenderer {
     fn setup_mesh_data(&mut self, scene: &Scene, resource_subsystem: &ResourceSubsystem) -> Result<(), AppError> {
         let mut handles = Vec::with_capacity(scene.meshes.len());
 
+        let descriptors = self.descriptors[self.current_frame].borrow();
+
         for mesh in &scene.meshes {
             let vulkan_mesh = &resource_subsystem.meshes[&mesh.resource.id];
-            let vertex_pointer = vulkan_mesh.buf.addr;
-            let index_pointer = vertex_pointer + vulkan_mesh.indices_offset;
 
             if !mesh.visible {
                 continue;
             }
 
             for primitive in &mesh.resource.primitives {
+                let vertex_pointer = vulkan_mesh.buf.addr;
+                let index_pointer =
+                    vertex_pointer + vulkan_mesh.indices_offset + (primitive.index_offset * size_of::<u32>()) as u64;
+
+                let base_color_idx = match primitive.material.base_color_texture {
+                    Some(uuid) => descriptors.samplers[&uuid] as i32,
+                    None => -1,
+                };
+
+                let orm_idx = match primitive.material.orm_texture {
+                    Some(uuid) => descriptors.samplers[&uuid] as i32,
+                    None => -1,
+                };
+
                 handles.push(crate::renderer::reference_renderer::RtMeshInstanceDataGPU {
                     transform_inverse: mesh.inverse,
                     vertex_pointer,
@@ -1137,6 +1153,9 @@ impl VulkanRenderer {
                     roughness: primitive.material.roughness,
                     emissive: primitive.material.emissive.data.0[0],
                     metallic: primitive.material.metallic,
+                    base_color_idx,
+                    orm_idx,
+                    _pad: [0; 2],
                 })
             }
         }
