@@ -236,7 +236,13 @@ impl ResourceSubsystem {
                     ir.data.width() as u64 * ir.data.height() as u64 * 4,
                 )?;
 
-                src_buf.fill_host(&ir.data.clone().into_rgba8())?;
+                let data_copy = match ir.data.color() {
+                    ColorType::L8 | ColorType::La8 => ir.data.clone().into_luma8().into_vec(),
+                    ColorType::Rgb8 | ColorType::Rgba8 => ir.data.clone().into_rgba8().into_vec(),
+                    a => panic!("unimplemented image format: {:?}", a),
+                };
+
+                src_buf.fill_host(&data_copy)?;
 
                 command_buffer.copy_buffer_to_image(
                     &src_buf,

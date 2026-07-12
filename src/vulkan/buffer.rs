@@ -131,6 +131,10 @@ impl Buffer {
         Ok(())
     }
 
+    pub fn read_host(&self) -> &[u8] {
+        self.allocation.as_ref().unwrap().mapped_slice().unwrap()
+    }
+
     pub fn get_device_addr(&self) -> vk::DeviceAddress {
         let addr_info = vk::BufferDeviceAddressInfo {
             buffer: self.inner,

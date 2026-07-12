@@ -96,13 +96,15 @@ impl ReferencePathtracePass {
                 [descriptors.global_set.inner, descriptors.compute_set.inner],
             );
 
+            let flags = (context.importance_sampling as u32) + ((context.russian_roulette as u32) << 1);
+
             let pc = PushConstBuilder::with_capacity(11 * size_of::<u32>())
                 .add_u32(context.frame_index)
                 .add_u32(inputs.bounces)
                 .add_u32(self.render_target.borrow().storage_index.unwrap())
                 .add_u32(inputs.sky_pdf.sampler_index.unwrap())
                 .add_u32(inputs.sky_importance_map.storage_index.unwrap())
-                .add_u32(if context.importance_sampling { 1 } else { 0 })
+                .add_u32(flags)
                 .add_u32(inputs.sky_sampler)
                 .add_f32(inputs.direct_trace_distance)
                 .add_f32(inputs.indirect_trace_distance)

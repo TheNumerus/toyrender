@@ -147,6 +147,20 @@ impl CommandBuffer {
                 .cmd_copy_buffer_to_image(self.inner, src.inner, dst.inner, dst_layout, &[*region]);
         }
     }
+
+    pub fn copy_image_to_buffer(
+        &self,
+        src: &Image,
+        dst: &Buffer,
+        src_layout: vk::ImageLayout,
+        region: &vk::BufferImageCopy,
+    ) {
+        unsafe {
+            self.device
+                .inner
+                .cmd_copy_image_to_buffer(self.inner, src.inner, src_layout, dst.inner, &[*region]);
+        }
+    }
 }
 
 impl DebugMarker for CommandBuffer {

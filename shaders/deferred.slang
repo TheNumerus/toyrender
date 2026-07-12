@@ -48,14 +48,14 @@ FSInput vertMain(VSInput input, uint inst: SV_InstanceID, uniform uint first) {
 }
 
 [shader("fragment")]
-FSOutput fragMain(FSInput input, uint ff: SV_IsFrontFace) {
+FSOutput fragMain(FSInput input, bool ff: SV_IsFrontFace) {
     FSOutput output;
 
     output.color = float4(input.color, 1.0);
     output.normal = float4((input.normal + 1.0) * 0.5, 1.0);
     output.mat = float4(input.mat, 1.0);
 
-    if (ff == 0) {
+    if (!ff) {
         output.normal = float4((-input.normal + 1.0) * 0.5, 1.0);
     }
 

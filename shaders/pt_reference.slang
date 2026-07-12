@@ -46,7 +46,7 @@ struct PushConsts {
     int out_idx;
     int pdf_idx;
     int importance_idx;
-    int use_importance;
+    int importance_roulette_flags;
     int sky_idx;
     float direct_trace_distance;
     float indirect_trace_distance;
@@ -246,7 +246,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     }
 
     float sky_intensity;
-    if (pc.use_importance == 1 && skyVariant == SkyMode::Textured) {
+    if ((pc.importance_roulette_flags & 1) != 0 && skyVariant == SkyMode::Textured) {
         float2 mapped = rand_vars_sphere;
         mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
         mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
@@ -342,7 +342,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         radiance = shadow * intensity * light.value.color_intensity.xyz * compensate;
         light_dir = ray.Direction;
     } else if (rand_light > (sunLw.weight)) {
-        if (pc.use_importance == 1 && skyVariant == SkyMode::Textured) {
+        if ((pc.importance_roulette_flags & 1) != 0 && skyVariant == SkyMode::Textured) {
             float2 mapped = rand_vars_sphere;
             mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
             mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
@@ -495,6 +495,17 @@ void raygen() {
         return;
     }
 
+    if (global.debug == DebugMode::BaseColor) {
+        storages[pc.out_idx].Store(
+            int2(launch_idx.xy),
+            float4(
+                primaryColor,
+                0.0
+            )
+        );
+        return;
+    }
+
     float roughness = primaryRoughness;
     float metallic = primaryMetallic;
     float3 current_color = primaryColor;
@@ -555,8 +566,9 @@ void raygen() {
 
         radiance *= diffuseLobe + specularLobe;
 
-        if (pc.indirect_intensity_clamp != 0.0) {
-            radiance = min(float3(pc.indirect_intensity_clamp), radiance);
+        if (pc.indirect_intensity_clamp > 0.0) {
+            float luma = max(luminance(radiance), 0.0001);
+            radiance *= min(pc.indirect_intensity_clamp / luma, 1.0);
         }
 
         direct += radiance;
@@ -567,8 +579,9 @@ void raygen() {
         if (payload.isMiss) {
             float3 radiance = intensity_indirect * payload.color * env.sky_color_intensity.w / (4.0 / PI);
 
-            if (pc.indirect_intensity_clamp != 0.0) {
-                radiance = min(float3(pc.indirect_intensity_clamp), radiance);
+            if (pc.indirect_intensity_clamp > 0.0) {
+                float luma = luminance(radiance);
+                radiance *= min(pc.indirect_intensity_clamp / luma, 1.0);
             }
 
             indirect += radiance;
@@ -577,8 +590,9 @@ void raygen() {
             if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0) {
                 float3 radiance = intensity_indirect * payload.emissive;
 
-                if (pc.indirect_intensity_clamp != 0.0) {
-                    radiance = min(float3(pc.indirect_intensity_clamp), radiance);
+                if (pc.indirect_intensity_clamp > 0.0) {
+                    float luma = luminance(radiance);
+                    radiance *= min(pc.indirect_intensity_clamp / luma, 1.0);
                 }
 
                 indirect += radiance;
@@ -590,6 +604,15 @@ void raygen() {
             hitNormal = payload.normal;
             roughness = payload.rough;
             metallic = payload.metallic;
+        }
+
+        if (i >= 3 && (pc.importance_roulette_flags & 2) != 0) {
+            float thr = min(luminance(intensity_indirect), 0.95);
+            if (pcg_hash() > thr) {
+                break;
+            } else {
+                intensity_indirect /= thr;
+            }
         }
     }
 
@@ -703,14 +726,14 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
     let uvBlend = attr.barycentrics.x * uvA + attr.barycentrics.y * uvB + uv0;
 
-    let color_idx = NonUniformResourceIndex(meshData[NonUniformResourceIndex(InstanceIndex())].color_idx);
+    let color_idx = NonUniformResourceIndex(meshData[InstanceIndex()].color_idx);
     if (color_idx != -1) {
-        payload.color *= images[NonUniformResourceIndex(color_idx)].Sample(uvBlend).xyz;
+        payload.color *= images[color_idx].Sample(uvBlend).xyz;
     }
 
-    let orm_idx = NonUniformResourceIndex(meshData[NonUniformResourceIndex(InstanceIndex())].orm_idx);
+    let orm_idx = NonUniformResourceIndex(meshData[InstanceIndex()].orm_idx);
     if (orm_idx != -1) {
-        let orm = images[NonUniformResourceIndex(orm_idx)].Sample(uvBlend).xyz;
+        let orm = pow(images[orm_idx].Sample(uvBlend).xyz, 1.0 / 2.2);
         payload.rough *= orm.g;
         payload.metallic *= orm.b;
     }

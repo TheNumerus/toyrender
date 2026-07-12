@@ -17,8 +17,8 @@ use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{FrameContext, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update, stats};
 use crate::scene::{PointLight, Scene, SkyVariant, Transform};
 use crate::vulkan::{
-    Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, PresentInfo, Sampler, Semaphore, ShaderBindingTable,
-    SubmitInfo, TopLevelAs, VulkanError,
+    Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, IntoVulkanError, PresentInfo, Sampler, Semaphore,
+    ShaderBindingTable, SubmitInfo, TopLevelAs, VulkanError,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
@@ -952,6 +952,71 @@ impl VulkanMcPathTracer {
         self.lights[self.current_frame].fill_host(slice)?;
 
         Ok((self.lights[self.current_frame].get_device_addr(), handles.len() as u32))
+    }
+
+    pub fn save_image(&mut self, drawable_size: (u32, u32)) -> Result<Vec<u8>, AppError> {
+        let mut data = Vec::new();
+
+        let buf = Buffer::new(
+            self.context.device.clone(),
+            self.context.allocator.clone(),
+            MemoryLocation::GpuToCpu,
+            vk::BufferUsageFlags::TRANSFER_SRC | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            drawable_size.0 as u64 * drawable_size.1 as u64 * 4 * size_of::<f32>() as u64,
+        )?;
+
+        self.tlas_prepare_cmd_buf.reset()?;
+        self.tlas_prepare_cmd_buf.begin_one_time()?;
+
+        let extent = vk::Extent3D {
+            width: drawable_size.0,
+            height: drawable_size.1,
+            depth: 1,
+        };
+
+        self.tlas_prepare_cmd_buf.copy_image_to_buffer(
+            &self.passes.accumulate.render_target.borrow().image,
+            &buf,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &vk::BufferImageCopy {
+                buffer_offset: 0,
+                buffer_row_length: drawable_size.0,
+                buffer_image_height: drawable_size.1,
+                image_subresource: vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                },
+                image_offset: Default::default(),
+                image_extent: extent,
+            },
+        );
+
+        self.tlas_prepare_cmd_buf.end()?;
+
+        let submit_info = vk::SubmitInfo {
+            command_buffer_count: 1,
+            p_command_buffers: &self.tlas_prepare_cmd_buf.inner,
+            ..Default::default()
+        };
+
+        unsafe {
+            self.context
+                .device
+                .inner
+                .queue_submit(self.context.device.compute_queue, &[submit_info], vk::Fence::null())
+                .map_to_err("Cannot submit queue")?;
+            self.context
+                .device
+                .inner
+                .queue_wait_idle(self.context.device.compute_queue)
+                .map_to_err("Cannot wait idle")?;
+        }
+
+        data.extend_from_slice(buf.read_host());
+
+        Ok(data)
     }
 }
 

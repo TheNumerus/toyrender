@@ -1225,6 +1225,7 @@ pub struct FrameContext {
     pub culling: bool,
     pub importance_sampling: bool,
     pub frame_index: u32,
+    pub russian_roulette: bool,
 }
 
 fn create_buffer_update<'a>(

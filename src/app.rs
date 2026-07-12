@@ -165,7 +165,6 @@ impl App {
         let mut taa_enable = true;
         let mut culling = true;
         let mut importance_sampling = true;
-        let mut fixed_sample = false;
 
         let mut sel_sky = 0;
 
@@ -208,6 +207,7 @@ impl App {
             let mut ui_focused = false;
 
             let mut reset_ref_render = false;
+            let mut save_screen = false;
 
             for event in event_pump.poll_iter() {
                 if state.ui_visible {
@@ -284,6 +284,9 @@ impl App {
                         }
                         Some(Keycode::H) => {
                             state.ui_visible = !state.ui_visible;
+                        }
+                        Some(Keycode::F10) => {
+                            save_screen = true;
                         }
                         _ => {}
                     },
@@ -369,7 +372,10 @@ impl App {
                         frame = 0;
                     }
 
-                    ui.checkbox("Fixed sample", &mut fixed_sample);
+                    ui.checkbox("Fixed sample", &mut state.fixed_sample);
+                    if ui.checkbox("Russian roulette", &mut state.russian_roulette) {
+                        reset_ref_render = true;
+                    }
 
                     match state.selected_renderer {
                         SelectedRenderer::Realtime => {
@@ -546,7 +552,7 @@ impl App {
                 frame = 0;
             }
 
-            if fixed_sample {
+            if state.fixed_sample {
                 frame = 0;
             }
 
@@ -557,6 +563,7 @@ impl App {
                 frame_index: frame,
                 culling,
                 importance_sampling,
+                russian_roulette: state.russian_roulette,
             };
 
             if renderer_changed {
@@ -590,6 +597,18 @@ impl App {
                     draw_data,
                 )?,
             };
+
+            if save_screen && state.selected_renderer == SelectedRenderer::Reference {
+                let data = reference_renderer.save_image(window.drawable_size())?;
+
+                image::save_buffer(
+                    format! {"{}.exr", chrono::Utc::now().format("%Y_%m_%d_%H_%M_%S")},
+                    &data,
+                    window.drawable_size().0,
+                    window.drawable_size().1,
+                    image::ExtendedColorType::Rgba32F,
+                )?;
+            }
 
             frame_stats.update(report);
 
@@ -711,6 +730,7 @@ impl App {
                 frame_index: frame as u32,
                 culling: true,
                 importance_sampling: true,
+                russian_roulette: true,
             };
 
             self.renderer.render_frame(
@@ -766,6 +786,8 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
 pub struct AppState {
     selected_renderer: SelectedRenderer,
     ui_visible: bool,
+    fixed_sample: bool,
+    russian_roulette: bool,
 }
 
 impl AppState {
@@ -773,6 +795,8 @@ impl AppState {
         Self {
             selected_renderer: SelectedRenderer::Reference,
             ui_visible: true,
+            fixed_sample: false,
+            russian_roulette: true,
         }
     }
 }
