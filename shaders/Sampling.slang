@@ -1,6 +1,6 @@
-module Sampling;
+import Common;
 
-#define PI 3.141569
+module Sampling;
 
 public float3 reflect(float3 incoming, float3 normal) {
     return 2.0 * dot(normal, incoming) * normal - incoming;

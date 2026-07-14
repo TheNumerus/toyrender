@@ -6,8 +6,6 @@ import Sky;
 #extension GL_EXT_shader_realtime_clock : enable
 #extension GL_EXT_nonuniform_qualifier : enable
 
-#define PI 3.141569
-
 struct Payload {
     bool isMiss;
     float dist;

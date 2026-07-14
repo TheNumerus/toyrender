@@ -1,5 +1,6 @@
 import Common;
 import Sky;
+import Octa;
 
 [[vk::binding(0, 0)]]
 ConstantBuffer<Global> global;
@@ -25,31 +26,6 @@ struct PushConsts {
 [vk::push_constant]
 uniform PushConsts pc;
 
-float signNotZero(in float k) {
-    return (k >= 0.f) ? 1.f : -1.f;
-}
-
-float2 signNotZero(in float2 v) {
-    return float2(signNotZero(v.x), signNotZero(v.y));
-}
-
-float2 octEncode(float3 v) {
-    float l1norm = abs(v.x) + abs(v.y) + abs(v.z);
-    float2 result = v.xy * (1.f / l1norm);
-    if (v.z < 0.f) {
-        result = (1.f - abs(result.yx)) * signNotZero(result.xy);
-    }
-    return result;
-}
-
-float3 octDecode(float2 o) {
-    float3 v = float3(o.x, o.y, 1.f - abs(o.x) - abs(o.y));
-    if (v.z < 0.f) {
-        v.xy = (1.f - abs(v.yx)) * signNotZero(v.xy);
-    }
-    return normalize(v);
-}
-
 float luminance(float3 v) {
     return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
 }
@@ -72,7 +48,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float2 pixel = float2(x, y) / float2(width, height);
     pixel = (pixel - float2(0.5f)) * 2.f;
 
-    float3 dir = octDecode(pixel);
+    float3 dir = Toyrender::Octa::decode(pixel);
 
     float3 sky = Toyrender::Sky::sample(dir, images[pc.src_idx], env.rotation);
 

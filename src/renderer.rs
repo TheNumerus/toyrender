@@ -1,4 +1,6 @@
+use crate::app::frame_stats::FrameReport;
 use crate::err::AppError;
+use crate::image::ImageResource;
 use crate::math;
 use crate::scene::{PointLight, Scene, SkyVariant, Transform};
 use crate::vulkan::{
@@ -15,7 +17,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 mod buffers;
-use buffers::{GPUEnv, Globals, ViewProj};
+use buffers::{GPUEnv, Globals, PointLightGpu, ViewProj};
 
 mod context;
 pub use context::VulkanContext;
@@ -24,15 +26,15 @@ mod descriptors;
 use descriptors::{DescriptorLayouts, DescriptorWrite, DescriptorWriter, RendererDescriptors};
 
 mod mesh_collector;
-use mesh_collector::{DrawData, MeshCollector};
+use mesh_collector::{DrawData, MeshCollector, RasterMeshInstanceDataGPU};
 
 mod resource_subsystem;
 pub use resource_subsystem::ResourceSubsystem;
 
 mod passes;
 use passes::{
-    DenoiseInputs, DenoisePass, DepthDebugPass, GBufferPass, ImportanceMapPass, PathTraceInputs, PathTracePass,
-    ShadingInputs, ShadingPass, SkyPass, TaaInputs, TaaPass, TonemapPass,
+    ConvolutionPass, DenoiseInputs, DenoisePass, DepthDebugPass, GBufferPass, ImportanceMapPass, PathTraceInputs,
+    PathTracePass, ShadingInputs, ShadingPass, SkyPass, TaaInputs, TaaPass, TonemapPass,
 };
 
 mod pipeline_builder;
@@ -51,10 +53,7 @@ mod push_const;
 pub use push_const::PushConstBuilder;
 
 mod reference_renderer;
-use crate::app::frame_stats::FrameReport;
-use crate::image::ImageResource;
-use crate::renderer::buffers::PointLightGpu;
-use crate::renderer::mesh_collector::RasterMeshInstanceDataGPU;
+use crate::renderer::passes::ConvolutionInputs;
 pub use reference_renderer::VulkanMcPathTracer;
 
 mod stats;
@@ -71,6 +70,7 @@ struct VulkanRendererPasses {
     taa: TaaPass,
     tonemap: TonemapPass,
     depth_debug: DepthDebugPass,
+    conv: ConvolutionPass,
 }
 
 pub struct VulkanRenderer {
@@ -377,6 +377,7 @@ impl VulkanRenderer {
         let taa = TaaPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
         let pt = PathTracePass::create(context, render_targets, pipeline_builder, descriptor_layouts)?;
         let depth_debug = DepthDebugPass::create(device.clone(), pipeline_builder, descriptor_layouts)?;
+        let conv = ConvolutionPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
 
         Ok(VulkanRendererPasses {
             pt,
@@ -388,6 +389,7 @@ impl VulkanRenderer {
             gbuffer,
             shading,
             taa,
+            conv,
         })
     }
 
@@ -880,10 +882,54 @@ impl VulkanRenderer {
             SkyVariant::Shader => {
                 self.passes.sky.record(compute_command_buffer, &descriptors)?;
 
+                unsafe {
+                    self.device.inner.cmd_pipeline_barrier(
+                        command_buffer.inner,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::DependencyFlags::empty(),
+                        &[],
+                        &[],
+                        &[vk::ImageMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                            dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                            old_layout: vk::ImageLayout::GENERAL,
+                            new_layout: vk::ImageLayout::GENERAL,
+                            image: self.passes.sky.render_target.borrow().image.inner,
+                            subresource_range: vk::ImageSubresourceRange {
+                                aspect_mask: vk::ImageAspectFlags::COLOR,
+                                base_mip_level: 0,
+                                level_count: 1,
+                                base_array_layer: 0,
+                                layer_count: 1,
+                            },
+                            ..Default::default()
+                        }],
+                    );
+                }
+
                 self.passes.sky.render_target.borrow().sampler_index.unwrap()
             }
             SkyVariant::SingleColor(_) => 0,
             SkyVariant::Textured(ir, _) => descriptors.samplers[&ir.id],
+        };
+
+        let sky_src = match &scene.env.sky.variant {
+            SkyVariant::Shader => Some(self.passes.sky.render_target.borrow().sampler_index.unwrap()),
+            SkyVariant::SingleColor(_) => None,
+            SkyVariant::Textured(ir, _) => Some(descriptors.samplers[&ir.id]),
+        };
+
+        if let Some(idx) = sky_src {
+            self.passes.conv.record(
+                compute_command_buffer,
+                &descriptors,
+                ConvolutionInputs {
+                    src_sampler: idx,
+                    target_sampler: 0,
+                    clamp: self.quality.indirect_light_clamp,
+                },
+            )?;
         };
 
         compute_command_buffer.end()?;
@@ -939,6 +985,7 @@ impl VulkanRenderer {
                 normal: &self.passes.gbuffer.render_target_normal.borrow(),
                 direct: &self.passes.denoise.direct_render_target_acc.borrow(),
                 indirect: &self.passes.denoise.indirect_render_target_acc.borrow(),
+                conv: &self.passes.conv.conv_render_target.borrow(),
                 sky_sampler,
             },
             viewport_size,
@@ -1136,12 +1183,12 @@ impl VulkanRenderer {
                     vertex_pointer + vulkan_mesh.indices_offset + (primitive.index_offset * size_of::<u32>()) as u64;
 
                 let base_color_idx = match primitive.material.base_color_texture {
-                    Some(uuid) => descriptors.samplers[&uuid] as i32,
+                    Some(uuid) => descriptors.samplers.get(&uuid).map(|a| *a as i32).unwrap_or(-1),
                     None => -1,
                 };
 
                 let orm_idx = match primitive.material.orm_texture {
-                    Some(uuid) => descriptors.samplers[&uuid] as i32,
+                    Some(uuid) => descriptors.samplers.get(&uuid).map(|a| *a as i32).unwrap_or(-1),
                     None => -1,
                 };
 
@@ -1226,6 +1273,7 @@ pub struct FrameContext {
     pub importance_sampling: bool,
     pub frame_index: u32,
     pub russian_roulette: bool,
+    pub disable_materials: bool,
 }
 
 fn create_buffer_update<'a>(

@@ -2,7 +2,7 @@ use crate::vulkan::Vertex;
 use ash::vk;
 use nalgebra_glm::{Mat4, Vec3, vec2, vec3, vec4};
 use std::borrow::Cow;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub static MESH_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -129,14 +129,14 @@ impl From<&Indices> for vk::IndexType {
 }
 
 pub struct MeshInstance {
-    pub resource: Rc<MeshResource>,
+    pub resource: Arc<MeshResource>,
     pub transform: Mat4,
     pub inverse: Mat4,
     pub visible: bool,
 }
 
 impl MeshInstance {
-    pub fn new(resource: Rc<MeshResource>) -> Self {
+    pub fn new(resource: Arc<MeshResource>) -> Self {
         Self {
             resource,
             transform: Mat4::identity(),

@@ -9,20 +9,18 @@ use ash::vk;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/**
-This pass creates a sky importance map in a way heavily inspired by PBR Book (https://pbr-book.org/4ed/Light_Sources/Infinite_Area_Lights).
-
-First, the sky is read from a loaded equirectangular texture and mapped to 1024x1024 octahedral format.
-This is Blender's default size, and it should work fine with any sun in the image.
-Code for octa mapping is taken from the Ray Tracing Gems II book (Chapter 3.8).
-
-This is done because it minimizes streching. The pass also converts color to luminance info, because colors aren't needed.
-
-The octa map is then in two passes converted into rolling sums. First per line, then sum of lines. This should create proto-CDF in another 1025x1024 texture (extra line for sums).
-Annother pass then does normalization. This could be improved by using hierarchical conversion, as described in Ray Tracing Gems I book (Chapter 16.4.2.3).
-
-Final pass does the inversion so the CDF can be sampled directly.
- */
+/// This pass creates a sky importance map in a way heavily inspired by PBR Book (https://pbr-book.org/4ed/Light_Sources/Infinite_Area_Lights).
+///
+/// First, the sky is read from a loaded equirectangular texture and mapped to 1024x1024 octahedral format.
+/// This is Blender's default size, and it should work fine with any sun in the image.
+/// Code for octa mapping is taken from the Ray Tracing Gems II book (Chapter 3.8).
+///
+/// This is done because it minimizes streching. The pass also converts color to luminance info, because colors aren't needed.
+///
+/// The octa map is then in two passes converted into rolling sums. First per line, then sum of lines. This should create proto-CDF in another 1025x1024 texture (extra line for sums).
+/// Annother pass then does normalization. This could be improved by using hierarchical conversion, as described in Ray Tracing Gems I book (Chapter 16.4.2.3).
+///
+/// Final pass does the inversion so the CDF can be sampled directly.
 pub(crate) struct ImportanceMapPass {
     device: Rc<Device>,
     pub octa_render_target: Rc<RefCell<RenderTarget>>,

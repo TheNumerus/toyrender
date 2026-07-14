@@ -96,7 +96,9 @@ impl ReferencePathtracePass {
                 [descriptors.global_set.inner, descriptors.compute_set.inner],
             );
 
-            let flags = (context.importance_sampling as u32) + ((context.russian_roulette as u32) << 1);
+            let flags = (context.importance_sampling as u32)
+                + ((context.russian_roulette as u32) << 1)
+                + ((context.disable_materials as u32) << 2);
 
             let pc = PushConstBuilder::with_capacity(11 * size_of::<u32>())
                 .add_u32(context.frame_index)

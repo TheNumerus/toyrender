@@ -13,7 +13,7 @@ use nalgebra::{Point3, Quaternion, Rotation3};
 use nalgebra_glm::{Mat4, Vec2, Vec3, Vec4, inverse, quat_cast, vec3};
 use std::collections::BTreeMap;
 use std::fmt::Debug;
-use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::channel;
 use std::thread;
 
@@ -291,7 +291,7 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
     }
 
     for mesh in gltf.document.meshes() {
-        let m = Rc::new(extract_mesh(mesh, &buffers, &texture_map)?);
+        let m = Arc::new(extract_mesh(mesh, &buffers, &texture_map)?);
 
         meshes.push(m);
     }
@@ -323,7 +323,7 @@ fn extract_instances<'a, T: ExactSizeIterator<Item = gltf::Node<'a>>>(
     convert_mat: Mat4,
     root_transform: Mat4,
     nodes: T,
-    meshes: &mut Vec<Rc<MeshResource>>,
+    meshes: &mut Vec<Arc<MeshResource>>,
     instances: &mut Vec<MeshInstance>,
 ) {
     for instance in nodes {
@@ -375,7 +375,7 @@ fn extract_texture(texture: gltf::Texture, buffers: &[Data]) -> Result<ImageReso
 }
 
 pub struct ImportedScene {
-    pub resources: Vec<Rc<MeshResource>>,
+    pub resources: Vec<Arc<MeshResource>>,
     pub instances: Vec<MeshInstance>,
     pub textures: Vec<ImageResource>,
     pub camera: Option<ImportedCamera>,

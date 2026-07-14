@@ -105,7 +105,7 @@ impl Default for Environment {
             sun_color: vec3(0.9, 0.8, 0.7),
             sun_angle: 0.54 / (180.0 * std::f32::consts::PI),
             exposure: 0.0,
-            sun_intensity: 1.0,
+            sun_intensity: std::f32::consts::PI,
             sky: Sky {
                 variant: SkyVariant::Shader,
                 intensity: 1.0,

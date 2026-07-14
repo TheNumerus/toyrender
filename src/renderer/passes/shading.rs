@@ -92,6 +92,7 @@ impl ShadingPass {
             .add_u32(inputs.depth.sampler_index.unwrap())
             .add_u32(inputs.direct.sampler_index.unwrap())
             .add_u32(inputs.indirect.sampler_index.unwrap())
+            .add_u32(inputs.conv.sampler_index.unwrap())
             .add_u32(inputs.sky_sampler)
             .build();
 
@@ -140,5 +141,6 @@ pub struct ShadingInputs<'a> {
     pub normal: &'a RenderTarget,
     pub direct: &'a RenderTarget,
     pub indirect: &'a RenderTarget,
+    pub conv: &'a RenderTarget,
     pub sky_sampler: u32,
 }

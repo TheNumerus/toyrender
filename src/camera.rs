@@ -12,7 +12,7 @@ impl PerspectiveCamera {
         Self {
             fov: 70.0,
             position: Vec3::from_element(0.0),
-            rotation: Vec3::from_element(0.0),
+            rotation: Vec3::new(std::f32::consts::FRAC_PI_2, 0.0, 0.0),
         }
     }
 

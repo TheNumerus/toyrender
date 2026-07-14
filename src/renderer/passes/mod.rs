@@ -6,6 +6,7 @@ mod shading;
 mod sky;
 mod taa;
 mod tonemap;
+mod util;
 
 pub(crate) use denoise::{DenoiseInputs, DenoisePass};
 pub(crate) use depth_debug::DepthDebugPass;
@@ -16,3 +17,4 @@ pub(crate) use sky::SkyPass;
 pub(crate) use sky::importance_map::{ImportanceMapInputs, ImportanceMapPass};
 pub(crate) use taa::{TaaInputs, TaaPass};
 pub(crate) use tonemap::TonemapPass;
+pub(crate) use util::conv::{ConvolutionInputs, ConvolutionPass};

@@ -472,7 +472,7 @@ impl TopLevelAs {
     ) -> Result<Self, AppError> {
         let mut instances = Vec::with_capacity(tlas_index.index.len());
 
-        for (mesh_id, primitive_id, transform) in tlas_index.index {
+        for (_mesh_id, primitive_id, transform) in tlas_index.index {
             let blas = &blases[&primitive_id];
 
             let instance = vk::AccelerationStructureInstanceKHR {

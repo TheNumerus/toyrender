@@ -1,5 +1,7 @@
 module Common;
 
+public static const float PI = 3.14159265359;
+
 public struct Global {
     public int debug;
     public float res_x;

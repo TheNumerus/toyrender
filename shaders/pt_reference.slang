@@ -1,12 +1,11 @@
 import Common;
 import Sampling;
 import Sky;
+import Octa;
 
 #extension GL_EXT_ray_tracing : enable
 #extension GL_EXT_shader_realtime_clock : enable
 #extension GL_EXT_nonuniform_qualifier : enable
-
-#define PI 3.141569
 
 struct Payload {
     bool isMiss;
@@ -46,13 +45,17 @@ struct PushConsts {
     int out_idx;
     int pdf_idx;
     int importance_idx;
-    int importance_roulette_flags;
+    int flags;
     int sky_idx;
     float direct_trace_distance;
     float indirect_trace_distance;
     float fov;
     float indirect_intensity_clamp;
 };
+
+static const int IMPORTANCE_SAMPLING = 1;
+static const int RUSSIAN_ROULETTE = 1 << 1;
+static const int DISABLE_MATERIALS = 1 << 2;
 
 [vk::push_constant]
 uniform PushConsts pc;
@@ -141,31 +144,6 @@ void traceShadow(float3 pos, float3 dir, inout Payload payload) {
     );
 }
 
-float signNotZero(in float k) {
-    return (k >= 0.f) ? 1.f : -1.f;
-}
-
-float2 signNotZero(in float2 v) {
-    return float2(signNotZero(v.x), signNotZero(v.y));
-}
-
-float2 octEncode(float3 v) {
-    float l1norm = abs(v.x) + abs(v.y) + abs(v.z);
-    float2 result = v.xy * (1.f / l1norm);
-    if (v.z < 0.f) {
-        result = (1.f - abs(result.yx)) * signNotZero(result.xy);
-    }
-    return result;
-}
-
-float3 octDecode(float2 o) {
-    float3 v = float3(o.x, o.y, 1.f - abs(o.x) - abs(o.y));
-    if (v.z < 0.f) {
-        v.xy = (1.f - abs(v.yx)) * signNotZero(v.xy);
-    }
-    return normalize(v);
-}
-
 uint time_diff(uint startTime, uint endTime) {
     return endTime >= startTime ? (endTime-startTime) : (~0u-(startTime-endTime));
 }
@@ -246,12 +224,12 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     }
 
     float sky_intensity;
-    if ((pc.importance_roulette_flags & 1) != 0 && skyVariant == SkyMode::Textured) {
+    if ((pc.flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
         float2 mapped = rand_vars_sphere;
         mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
         mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
 
-        float3 dir = octDecode((mapped - 0.5) * 2.0);
+        float3 dir = Toyrender::Octa::decode((mapped - 0.5) * 2.0);
         if (dot(normal, dir) >= 0.0) {
             float3 sky_color = Toyrender::Sky::sample(dir, images[pc.sky_idx], env.rotation);
 
@@ -342,12 +320,12 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         radiance = shadow * intensity * light.value.color_intensity.xyz * compensate;
         light_dir = ray.Direction;
     } else if (rand_light > (sunLw.weight)) {
-        if ((pc.importance_roulette_flags & 1) != 0 && skyVariant == SkyMode::Textured) {
+        if ((pc.flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
             float2 mapped = rand_vars_sphere;
             mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
             mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
 
-            float3 dir = octDecode((mapped - 0.5) * 2.0);
+            float3 dir = Toyrender::Octa::decode((mapped - 0.5) * 2.0);
             light_dir = dir;
             if (dot(normal, dir) >= 0.0) {
                 trace(offset_ray(pos, normal), dir, payload);
@@ -405,6 +383,8 @@ float GGX_Vis(float viewAngle, float lightAngle, float alpha) {
     return 0.5f / (a + b);
 }
 
+static bool disableMaterials = false;
+
 
 [shader("raygeneration")]
 void raygen() {
@@ -415,6 +395,8 @@ void raygen() {
     if (launch_idx.x >= size.x || launch_idx.y >= size.y) {
         return;
     }
+
+    disableMaterials = (pc.flags & DISABLE_MATERIALS) != 0;
 
     Payload payload;
 
@@ -458,6 +440,13 @@ void raygen() {
     float primaryMetallic = payload.metallic;
     float3 primaryEmissive = payload.emissive;
 
+    if (disableMaterials) {
+        primaryColor = 1.0;
+        primaryRoughness = 1.0;
+        primaryMetallic = 0.0;
+        primaryEmissive = 0.0;
+    }
+
     pos = payload.hit;
 
     if (payload.isMiss) {
@@ -469,11 +458,11 @@ void raygen() {
             )
         );
         return;
-    } else if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0) {
+    } else if ((primaryEmissive.x + primaryEmissive.y + primaryEmissive.z) > 0.0) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                payload.emissive,
+                primaryEmissive,
                 0.0
             )
         );
@@ -587,7 +576,7 @@ void raygen() {
             indirect += radiance;
             break;
         } else {
-            if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0) {
+            if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0 && !disableMaterials) {
                 float3 radiance = intensity_indirect * payload.emissive;
 
                 if (pc.indirect_intensity_clamp > 0.0) {
@@ -600,13 +589,15 @@ void raygen() {
             }
 
             pos = payload.hit;
-            current_color = payload.color;
             hitNormal = payload.normal;
-            roughness = payload.rough;
-            metallic = payload.metallic;
+            if (!disableMaterials) {
+                current_color = payload.color;
+                roughness = payload.rough;
+                metallic = payload.metallic;
+            }
         }
 
-        if (i >= 3 && (pc.importance_roulette_flags & 2) != 0) {
+        if (i >= 3 && (pc.flags & RUSSIAN_ROULETTE) != 0) {
             float thr = min(luminance(intensity_indirect), 0.95);
             if (pcg_hash() > thr) {
                 break;
@@ -702,11 +693,6 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     let vertex1 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 1];
     let vertex2 = meshData[InstanceIndex()].indexData[PrimitiveIndex() * 3 + 2];
 
-    payload.color = meshData[InstanceIndex()].color_rough.xyz;
-    payload.rough = meshData[InstanceIndex()].color_rough.w;
-    payload.metallic = meshData[InstanceIndex()].emissive_metallic.w;
-    payload.emissive = meshData[InstanceIndex()].emissive_metallic.xyz;
-
     let normal0 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex0][3]);
     let normal1 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex1][3]);
     let normal2 = *((float3 *)&meshData[InstanceIndex()].vertexData[vertex2][3]);
@@ -717,25 +703,32 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     let normalBlend = attr.barycentrics.x * normalA + attr.barycentrics.y * normalB + normal0;
     payload.normal = normalize(mul(float3x3(transpose(meshData[InstanceIndex()].model_inverse)), normalBlend));
 
-    let uv0 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex0][8])).zw;
-    let uv1 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex1][8])).zw;
-    let uv2 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex2][8])).zw;
+    if (!disableMaterials) {
+        payload.color = meshData[InstanceIndex()].color_rough.xyz;
+        payload.rough = meshData[InstanceIndex()].color_rough.w;
+        payload.metallic = meshData[InstanceIndex()].emissive_metallic.w;
+        payload.emissive = meshData[InstanceIndex()].emissive_metallic.xyz;
 
-    float2 uvA = uv1 - uv0;
-    float2 uvB = uv2 - uv0;
+        let uv0 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex0][8])).zw;
+        let uv1 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex1][8])).zw;
+        let uv2 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex2][8])).zw;
 
-    let uvBlend = attr.barycentrics.x * uvA + attr.barycentrics.y * uvB + uv0;
+        float2 uvA = uv1 - uv0;
+        float2 uvB = uv2 - uv0;
 
-    let color_idx = NonUniformResourceIndex(meshData[InstanceIndex()].color_idx);
-    if (color_idx != -1) {
-        payload.color *= images[color_idx].Sample(uvBlend).xyz;
-    }
+        let uvBlend = attr.barycentrics.x * uvA + attr.barycentrics.y * uvB + uv0;
 
-    let orm_idx = NonUniformResourceIndex(meshData[InstanceIndex()].orm_idx);
-    if (orm_idx != -1) {
-        let orm = pow(images[orm_idx].Sample(uvBlend).xyz, 1.0 / 2.2);
-        payload.rough *= orm.g;
-        payload.metallic *= orm.b;
+        let color_idx = NonUniformResourceIndex(meshData[InstanceIndex()].color_idx);
+        if (color_idx != -1) {
+            payload.color *= images[color_idx].Sample(uvBlend).xyz;
+        }
+
+        let orm_idx = NonUniformResourceIndex(meshData[InstanceIndex()].orm_idx);
+        if (orm_idx != -1) {
+            let orm = pow(images[orm_idx].Sample(uvBlend).xyz, 1.0 / 2.2);
+            payload.rough *= orm.g;
+            payload.metallic *= orm.b;
+        }
     }
 
     if (HitKind() == HIT_KIND_TRIANGLE_BACK_FACE) {

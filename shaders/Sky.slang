@@ -1,6 +1,6 @@
-module Sky;
+import Common;
 
-#define PI 3.14159265359
+module Sky;
 
 namespace Toyrender::Sky {
 public float3 sample_distorted(float3 view_dir, Sampler2D image) {

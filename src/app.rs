@@ -7,7 +7,7 @@ use crate::input::InputMapper;
 use crate::renderer::{FrameContext, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
 use crate::scene::{Node, PointLight, Scene, SkyVariant, Transform};
 
-use image::{DynamicImage, GenericImageView};
+use image::DynamicImage;
 
 use imgui::Ui;
 
@@ -28,7 +28,12 @@ use std::path::Path;
 use std::rc::Rc;
 use std::slice::Iter;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
 use std::time::Instant;
+
+use uuid::Uuid;
 
 use zip::ZipArchive;
 
@@ -40,6 +45,8 @@ use crate::app::frame_stats::StatStorage;
 use frame_stats::FrameStats;
 
 static FONT: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
+
+static LOADING: AtomicBool = AtomicBool::new(false);
 
 pub struct App {
     pub vulkan_context: Rc<VulkanContext>,
@@ -108,39 +115,20 @@ impl App {
     }
 
     pub fn run(mut self, args: Args) -> Result<(), AppError> {
-        let mut textures = Vec::new();
+        // Channels for non-blocking tasks
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx_reply, rx_reply) = std::sync::mpsc::channel();
+        let handle = thread::spawn(move || {
+            loader_thread(rx, tx_reply);
+        });
+
+        let mut textures: Vec<ImageResource> = Vec::new();
+
         if let Some(path) = args.file_to_open {
-            info!("loading file `{:?}`", path);
-            let start = Instant::now();
-
-            let file = std::fs::read(&path).map_err(|e| {
-                let msg = format!("file {} cannot be read: {e}", path.to_string_lossy());
-
-                AppError::Import(msg)
-            })?;
-
-            let ImportedScene {
-                resources: _resources,
-                instances,
-                camera,
-                textures: tex,
-            } = import::extract_scene(&file)?;
-            self.scene.meshes.extend(instances);
-            textures = tex;
-
-            let end = Instant::now();
-
-            info!("Loaded in {} s", (end - start).as_secs_f32());
-
-            self.window
-                .set_title(&format!("Toyrender - [{}]", path.to_string_lossy()))
-                .unwrap();
-
-            if let Some(camera) = camera {
-                self.scene.camera.fov = camera.fov;
-                self.scene.camera.position = camera.position;
-                self.scene.camera.rotation = camera.rotation;
-            }
+            tx.send(ThreadAction::OpenScene {
+                filename: path.to_string_lossy().to_string(),
+            })
+            .unwrap();
         }
 
         info!(
@@ -152,6 +140,8 @@ impl App {
             self.benchmark(300)?;
             return Ok(());
         }
+
+        let mut camera_set = false;
 
         let start = Instant::now();
         let mut frame_end = Instant::now();
@@ -174,7 +164,7 @@ impl App {
 
         let mut frame_stats = FrameStats::new(20);
 
-        let mut sky_textures = HashMap::new();
+        let mut sky_textures: HashMap<Uuid, Rc<ImageResource>> = HashMap::new();
         let mut selected_texture = None;
 
         // need to do this because of borrowing
@@ -182,7 +172,7 @@ impl App {
             mut imgui,
             mut scene,
             mut input_mapper,
-            window,
+            mut window,
             sdl_context,
             mut resource_subsystem,
             mut event_pump,
@@ -239,23 +229,14 @@ impl App {
                         focused = false;
                     }
                     Event::DropFile { filename, .. } => {
-                        let start = Instant::now();
-
                         let action = Self::on_file_drop(filename)?;
 
-                        info!("Loaded in {} s", start.elapsed().as_secs_f32());
-
                         match action {
-                            FileDroppedAction::LoadScene(ls) => {
-                                scene.meshes.extend(ls.instances);
+                            FileDroppedAction::LoadScene { filename } => {
+                                tx.send(ThreadAction::OpenScene { filename }).unwrap();
                             }
-                            FileDroppedAction::LoadImage { data, name } => {
-                                let resource = Rc::new(ImageResource::new(data, name));
-                                sky_textures.insert(resource.id, resource.clone());
-                                selected_texture = Some(resource.id);
-                                scene.env.sky.variant = SkyVariant::Textured(resource, 0.0);
-                                sel_sky = 2;
-                                frame = 0;
+                            FileDroppedAction::LoadImage { filename } => {
+                                tx.send(ThreadAction::DecodeImage { filename }).unwrap();
                             }
                         }
                     }
@@ -307,6 +288,21 @@ impl App {
             platform.prepare_frame(&mut imgui, &window, &event_pump);
             let ui = imgui.new_frame();
             ui.dockspace_over_main_viewport();
+
+            let width = window.drawable_size().0 as f32;
+            if LOADING.load(Ordering::SeqCst)
+                && let Some(loading_popup) = ui
+                    .window("LOADING")
+                    .size([100.0, 30.0], imgui::Condition::Always)
+                    .position([width - 120.0, 20.0], imgui::Condition::Always)
+                    .flags(imgui::WindowFlags::NO_DECORATION | imgui::WindowFlags::NO_INPUTS)
+                    .begin()
+            {
+                ui.text("Loading...");
+
+                loading_popup.end();
+            }
+
             let window_builder = ui
                 .window("toyrender controls")
                 .size([300.0, 100.0], imgui::Condition::FirstUseEver);
@@ -374,6 +370,9 @@ impl App {
 
                     ui.checkbox("Fixed sample", &mut state.fixed_sample);
                     if ui.checkbox("Russian roulette", &mut state.russian_roulette) {
+                        reset_ref_render = true;
+                    }
+                    if ui.checkbox("Disable materials", &mut state.disable_materials) {
                         reset_ref_render = true;
                     }
 
@@ -564,6 +563,7 @@ impl App {
                 culling,
                 importance_sampling,
                 russian_roulette: state.russian_roulette,
+                disable_materials: state.disable_materials,
             };
 
             if renderer_changed {
@@ -578,6 +578,45 @@ impl App {
                 true => Some(draw_data),
                 false => None,
             };
+
+            if let Ok(a) = rx_reply.try_recv() {
+                match a {
+                    ThreadReply::Err(e) => {
+                        return Err(e);
+                    }
+                    ThreadReply::DecodeImage { data, name } => {
+                        let resource = Rc::new(ImageResource::new(data, name));
+                        sky_textures.insert(resource.id, resource.clone());
+                        selected_texture = Some(resource.id);
+                        scene.env.sky.variant = SkyVariant::Textured(resource, 0.0);
+                        sel_sky = 2;
+
+                        context.clear_taa = true;
+                        context.frame_index = 0;
+                        frame = 0;
+                    }
+                    ThreadReply::OpenScene { data: is, name } => {
+                        vulkan_context.device.wait_idle()?;
+                        context.clear_taa = true;
+                        context.frame_index = 0;
+                        frame = 0;
+
+                        scene.meshes.extend(is.instances);
+                        textures.extend(is.textures);
+
+                        if !camera_set {
+                            camera_set = true;
+                            if let Some(camera) = is.camera {
+                                scene.camera.fov = camera.fov;
+                                scene.camera.position = camera.position;
+                                scene.camera.rotation = camera.rotation;
+                            }
+                        }
+
+                        window.set_title(&format!("Toyrender - [{}]", name)).unwrap();
+                    }
+                }
+            }
 
             let report = match state.selected_renderer {
                 SelectedRenderer::Realtime => renderer.render_frame(
@@ -621,6 +660,10 @@ impl App {
             };
             frame += 1;
         }
+
+        // drop sending handle right before waiting for worker thread to avoid deadlock
+        drop(tx);
+        handle.join().unwrap();
 
         Ok(())
     }
@@ -676,22 +719,11 @@ impl App {
     }
 
     fn on_file_drop(filename: String) -> Result<FileDroppedAction, AppError> {
-        info!("loading file `{filename}`");
-
-        let file = std::fs::read(&filename).map_err(|e| {
-            let msg = format!("file {} cannot be read: {e}", filename);
-
-            AppError::Import(msg)
-        })?;
         let path = std::path::PathBuf::from_str(&filename).unwrap();
-        let name = path.file_name().unwrap().to_string_lossy().into_owned();
 
         match path.extension().map(|ext| ext.to_str().unwrap()) {
-            Some("glb") => Ok(FileDroppedAction::LoadScene(import::extract_scene(&file)?)),
-            Some("exr") | Some("hdr") => Ok(FileDroppedAction::LoadImage {
-                data: image::load_from_memory(&file)?,
-                name,
-            }),
+            Some("glb") => Ok(FileDroppedAction::LoadScene { filename }),
+            Some("exr") | Some("hdr") => Ok(FileDroppedAction::LoadImage { filename }),
             _ => Err(AppError::Import("Unknown file format".to_owned())),
         }
     }
@@ -731,6 +763,7 @@ impl App {
                 culling: true,
                 importance_sampling: true,
                 russian_roulette: true,
+                disable_materials: false,
             };
 
             self.renderer.render_frame(
@@ -783,11 +816,76 @@ fn open_shader_zip(path: impl AsRef<Path>) -> Result<ZipArchive<File>, AppError>
     Ok(arch)
 }
 
+fn loader_thread(rx: Receiver<ThreadAction>, tx_reply: Sender<ThreadReply>) {
+    for task in rx.iter() {
+        let start = Instant::now();
+        LOADING.store(true, Ordering::SeqCst);
+        match task {
+            ThreadAction::DecodeImage { filename } => {
+                info!("Decoding image {filename}");
+
+                let buf = match std::fs::read(&filename) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let msg = format!("file {} cannot be read: {e}", filename);
+
+                        tx_reply.send(ThreadReply::Err(AppError::Import(msg))).unwrap();
+                        LOADING.store(false, Ordering::SeqCst);
+                        continue;
+                    }
+                };
+
+                let data = match image::load_from_memory(&buf) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        tx_reply.send(ThreadReply::Err(e.into())).unwrap();
+                        LOADING.store(false, Ordering::SeqCst);
+                        continue;
+                    }
+                };
+
+                let path = std::path::PathBuf::from_str(&filename).unwrap();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+
+                tx_reply.send(ThreadReply::DecodeImage { name, data }).unwrap();
+
+                info!("Loaded (in thread) in {} s", start.elapsed().as_secs_f32());
+            }
+            ThreadAction::OpenScene { filename } => {
+                info!("Opening scene {filename}");
+
+                let buf = match std::fs::read(&filename) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        let msg = format!("file {} cannot be read: {e}", filename);
+
+                        tx_reply.send(ThreadReply::Err(AppError::Import(msg))).unwrap();
+                        LOADING.store(false, Ordering::SeqCst);
+                        continue;
+                    }
+                };
+
+                let path = std::path::PathBuf::from_str(&filename).unwrap();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+
+                match import::extract_scene(&buf) {
+                    Ok(data) => tx_reply.send(ThreadReply::OpenScene { data, name }).unwrap(),
+                    Err(e) => tx_reply.send(ThreadReply::Err(e)).unwrap(),
+                }
+
+                info!("Loaded (in thread) in {} s", start.elapsed().as_secs_f32());
+            }
+        }
+        LOADING.store(false, Ordering::SeqCst);
+    }
+}
+
 pub struct AppState {
     selected_renderer: SelectedRenderer,
     ui_visible: bool,
     fixed_sample: bool,
     russian_roulette: bool,
+    disable_materials: bool,
 }
 
 impl AppState {
@@ -797,6 +895,7 @@ impl AppState {
             ui_visible: true,
             fixed_sample: false,
             russian_roulette: true,
+            disable_materials: false,
         }
     }
 }
@@ -822,6 +921,17 @@ impl SelectedRenderer {
 }
 
 enum FileDroppedAction {
-    LoadScene(ImportedScene),
-    LoadImage { data: DynamicImage, name: String },
+    LoadScene { filename: String },
+    LoadImage { filename: String },
+}
+
+enum ThreadAction {
+    DecodeImage { filename: String },
+    OpenScene { filename: String },
+}
+
+enum ThreadReply {
+    DecodeImage { data: DynamicImage, name: String },
+    OpenScene { data: ImportedScene, name: String },
+    Err(AppError),
 }
