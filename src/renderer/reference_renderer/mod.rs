@@ -187,7 +187,8 @@ impl VulkanMcPathTracer {
             in_flight[i].name(format!("in_flight[{}]", i))?;
             command_buffers[i].name(format!("cmd_buffers[{}]", i))?;
 
-            let shader_binding_table = ShaderBindingTable::new(context.clone(), &passes.pt.shader_pipeline_handle)?;
+            let shader_binding_table =
+                ShaderBindingTable::new(context.clone(), &passes.pt.pipelines.get(&(0, 0)).unwrap())?;
             shader_binding_tables.push(shader_binding_table);
 
             {
@@ -387,7 +388,7 @@ impl VulkanMcPathTracer {
         let tlas_index = resource_subsystem.build_tlas_index(scene);
 
         self.shader_binding_tables[self.current_frame]
-            .refill(self.passes.pt.get_active_pipeline(&scene.env.sky.variant))?;
+            .refill(self.passes.pt.get_active_pipeline(&scene.env.sky.variant, context))?;
 
         self.tlas_prepare_cmd_buf.reset()?;
 

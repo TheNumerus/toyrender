@@ -7,14 +7,13 @@ use crate::scene::SkyVariant;
 use crate::vulkan::{CommandBuffer, Pipeline, Rt, ShaderBindingTable, VulkanError};
 use ash::vk;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 pub struct ReferencePathtracePass {
     context: Rc<VulkanContext>,
     pub render_target: Rc<RefCell<RenderTarget>>,
-    pub shader_pipeline_handle: Rc<Pipeline<Rt>>,
-    pub solid_sky_pipeline_handle: Rc<Pipeline<Rt>>,
-    pub texture_sky_pipeline_handle: Rc<Pipeline<Rt>>,
+    pub pipelines: BTreeMap<(u32, u32), Rc<Pipeline<Rt>>>,
 }
 
 impl ReferencePathtracePass {
@@ -28,39 +27,29 @@ impl ReferencePathtracePass {
     ) -> Result<Self, AppError> {
         let render_target = render_targets.add(Self::render_target_def())?;
 
-        let shader_pipeline_handle = pipeline_builder.build_rt(
-            "pt|shader",
-            "pt_reference|raygen",
-            &["pt_reference|miss", "pt_reference|missEmpty"],
-            &["pt_reference|chit", "pt_reference|chitEmpty"],
-            descriptor_layouts,
-            Some(SpecConsts::new().push(0)),
-        )?;
+        let mut pipelines = BTreeMap::new();
 
-        let solid_sky_pipeline_handle = pipeline_builder.build_rt(
-            "pt|solid",
-            "pt_reference|raygen",
-            &["pt_reference|miss", "pt_reference|missEmpty"],
-            &["pt_reference|chit", "pt_reference|chitEmpty"],
-            descriptor_layouts,
-            Some(SpecConsts::new().push(1)),
-        )?;
+        // build all possible pipelines at the start
+        for sky_variant in 0..3 {
+            // there are 3 flags right now
+            for flags in 0..8 {
+                let handle = pipeline_builder.build_rt(
+                    "pt|shader",
+                    "pt_reference|raygen",
+                    &["pt_reference|miss", "pt_reference|missEmpty"],
+                    &["pt_reference|chit", "pt_reference|chitEmpty"],
+                    descriptor_layouts,
+                    Some(SpecConsts::new().push(sky_variant).push(flags)),
+                )?;
 
-        let texture_sky_pipeline_handle = pipeline_builder.build_rt(
-            "pt|texture",
-            "pt_reference|raygen",
-            &["pt_reference|miss", "pt_reference|missEmpty"],
-            &["pt_reference|chit", "pt_reference|chitEmpty"],
-            descriptor_layouts,
-            Some(SpecConsts::new().push(2)),
-        )?;
+                pipelines.insert((sky_variant, flags), handle);
+            }
+        }
 
         Ok(Self {
             context,
             render_target,
-            shader_pipeline_handle,
-            solid_sky_pipeline_handle,
-            texture_sky_pipeline_handle,
+            pipelines,
         })
     }
 
@@ -81,11 +70,7 @@ impl ReferencePathtracePass {
     ) -> Result<(), VulkanError> {
         self.context.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = match inputs.sky {
-            SkyVariant::SingleColor(_) => &self.solid_sky_pipeline_handle,
-            SkyVariant::Textured(_, _) => &self.texture_sky_pipeline_handle,
-            _ => &self.shader_pipeline_handle,
-        };
+        let pipeline = self.get_active_pipeline(inputs.sky, context);
 
         command_buffer.bind_rt_pipeline(pipeline);
 
@@ -96,17 +81,12 @@ impl ReferencePathtracePass {
                 [descriptors.global_set.inner, descriptors.compute_set.inner],
             );
 
-            let flags = (context.importance_sampling as u32)
-                + ((context.russian_roulette as u32) << 1)
-                + ((context.disable_materials as u32) << 2);
-
-            let pc = PushConstBuilder::with_capacity(11 * size_of::<u32>())
+            let pc = PushConstBuilder::with_capacity(10 * size_of::<u32>())
                 .add_u32(context.frame_index)
                 .add_u32(inputs.bounces)
                 .add_u32(self.render_target.borrow().storage_index.unwrap())
                 .add_u32(inputs.sky_pdf.sampler_index.unwrap())
                 .add_u32(inputs.sky_importance_map.storage_index.unwrap())
-                .add_u32(flags)
                 .add_u32(inputs.sky_sampler)
                 .add_f32(inputs.direct_trace_distance)
                 .add_f32(inputs.indirect_trace_distance)
@@ -161,12 +141,20 @@ impl ReferencePathtracePass {
         Ok(())
     }
 
-    pub fn get_active_pipeline(&self, sky: &SkyVariant) -> &Pipeline<Rt> {
-        match sky {
-            SkyVariant::SingleColor(_) => &self.solid_sky_pipeline_handle,
-            SkyVariant::Textured(_, _) => &self.texture_sky_pipeline_handle,
-            _ => &self.shader_pipeline_handle,
-        }
+    pub fn get_active_pipeline(&self, sky: &SkyVariant, context: &FrameContext) -> &Pipeline<Rt> {
+        let flags = (context.importance_sampling as u32)
+            + ((context.russian_roulette as u32) << 1)
+            + ((context.disable_materials as u32) << 2);
+
+        let sky_variant = match sky {
+            SkyVariant::Shader => 0,
+            SkyVariant::SingleColor(_) => 1,
+            SkyVariant::Textured(_, _) => 2,
+        };
+
+        self.pipelines
+            .get(&(sky_variant, flags))
+            .unwrap_or_else(|| panic!("Unknown pipeline variant: ({sky_variant}, {flags})"))
     }
 }
 

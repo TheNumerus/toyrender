@@ -8,13 +8,11 @@ import Octa;
 #extension GL_EXT_nonuniform_qualifier : enable
 
 struct Payload {
+    float4 color_rough;
+    float4 emissive_metallic;
     bool isMiss;
     float dist;
     float3 normal;
-    float3 color;
-    float3 emissive;
-    float rough;
-    float metallic;
     float3 hit;
 };
 
@@ -45,7 +43,6 @@ struct PushConsts {
     int out_idx;
     int pdf_idx;
     int importance_idx;
-    int flags;
     int sky_idx;
     float direct_trace_distance;
     float indirect_trace_distance;
@@ -62,6 +59,9 @@ uniform PushConsts pc;
 
 [vk::constant_id(0)]
 const SkyMode skyVariant;
+
+[vk::constant_id(1)]
+const int flags;
 
 static uint hash_state;
 
@@ -224,7 +224,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
     }
 
     float sky_intensity;
-    if ((pc.flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
+    if ((flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
         float2 mapped = rand_vars_sphere;
         mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
         mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
@@ -320,7 +320,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         radiance = shadow * intensity * light.value.color_intensity.xyz * compensate;
         light_dir = ray.Direction;
     } else if (rand_light > (sunLw.weight)) {
-        if ((pc.flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
+        if ((flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
             float2 mapped = rand_vars_sphere;
             mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
             mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
@@ -336,7 +336,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
                     // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
                     float adjust = 4.0 * uniformPdf / (pdf);
 
-                    radiance = env.sky_color_intensity.w * adjust * payload.color;
+                    radiance = env.sky_color_intensity.w * adjust * payload.color_rough.rgb;
                 }
             }
         } else {
@@ -346,7 +346,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
             trace(offset_ray(pos, normal), dir, payload);
             // TODO FIX - specular rays should not use hemi smapling here 
-            radiance = env.sky_color_intensity.w * float(payload.isMiss) * payload.color;
+            radiance = env.sky_color_intensity.w * float(payload.isMiss) * payload.color_rough.rgb;
             light_dir = dir;
         }
     } else if (sunLw.weight > 0.0) {
@@ -368,22 +368,17 @@ float3 fresnel(float angle, float3 value) {
     return (pow(1.0 - angle, 5.0) * (1.0 - value) + value);
 }
 
-float GGX(float alpha, float angle) {
-    float a2 = alpha * alpha;
+float GGX(float a2, float angle) {
     float p = ((a2 - 1.0) * angle * angle + 1.0);
 
     return a2 / (PI * p * p);
 }
 
-float GGX_Vis(float viewAngle, float lightAngle, float alpha) {
-    float a2 = alpha * alpha;
-
+float GGX_Vis(float viewAngle, float lightAngle, float a2) {
     float a = viewAngle * sqrt(a2 + lightAngle * (lightAngle - a2 * lightAngle));
     float b = lightAngle * sqrt(a2 + viewAngle * (viewAngle - a2 * viewAngle));
     return 0.5f / (a + b);
 }
-
-static bool disableMaterials = false;
 
 
 [shader("raygeneration")]
@@ -396,12 +391,12 @@ void raygen() {
         return;
     }
 
-    disableMaterials = (pc.flags & DISABLE_MATERIALS) != 0;
+    bool disableMaterials = (flags & DISABLE_MATERIALS) != 0;
 
     Payload payload;
 
     payload.isMiss = false;
-    payload.color = float3(0.0);
+    payload.color_rough = float4(4.0);
 
     uint start = getRealtimeClockLow().x;
 
@@ -435,10 +430,10 @@ void raygen() {
 
     tracePrimary(pos, dir, payload);
 
-    float3 primaryColor = payload.color;
-    float primaryRoughness = payload.rough;
-    float primaryMetallic = payload.metallic;
-    float3 primaryEmissive = payload.emissive;
+    float3 primaryColor = payload.color_rough.rgb;
+    float primaryRoughness = payload.color_rough.w;
+    float primaryMetallic = payload.emissive_metallic.w;
+    float3 primaryEmissive = payload.emissive_metallic.rgb;
 
     if (disableMaterials) {
         primaryColor = 1.0;
@@ -448,17 +443,20 @@ void raygen() {
     }
 
     pos = payload.hit;
+    primaryPos = pos;
+    hitNormal = payload.normal;
+    primaryNormal = hitNormal;
 
     if (payload.isMiss) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
-                payload.color * env.sky_color_intensity.w,
+                payload.color_rough.rgb * env.sky_color_intensity.w,
                 0.0
             )
         );
         return;
-    } else if ((primaryEmissive.x + primaryEmissive.y + primaryEmissive.z) > 0.0) {
+    } else if (any(primaryEmissive)) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
@@ -467,13 +465,7 @@ void raygen() {
             )
         );
         return;
-    } else {
-        primaryPos = pos;
-        hitNormal = payload.normal;
-        primaryNormal = hitNormal;
-    }
-
-    if (global.debug == DebugMode::Normal) {
+    } else if (global.debug == DebugMode::Normal) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
@@ -482,9 +474,7 @@ void raygen() {
             )
         );
         return;
-    }
-
-    if (global.debug == DebugMode::BaseColor) {
+    } else if (global.debug == DebugMode::BaseColor) {
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
             float4(
@@ -512,31 +502,24 @@ void raygen() {
         // TODO replace for proper BRDF result
         float3 bounceColor = lerp(float3(1.0), current_color, specular);
 
+        float2 new_rand = float2(pcg_hash(), pcg_hash());
         if (specular) {
-            float ddot = dot(dir, hitNormal);
-            dir = dir - 2.0 * hitNormal * (ddot);
-
-            float2 new_rand = float2(pcg_hash(), pcg_hash());
-
             float3 ggx_half_vector = ggx(new_rand, roughness * roughness);
 
             float3 new_norm = ggx_half_vector.x * tangent + ggx_half_vector.y * bitangent + ggx_half_vector.z * hitNormal;
-
-            // TODO fix this monstrosity
             dir = reflect(dir, new_norm);
-            dir = reflect(dir, hitNormal);
 
             if (dot(dir, hitNormal) <= 0.0) {
                 break;
             }
         } else {
-            float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
+            float3 hemi = rand_hemi(new_rand);
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
         float3 lightDir = 0.0;
 
-        float3 radiance = intensity_indirect * lightSample(pos, hitNormal, ray_shadow_dir, payload.color, payload, lightDir);
+        float3 radiance = intensity_indirect * lightSample(pos, hitNormal, ray_shadow_dir, payload.color_rough.rgb, payload, lightDir);
         float lightNormalDot = dot(hitNormal, lightDir);
 
         lightNormalDot = max(lightNormalDot, 0.000001);
@@ -546,12 +529,13 @@ void raygen() {
         float normalHalfDot = max(dot(hitNormal, newHalf), 0.000001);
         float normalViewDot = max(dot(hitNormal, -dirInc), 0.000001);
         float alpha = roughness * roughness;
+        float a2 = alpha * alpha;
 
         float3 f0 = lerp(0.04, current_color, metallic);
         float3 F = fresnel(lightHalfDot, f0);
 
         float3 diffuseLobe = lightNormalDot * (current_color / PI) * (1.0 - metallic);
-        float3 specularLobe = F * GGX(alpha, normalHalfDot) * GGX_Vis(normalViewDot, lightNormalDot, alpha) * lightNormalDot;
+        float3 specularLobe = F * GGX(a2, normalHalfDot) * GGX_Vis(normalViewDot, lightNormalDot, a2) * lightNormalDot;
 
         radiance *= diffuseLobe + specularLobe;
 
@@ -566,7 +550,7 @@ void raygen() {
         trace(offset_ray(pos, hitNormal), dir, payload);
 
         if (payload.isMiss) {
-            float3 radiance = intensity_indirect * payload.color * env.sky_color_intensity.w / (4.0 / PI);
+            float3 radiance = intensity_indirect * payload.color_rough.rgb * env.sky_color_intensity.w / (4.0 / PI);
 
             if (pc.indirect_intensity_clamp > 0.0) {
                 float luma = luminance(radiance);
@@ -576,8 +560,8 @@ void raygen() {
             indirect += radiance;
             break;
         } else {
-            if ((payload.emissive.x + payload.emissive.y + payload.emissive.z) > 0.0 && !disableMaterials) {
-                float3 radiance = intensity_indirect * payload.emissive;
+            if (any(payload.emissive_metallic.rgb) && !disableMaterials) {
+                float3 radiance = intensity_indirect * payload.emissive_metallic.rgb;
 
                 if (pc.indirect_intensity_clamp > 0.0) {
                     float luma = luminance(radiance);
@@ -591,13 +575,13 @@ void raygen() {
             pos = payload.hit;
             hitNormal = payload.normal;
             if (!disableMaterials) {
-                current_color = payload.color;
-                roughness = payload.rough;
-                metallic = payload.metallic;
+                current_color = payload.color_rough.rgb;
+                roughness = payload.color_rough.w;
+                metallic = payload.emissive_metallic.w;
             }
         }
 
-        if (i >= 3 && (pc.flags & RUSSIAN_ROULETTE) != 0) {
+        if (i >= 3 && (flags & RUSSIAN_ROULETTE) != 0) {
             float thr = min(luminance(intensity_indirect), 0.95);
             if (pcg_hash() > thr) {
                 break;
@@ -606,8 +590,6 @@ void raygen() {
             }
         }
     }
-
-    uint end = getRealtimeClockLow().x;
 
     if (global.debug == DebugMode::Direct) {
         storages[pc.out_idx].Store(
@@ -626,6 +608,7 @@ void raygen() {
             )
         );
     } else if (global.debug == DebugMode::Time) {
+        uint end = getRealtimeClockLow().x;
         float time = float(time_diff(start, end)) / 1024 / 128;
         storages[pc.out_idx].Store(
             int2(launch_idx.xy),
@@ -652,13 +635,13 @@ void raygen() {
 void miss(inout Payload payload) {
     switch (skyVariant) {
     case SkyMode::Shader:
-        payload.color = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
+        payload.color_rough.rgb = Toyrender::Sky::sample_distorted(WorldRayDirection(), images[pc.sky_idx]);
         break;
     case SkyMode::SingleColor:
-        payload.color = env.sky_color_intensity.xyz;
+        payload.color_rough.rgb = env.sky_color_intensity.xyz;
         break;
     case SkyMode::Textured:
-        payload.color = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
+        payload.color_rough.rgb = Toyrender::Sky::sample(WorldRayDirection(), images[pc.sky_idx], env.rotation);
         break;
     }
 
@@ -674,6 +657,8 @@ void missEmpty(inout Payload payload) {
 
 [shader("closesthit")]
 void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) {
+    bool disableMaterials = (flags & DISABLE_MATERIALS) != 0;
+
     payload.isMiss = false;
     payload.dist = RayTCurrent();
 
@@ -704,10 +689,8 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
     payload.normal = normalize(mul(float3x3(transpose(meshData[InstanceIndex()].model_inverse)), normalBlend));
 
     if (!disableMaterials) {
-        payload.color = meshData[InstanceIndex()].color_rough.xyz;
-        payload.rough = meshData[InstanceIndex()].color_rough.w;
-        payload.metallic = meshData[InstanceIndex()].emissive_metallic.w;
-        payload.emissive = meshData[InstanceIndex()].emissive_metallic.xyz;
+        payload.color_rough = meshData[InstanceIndex()].color_rough;
+        payload.emissive_metallic = meshData[InstanceIndex()].emissive_metallic;
 
         let uv0 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex0][8])).zw;
         let uv1 = (*((float4 *)&meshData[InstanceIndex()].vertexData[vertex1][8])).zw;
@@ -720,14 +703,14 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
         let color_idx = NonUniformResourceIndex(meshData[InstanceIndex()].color_idx);
         if (color_idx != -1) {
-            payload.color *= images[color_idx].Sample(uvBlend).xyz;
+            payload.color_rough.rgb *= images[color_idx].Sample(uvBlend).xyz;
         }
 
         let orm_idx = NonUniformResourceIndex(meshData[InstanceIndex()].orm_idx);
         if (orm_idx != -1) {
             let orm = pow(images[orm_idx].Sample(uvBlend).xyz, 1.0 / 2.2);
-            payload.rough *= orm.g;
-            payload.metallic *= orm.b;
+            payload.color_rough.w *= orm.g;
+            payload.emissive_metallic.w *= orm.b;
         }
     }
 
