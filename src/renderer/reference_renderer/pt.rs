@@ -33,6 +33,11 @@ impl ReferencePathtracePass {
         for sky_variant in 0..3 {
             // there are 3 flags right now
             for flags in 0..8 {
+                // skip pipelines for importance sampling + untextured sky
+                if sky_variant != 2 && ((flags & 1) != 0) {
+                    continue;
+                }
+
                 let handle = pipeline_builder.build_rt(
                     "pt|shader",
                     "pt_reference|raygen",
@@ -74,34 +79,32 @@ impl ReferencePathtracePass {
 
         command_buffer.bind_rt_pipeline(pipeline);
 
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::RAY_TRACING_KHR,
+            pipeline.layout,
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
+        );
+
+        let pc = PushConstBuilder::with_capacity(10 * size_of::<u32>())
+            .add_u32(context.frame_index)
+            .add_u32(inputs.bounces)
+            .add_u32(self.render_target.borrow().storage_index.unwrap())
+            .add_u32(inputs.sky_pdf.sampler_index.unwrap())
+            .add_u32(inputs.sky_importance_map.storage_index.unwrap())
+            .add_u32(inputs.sky_sampler)
+            .add_f32(inputs.direct_trace_distance)
+            .add_f32(inputs.indirect_trace_distance)
+            .add_f32(inputs.fov)
+            .add_f32(inputs.indirect_intensity_clamp)
+            .build();
+
+        command_buffer.push_constants(
+            vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::MISS_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
+            pipeline.layout,
+            &pc,
+        );
+
         unsafe {
-            command_buffer.bind_descriptor_sets(
-                vk::PipelineBindPoint::RAY_TRACING_KHR,
-                pipeline.layout,
-                [descriptors.global_set.inner, descriptors.compute_set.inner],
-            );
-
-            let pc = PushConstBuilder::with_capacity(10 * size_of::<u32>())
-                .add_u32(context.frame_index)
-                .add_u32(inputs.bounces)
-                .add_u32(self.render_target.borrow().storage_index.unwrap())
-                .add_u32(inputs.sky_pdf.sampler_index.unwrap())
-                .add_u32(inputs.sky_importance_map.storage_index.unwrap())
-                .add_u32(inputs.sky_sampler)
-                .add_f32(inputs.direct_trace_distance)
-                .add_f32(inputs.indirect_trace_distance)
-                .add_f32(inputs.fov)
-                .add_f32(inputs.indirect_intensity_clamp)
-                .build();
-
-            command_buffer.push_constants(
-                vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::MISS_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
-                pipeline.layout,
-                &pc,
-            );
-
             self.context.rt_pipeline_ext.loader.cmd_trace_rays(
                 command_buffer.inner,
                 &inputs.sbt.raygen_region,
@@ -142,15 +145,19 @@ impl ReferencePathtracePass {
     }
 
     pub fn get_active_pipeline(&self, sky: &SkyVariant, context: &FrameContext) -> &Pipeline<Rt> {
-        let flags = (context.importance_sampling as u32)
-            + ((context.russian_roulette as u32) << 1)
-            + ((context.disable_materials as u32) << 2);
-
         let sky_variant = match sky {
             SkyVariant::Shader => 0,
             SkyVariant::SingleColor(_) => 1,
             SkyVariant::Textured(_, _) => 2,
         };
+
+        let mut is = context.importance_sampling;
+
+        if sky_variant != 2 {
+            is = false;
+        }
+
+        let flags = (is as u32) + ((context.russian_roulette as u32) << 1) + ((context.disable_materials as u32) << 2);
 
         self.pipelines
             .get(&(sky_variant, flags))

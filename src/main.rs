@@ -4,6 +4,7 @@ use log::info;
 mod app;
 mod args;
 mod camera;
+mod debug;
 mod err;
 mod image;
 mod import;

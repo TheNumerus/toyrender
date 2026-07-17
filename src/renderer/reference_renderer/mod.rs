@@ -11,19 +11,19 @@ use crate::math;
 use crate::renderer::buffers::{Globals, PointLightGpu, ViewProj};
 use crate::renderer::debug::DebugMode;
 use crate::renderer::descriptors::{DescriptorLayouts, DescriptorWrite, DescriptorWriter, RendererDescriptors};
-use crate::renderer::passes::{ImportanceMapInputs, ImportanceMapPass, SkyPass, TonemapPass};
+use crate::renderer::passes::{GizmoInputs, GizmoPass, ImportanceMapInputs, ImportanceMapPass, SkyPass, TonemapPass};
 use crate::renderer::quality::QualitySettings;
 use crate::renderer::render_target::RenderTargets;
 use crate::renderer::{FrameContext, GPUEnv, ResourceSubsystem, TlasIndex, VulkanContext, create_buffer_update, stats};
 use crate::scene::{PointLight, Scene, SkyVariant, Transform};
 use crate::vulkan::{
-    Buffer, CommandBuffer, DebugMarker, DescriptorPool, Fence, IntoVulkanError, PresentInfo, Sampler, Semaphore,
-    ShaderBindingTable, SubmitInfo, TopLevelAs, VulkanError,
+    Buffer, CommandBuffer, DebugMarker, DescriptorPool, Device, Fence, IntoVulkanError, PresentInfo, Sampler,
+    Semaphore, ShaderBindingTable, SubmitInfo, TopLevelAs, VulkanError,
 };
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
-use nalgebra_glm::{Mat4x4, vec4};
+use nalgebra_glm::{Mat4x4, vec3, vec4};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -37,6 +37,7 @@ struct VulkanMcPathTracerPasses {
     tonemap: TonemapPass,
     pt: ReferencePathtracePass,
     accumulate: AccumulatePass,
+    gizmos: GizmoPass,
 }
 
 pub struct VulkanMcPathTracer {
@@ -61,7 +62,7 @@ pub struct VulkanMcPathTracer {
     render_finished: Vec<Semaphore>,
     in_flight: Vec<Fence>,
     frames_in_flight: usize,
-    tlas_prepare_cmd_buf: CommandBuffer,
+    pub(crate) tlas_prepare_cmd_buf: CommandBuffer,
     passes: VulkanMcPathTracerPasses,
 }
 
@@ -117,48 +118,7 @@ impl VulkanMcPathTracer {
             repeat_x_only_sampler,
         );
 
-        let sky_pass = SkyPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            &descriptor_layouts,
-        )?;
-
-        let tonemap_pass = TonemapPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            &descriptor_layouts,
-        )?;
-
-        let accumulate_pass = AccumulatePass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            &descriptor_layouts,
-        )?;
-
-        let pt_pass = ReferencePathtracePass::create(
-            context.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            &descriptor_layouts,
-        )?;
-
-        let importance_map_pass = ImportanceMapPass::create(
-            device.clone(),
-            &mut render_targets,
-            &mut context.pipeline_builder.borrow_mut(),
-            &descriptor_layouts,
-        )?;
-
-        let passes = VulkanMcPathTracerPasses {
-            sky: sky_pass,
-            importance_map: importance_map_pass,
-            tonemap: tonemap_pass,
-            accumulate: accumulate_pass,
-            pt: pt_pass,
-        };
+        let passes = Self::init_passes(&context, &device, &descriptor_layouts, &mut render_targets)?;
 
         let command_buffers = context
             .graphics_command_pool
@@ -188,7 +148,7 @@ impl VulkanMcPathTracer {
             command_buffers[i].name(format!("cmd_buffers[{}]", i))?;
 
             let shader_binding_table =
-                ShaderBindingTable::new(context.clone(), &passes.pt.pipelines.get(&(0, 0)).unwrap())?;
+                ShaderBindingTable::new(context.clone(), passes.pt.pipelines.get(&(0, 0)).unwrap())?;
             shader_binding_tables.push(shader_binding_table);
 
             {
@@ -300,6 +260,66 @@ impl VulkanMcPathTracer {
             passes,
             tlas_prepare_cmd_buf,
         })
+    }
+
+    fn init_passes(
+        context: &Rc<VulkanContext>,
+        device: &Rc<Device>,
+        descriptor_layouts: &DescriptorLayouts,
+        render_targets: &mut RenderTargets,
+    ) -> Result<VulkanMcPathTracerPasses, AppError> {
+        let sky = SkyPass::create(
+            device.clone(),
+            render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptor_layouts,
+        )?;
+
+        let tonemap = TonemapPass::create(
+            device.clone(),
+            render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptor_layouts,
+        )?;
+
+        let accumulate = AccumulatePass::create(
+            device.clone(),
+            render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptor_layouts,
+        )?;
+
+        let pt = ReferencePathtracePass::create(
+            context.clone(),
+            render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptor_layouts,
+        )?;
+
+        let importance_map = ImportanceMapPass::create(
+            device.clone(),
+            render_targets,
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptor_layouts,
+        )?;
+
+        let gizmos = GizmoPass::create(
+            device.clone(),
+            &mut context.pipeline_builder.borrow_mut(),
+            descriptor_layouts,
+            1,
+            2,
+        )?;
+
+        let passes = VulkanMcPathTracerPasses {
+            sky,
+            importance_map,
+            tonemap,
+            accumulate,
+            pt,
+            gizmos,
+        };
+        Ok(passes)
     }
 
     fn create_tlas_update_descriptor_set<'a>(desc_set: &vk::DescriptorSet, tlas: &TopLevelAs) -> DescriptorWrite<'a> {
@@ -502,6 +522,7 @@ impl VulkanMcPathTracer {
         self.record_command_buffer(
             scene,
             command_buffer,
+            resource_subsystem,
             &self.context.swap_chain.borrow().images[image_index as usize],
             context,
             (width, height),
@@ -617,6 +638,7 @@ impl VulkanMcPathTracer {
         &self,
         scene: &Scene,
         command_buffer: &CommandBuffer,
+        resource_subsystem: &mut ResourceSubsystem,
         target: &vk::Image,
         context: &FrameContext,
         viewport_size: (u32, u32),
@@ -741,6 +763,22 @@ impl VulkanMcPathTracer {
             viewport_size,
             true,
         )?;
+        self.passes.gizmos.record(
+            command_buffer,
+            &descriptors,
+            resource_subsystem,
+            GizmoInputs {
+                target: &self.passes.tonemap.render_target.borrow(),
+                draw_sky_gizmo: true,
+                viewport: viewport_size,
+                arrow_rot: nalgebra_glm::look_at_rh(
+                    &scene.env.sun_direction.normalize(),
+                    &vec3(0.0, 0.0, 0.0),
+                    &vec3(0.0, 0.0, 1.0),
+                ),
+            },
+        )?;
+
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
         Ok(())

@@ -1,4 +1,5 @@
 use crate::args::Args;
+use crate::debug;
 use crate::err::AppError;
 use crate::image::ImageResource;
 use crate::import;
@@ -132,9 +133,20 @@ impl App {
         }
 
         info!(
-            "{} pipelines created",
-            self.vulkan_context.pipeline_builder.borrow().get_pipeline_count()
+            "{} pipelines created in {:.3} s",
+            self.vulkan_context.pipeline_builder.borrow().get_pipeline_count(),
+            self.vulkan_context.pipeline_builder.borrow().total_time_compiling
         );
+
+        let mut gizmo_scene = import::extract_scene(debug::GIZMO_SUN_SCENE)?;
+        let sun_gizmo = gizmo_scene.resources.pop().unwrap();
+
+        let mut gizmo_scene = import::extract_scene(debug::GIZMO_ARROW_SCENE)?;
+        let arrow_gizmo = gizmo_scene.resources.pop().unwrap();
+
+        //TODO move this elsewhere
+        self.resource_subsystem
+            .init_gizmo_meshes(&self.reference_renderer.tlas_prepare_cmd_buf, &[sun_gizmo, arrow_gizmo])?;
 
         if args.benchmark {
             self.benchmark(300)?;

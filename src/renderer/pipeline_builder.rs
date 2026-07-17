@@ -22,6 +22,7 @@ pub struct PipelineBuilder {
     graphic_pipelines: HashMap<PipelineHandle, Rc<Pipeline<Graphics>>>,
     rt_pipelines: HashMap<PipelineHandle, Rc<Pipeline<Rt>>>,
     compute_pipelines: HashMap<PipelineHandle, Rc<Pipeline<Compute>>>,
+    pub total_time_compiling: f32,
 }
 
 impl PipelineBuilder {
@@ -33,6 +34,7 @@ impl PipelineBuilder {
             graphic_pipelines: Default::default(),
             rt_pipelines: Default::default(),
             compute_pipelines: Default::default(),
+            total_time_compiling: 0.0,
         }
     }
 
@@ -45,6 +47,8 @@ impl PipelineBuilder {
         attachment_formats: &[vk::Format],
         use_depth: bool,
     ) -> Result<Rc<Pipeline<Graphics>>, AppError> {
+        let start = std::time::Instant::now();
+
         let vert_name = vert_name.as_ref();
         let frag_name = frag_name.as_ref();
 
@@ -93,6 +97,8 @@ impl PipelineBuilder {
         let id = PIPELINE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         self.graphic_pipelines.insert(PipelineHandle(id), pipeline.clone());
 
+        self.total_time_compiling += start.elapsed().as_secs_f32();
+
         Ok(pipeline)
     }
 
@@ -102,6 +108,8 @@ impl PipelineBuilder {
         compute_name: impl AsRef<str>,
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Rc<Pipeline<Compute>>, AppError> {
+        let start = std::time::Instant::now();
+
         let compute_name = compute_name.as_ref();
         let (module, refl) = self.get_shader(compute_name, ShaderStage::Compute)?;
         module.set_name(compute_name.to_owned())?;
@@ -143,6 +151,8 @@ impl PipelineBuilder {
         let id = PIPELINE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
         self.compute_pipelines.insert(PipelineHandle(id), pipeline.clone());
 
+        self.total_time_compiling += start.elapsed().as_secs_f32();
+
         Ok(pipeline.clone())
     }
 
@@ -155,6 +165,8 @@ impl PipelineBuilder {
         descriptor_layouts: &DescriptorLayouts,
         spec_consts: Option<SpecConsts>,
     ) -> Result<Rc<Pipeline<Rt>>, AppError> {
+        let start = std::time::Instant::now();
+
         let raygen_name = name_raygen.as_ref();
         let (raygen_module, refl) = self.get_shader(raygen_name, ShaderStage::RayGen)?;
         raygen_module.set_name(raygen_name.to_owned())?;
@@ -245,6 +257,9 @@ impl PipelineBuilder {
         let id = PIPELINE_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
 
         self.rt_pipelines.insert(PipelineHandle(id), pipeline.clone());
+
+        self.total_time_compiling += start.elapsed().as_secs_f32();
+
         Ok(pipeline)
     }
 

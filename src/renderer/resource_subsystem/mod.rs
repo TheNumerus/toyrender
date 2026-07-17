@@ -1,5 +1,6 @@
 use crate::err::AppError;
 use crate::image::ImageResource;
+use crate::mesh::MeshResource;
 use crate::renderer::{TlasIndex, VulkanContext};
 use crate::scene::{Scene, SkyVariant};
 use crate::vulkan::{
@@ -11,6 +12,7 @@ use image::{ColorType, EncodableLayout};
 use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub struct ResourceSubsystem {
     pub blases: BTreeMap<u64, BottomLevelAs>,
@@ -398,5 +400,61 @@ impl ResourceSubsystem {
         }
 
         TlasIndex { index }
+    }
+
+    pub fn init_gizmo_meshes(
+        &mut self,
+        command_buffer: &CommandBuffer,
+        meshes: &[Arc<MeshResource>],
+    ) -> Result<bool, AppError> {
+        let mut changed = false;
+
+        for res in meshes {
+            if let Entry::Vacant(e) = self.meshes.entry(res.id) {
+                // only run command if needed
+                if !changed {
+                    command_buffer.reset()?;
+                    command_buffer.begin_one_time()?;
+                    changed = true;
+                }
+
+                let mesh = VulkanMesh::new_nonblocking(
+                    self.context.device.clone(),
+                    self.context.allocator.clone(),
+                    command_buffer,
+                    res,
+                )?;
+                e.insert(mesh);
+            }
+        }
+
+        if changed {
+            command_buffer.end()?;
+
+            let submit_info = vk::SubmitInfo {
+                command_buffer_count: 1,
+                p_command_buffers: &command_buffer.inner,
+                ..Default::default()
+            };
+
+            unsafe {
+                self.context
+                    .device
+                    .inner
+                    .queue_submit(self.context.device.compute_queue, &[submit_info], vk::Fence::null())
+                    .map_to_err("Cannot submit queue")?;
+                self.context
+                    .device
+                    .inner
+                    .queue_wait_idle(self.context.device.compute_queue)
+                    .map_to_err("Cannot wait idle")?;
+            }
+
+            for mesh in self.meshes.values_mut() {
+                mesh.buf.finalize();
+            }
+        }
+
+        Ok(changed)
     }
 }
