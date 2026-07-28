@@ -23,7 +23,7 @@ use sdl2::video::Window;
 use sdl2::{EventPump, Sdl};
 
 use std::cmp::PartialEq;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::path::Path;
 use std::rc::Rc;
@@ -125,6 +125,16 @@ impl App {
 
         let mut textures: Vec<ImageResource> = Vec::new();
 
+        let mut gizmo_scene = import::extract_scene(debug::GIZMO_SUN_SCENE)?;
+        let sun_gizmo = gizmo_scene.resources.pop().unwrap();
+
+        let mut gizmo_scene = import::extract_scene(debug::GIZMO_ARROW_SCENE)?;
+        let arrow_gizmo = gizmo_scene.resources.pop().unwrap();
+
+        //TODO move this elsewhere
+        self.resource_subsystem
+            .init_gizmo_meshes(&self.reference_renderer.tlas_prepare_cmd_buf, &[sun_gizmo, arrow_gizmo])?;
+
         if let Some(path) = args.file_to_open {
             tx.send(ThreadAction::OpenScene {
                 filename: path.to_string_lossy().to_string(),
@@ -137,16 +147,6 @@ impl App {
             self.vulkan_context.pipeline_builder.borrow().get_pipeline_count(),
             self.vulkan_context.pipeline_builder.borrow().total_time_compiling
         );
-
-        let mut gizmo_scene = import::extract_scene(debug::GIZMO_SUN_SCENE)?;
-        let sun_gizmo = gizmo_scene.resources.pop().unwrap();
-
-        let mut gizmo_scene = import::extract_scene(debug::GIZMO_ARROW_SCENE)?;
-        let arrow_gizmo = gizmo_scene.resources.pop().unwrap();
-
-        //TODO move this elsewhere
-        self.resource_subsystem
-            .init_gizmo_meshes(&self.reference_renderer.tlas_prepare_cmd_buf, &[sun_gizmo, arrow_gizmo])?;
 
         if args.benchmark {
             self.benchmark(300)?;
@@ -178,6 +178,9 @@ impl App {
 
         let mut sky_textures: HashMap<Uuid, Rc<ImageResource>> = HashMap::new();
         let mut selected_texture = None;
+
+        let mut values = VecDeque::with_capacity(100);
+        let mut do_conv = true;
 
         // need to do this because of borrowing
         let Self {
@@ -565,6 +568,9 @@ impl App {
 
             if state.fixed_sample {
                 frame = 0;
+                values.clear();
+                do_conv = true;
+                *renderer.passes.conv.run.borrow_mut() = true;
             }
 
             let mut context = FrameContext {
@@ -584,6 +590,7 @@ impl App {
                 context.clear_taa = true;
                 context.frame_index = 0;
                 frame = 0;
+                *renderer.passes.conv.run.borrow_mut() = true;
             }
 
             let draw_data = match state.ui_visible {
@@ -648,6 +655,38 @@ impl App {
                     draw_data,
                 )?,
             };
+
+            if state.selected_renderer == SelectedRenderer::Realtime {
+                let mem = renderer.output_buf_cpu.read_host();
+                let s = unsafe { std::slice::from_raw_parts(mem.as_ptr() as *const f32, mem.len() / 4) };
+
+                if values.len() >= 100 {
+                    values.pop_front();
+                }
+
+                values.push_back(s[0]);
+
+                if values.len() == 100 {
+                    let mut diffs = Vec::with_capacity(100);
+
+                    for x in values.iter().collect::<Vec<_>>().windows(2) {
+                        diffs.push((x[0] - x[1]).abs());
+                    }
+
+                    let avg = diffs.iter().fold(0.0, |acc, x| acc + x) / 100.0;
+
+                    if *renderer.passes.conv.run.borrow() {
+                        //info!("Avg log step: {}", -avg.ln());
+                    }
+
+                    // good enough quality for sun probe
+                    if -avg.ln() > 11.0 && *renderer.passes.conv.run.borrow() {
+                        do_conv = false;
+                        info!("Conv finished in {} iterations", frame + 1);
+                        *renderer.passes.conv.run.borrow_mut() = false;
+                    }
+                }
+            }
 
             if save_screen && state.selected_renderer == SelectedRenderer::Reference {
                 let data = reference_renderer.save_image(window.drawable_size())?;

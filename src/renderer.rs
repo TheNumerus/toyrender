@@ -60,7 +60,7 @@ mod stats;
 
 pub const MAX_FRAMES_IN_FLIGHT: usize = 2;
 
-struct VulkanRendererPasses {
+pub(crate) struct VulkanRendererPasses {
     gbuffer: GBufferPass,
     sky: SkyPass,
     importance_map: ImportanceMapPass,
@@ -70,7 +70,7 @@ struct VulkanRendererPasses {
     taa: TaaPass,
     tonemap: TonemapPass,
     depth_debug: DepthDebugPass,
-    conv: ConvolutionPass,
+    pub conv: ConvolutionPass,
 }
 
 pub struct VulkanRenderer {
@@ -93,6 +93,8 @@ pub struct VulkanRenderer {
     pub mesh_bufs: Vec<Buffer>,
     pub mesh_data: Vec<Buffer>,
     pub lights: Vec<Buffer>,
+    pub output_buf: Buffer,
+    pub output_buf_cpu: Buffer,
     pub current_frame: usize,
     pub quality: QualitySettings,
     pub debug_mode: DebugMode,
@@ -105,7 +107,7 @@ pub struct VulkanRenderer {
     last_view_proj: ViewProj,
     prev_jitter: (f32, f32),
     frames_in_flight: usize,
-    passes: VulkanRendererPasses,
+    pub passes: VulkanRendererPasses,
 }
 
 impl VulkanRenderer {
@@ -136,7 +138,7 @@ impl VulkanRenderer {
                     ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                 },
                 vk::DescriptorPoolSize {
-                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 10 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::STORAGE_BUFFER,
                 },
             ],
@@ -210,6 +212,22 @@ impl VulkanRenderer {
 
         let mut writes = Vec::new();
         let mut tlases = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+
+        let output_buf = Buffer::new(
+            device.clone(),
+            context.allocator.clone(),
+            MemoryLocation::GpuOnly,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_SRC,
+            2048 * size_of::<f32>() as u64,
+        )?;
+
+        let output_buf_cpu = Buffer::new(
+            device.clone(),
+            context.allocator.clone(),
+            MemoryLocation::GpuToCpu,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::TRANSFER_DST,
+            2048 * size_of::<f32>() as u64,
+        )?;
 
         for i in 0..MAX_FRAMES_IN_FLIGHT {
             img_available.push(Semaphore::new(device.clone())?);
@@ -308,6 +326,7 @@ impl VulkanRenderer {
                 &uniform_buffers[i].inner,
                 &env_uniforms[i].inner,
                 &mesh_bufs[i].inner,
+                &output_buf.inner,
             ));
         }
 
@@ -357,6 +376,8 @@ impl VulkanRenderer {
             gbuf_done,
             sky_done,
             passes,
+            output_buf,
+            output_buf_cpu,
         })
     }
 
@@ -500,6 +521,7 @@ impl VulkanRenderer {
         view: &vk::Buffer,
         env: &vk::Buffer,
         mesh: &vk::Buffer,
+        out_buf: &vk::Buffer,
     ) -> Vec<DescriptorWrite<'a>> {
         vec![
             create_buffer_update(
@@ -525,6 +547,7 @@ impl VulkanRenderer {
                 vk::DescriptorType::UNIFORM_BUFFER,
             ),
             create_buffer_update(mesh, 64, desc_set, 4, vk::DescriptorType::STORAGE_BUFFER),
+            create_buffer_update(out_buf, 2048, desc_set, 6, vk::DescriptorType::STORAGE_BUFFER),
         ]
     }
 
@@ -928,6 +951,9 @@ impl VulkanRenderer {
                     src_sampler: idx,
                     target_sampler: 0,
                     clamp: self.quality.indirect_light_clamp,
+                    iteration: context.frame_index + 1,
+                    buf_src: &self.output_buf,
+                    buf_dst: &self.output_buf_cpu,
                 },
             )?;
         };

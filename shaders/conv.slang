@@ -22,6 +22,7 @@ struct PushConsts {
     int src_idx;
     int out_idx;
     float clamp;
+    int iteration;
 };
 
 [vk::push_constant]
@@ -29,12 +30,20 @@ uniform PushConsts pc;
 
 static uint hash_state;
 
-float pcg_hash() {
-    uint state = hash_state;
-    hash_state = hash_state * 747796405u + 2891336453u;
-    uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
-    uint res = (word >> 22u) ^ word;
-    return float(res % 4096) / 4096.0;
+float uintToFloat(uint x) {
+    return asfloat(0x3f800000 | (x >> 9)) - 1.f;
+}
+
+uint xorshift(inout uint rngState) {
+    rngState ^= rngState << 13;
+    rngState ^= rngState >> 17;
+    rngState ^= rngState << 5;
+
+    return rngState;
+}
+
+float rand(inout uint rngState) {
+    return uintToFloat(xorshift(rngState));
 }
 
 void compute_default_basis(const float3 normal, out float3 x, out float3 y) {
@@ -54,42 +63,36 @@ groupshared float3 colors[1024];
 [numthreads(1, 1, 1024)]
 [shader("compute")]
 void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
-    float x = (float(tid.x) + 0.5) / 32;
-    float y = (float(tid.y) + 0.5) / 32;
+    int width;
+    int height;
+    storages[pc.out_idx].GetDimensions(width, height);
+    // padding to ensure not seams are visible
+    height -= 1;
+    width -= 1;
+
+    float x = (float(tid.x)) / width;
+    float y = (float(tid.y)) / height;
 
     float3 dirBase = Toyrender::Octa::decode(float2(x, y) * 2.0 - 1.0);
 
     float3 tangent, bitangent;
     compute_default_basis(dirBase, tangent, bitangent);
 
-    hash_state = (1024 * tid.z);
+    hash_state = (tid.z + pc.iteration * 1024);
+    rand(hash_state);
 
     float3 acc = 0.0;
+    
+    float2 rand_vars_sphere = float2(rand(hash_state), rand(hash_state));
+    float3 hemi = rand_hemi(rand_vars_sphere);
+    let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * dirBase;
 
-    // might be useful later
-    int iterations = 1;
-
-    // use later when discarding sun from sky
-    float3 dirSun = env.sun_dir_sun_angle.xyz;
-
-    for (int iter = 0; iter < iterations; iter++) {
-        float2 rand_vars_sphere = float2(pcg_hash(), pcg_hash());
-        float3 hemi = rand_hemi(rand_vars_sphere);
-        let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * dirBase;
-
-        if (dot(dir, dirSun) > 0.95) {
-            //continue;
-        }
-
-        float3 col = Toyrender::Sky::sample(dir, images[pc.src_idx], env.rotation);
-        if (pc.clamp > 0.0) {
-            float luma = max(luminance(col), 0.0001);
-            col *= min(pc.clamp / luma, 1.0);
-        }
-        acc += col;
+    float3 col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+    if (pc.clamp > 0.0) {
+        float luma = max(luminance(col), 0.0001);
+        col *= min(pc.clamp / luma, 1.0);
     }
-
-    acc /= float(iterations);
+    acc += col;
 
     colors[tid.z] = acc;
 
@@ -104,18 +107,90 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     }
 
     if (tid.z == 0) {
+        float3 blend = (colors[0] / 1024.0);
+
+        float3 orig = storages[pc.out_idx].Load(tid.xy).xyz;
+
+        float alpha = (pc.iteration - 1.0) / float(pc.iteration);
+        blend = lerp(blend, orig, alpha);
+
         storages[pc.out_idx].Store(
             tid.xy,
             float4(
-                colors[0] / 1024.0,
+                float3(blend),
                 0.0
             )
         );
+
         return;
     }
+}
 
-    // workaround to force usage of desc set 0
-    if (env.mode == SkyMode::SingleColor) {
+groupshared float4 colorWeigths[1024];
+
+[numthreads(1, 1, 1024)]
+[shader("compute")]
+void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
+    int width;
+    int height;
+    storages[pc.out_idx].GetDimensions(width, height);
+    // padding to ensure not seams are visible
+    height -= 1;
+    width -= 1;
+
+    float x = (float(tid.x)) / width;
+    float y = (float(tid.y)) / height;
+
+    float3 dirBase = Toyrender::Octa::decode(float2(x, y) * 2.0 - 1.0);
+
+    float3 tangent, bitangent;
+    compute_default_basis(dirBase, tangent, bitangent);
+
+    hash_state = (1024 * tid.z + pc.iteration * 1024 * 1024);
+
+    float4 acc = 0.0;
+
+    float2 rand_vars_sphere = float2(rand(hash_state), rand(hash_state));
+    float3 hemi = rand_hemi(rand_vars_sphere);
+    let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * dirBase;
+
+    float weight = step(0.95, dot(env.sun_dir_sun_angle.xyz, dir));
+
+    float3 col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+    if (pc.clamp > 0.0) {
+        float luma = max(luminance(col), 0.0001);
+        col *= min(pc.clamp / luma, 1.0);
+    }
+    acc += float4(col, weight);
+
+    colorWeigths[tid.z] = acc;
+
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint s = 1024 / 2; s > 0; s >>= 1) {
+        if (tid.z < s) {
+            colorWeigths[tid.z] += colorWeigths[tid.z + s];
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid.z == 0) {
+        float3 blend = (colorWeigths[0].xyz / colorWeigths[0].w);
+
+        float3 orig = storages[pc.out_idx].Load(tid.xy).xyz;
+
+        float alpha = (pc.iteration - 1.0) / float(pc.iteration);
+        blend = lerp(blend, orig, alpha);
+
+        storages[pc.out_idx].Store(
+            tid.xy,
+            float4(
+                float3(blend),
+                0.0
+            )
+        );
+
         return;
     }
 }

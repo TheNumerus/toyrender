@@ -1,6 +1,6 @@
 use crate::app::shader_loader::ShaderLoader;
 use crate::err::AppError;
-use crate::renderer::descriptors::DescriptorLayouts;
+use crate::renderer::descriptors::{DescLayout, DescriptorLayouts};
 use crate::vulkan::{
     Compute, DebugMarker, Device, Graphics, Pipeline, RayTracingPipeline, Rt, ShaderModule, ShaderStage,
 };
@@ -288,9 +288,19 @@ impl PipelineBuilder {
     ) -> Result<Vec<vk::DescriptorSetLayout>, AppError> {
         let mut sets = Vec::with_capacity(desc_info.len());
 
+        // force global set on pos 0
+        sets.push(descriptor_layouts.inner.get(&DescLayout::Global).unwrap().inner);
+
         // hope that no index is skipped in shader definition
         for set in desc_info.values() {
-            sets.push(descriptor_layouts.guess_layout_from_reflection(set)?);
+            let layout = descriptor_layouts.guess_layout_from_reflection(set)?;
+
+            // skip guessed global set
+            if layout == sets[0] {
+                continue;
+            }
+
+            sets.push(layout);
         }
 
         Ok(sets)

@@ -286,13 +286,22 @@ impl DescLayout {
                         descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
                         ..Default::default()
                     },
+                    vk::DescriptorSetLayoutBinding {
+                        binding: 6,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::COMPUTE,
+                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                        ..Default::default()
+                    },
                 ]
             }
             DescLayout::Image => {
                 vec![vk::DescriptorSetLayoutBinding {
                     binding: 0,
                     descriptor_count: 400,
-                    stage_flags: vk::ShaderStageFlags::FRAGMENT | vk::ShaderStageFlags::RAYGEN_KHR,
+                    stage_flags: vk::ShaderStageFlags::FRAGMENT
+                        | vk::ShaderStageFlags::RAYGEN_KHR
+                        | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                     descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                     ..Default::default()
                 }]
@@ -304,14 +313,17 @@ impl DescLayout {
                         descriptor_count: 400,
                         stage_flags: vk::ShaderStageFlags::COMPUTE
                             | vk::ShaderStageFlags::RAYGEN_KHR
-                            | vk::ShaderStageFlags::MISS_KHR,
+                            | vk::ShaderStageFlags::MISS_KHR
+                            | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                         descriptor_type: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
                         ..Default::default()
                     },
                     vk::DescriptorSetLayoutBinding {
                         binding: 1,
                         descriptor_count: 40,
-                        stage_flags: vk::ShaderStageFlags::COMPUTE | vk::ShaderStageFlags::RAYGEN_KHR,
+                        stage_flags: vk::ShaderStageFlags::COMPUTE
+                            | vk::ShaderStageFlags::RAYGEN_KHR
+                            | vk::ShaderStageFlags::CLOSEST_HIT_KHR,
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()
                     },

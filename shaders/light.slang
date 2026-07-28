@@ -97,8 +97,23 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     storages[pc.out_idx].Store(int2(x, y), float4(lighted, 1.0));
 
-    float2 oct = Toyrender::Octa::encode(normal);
-    float3 convRes = images[pc.conv_idx].Sample((oct + 1.0) * 0.5).xyz;
+    float3x3 rot = float3x3(0.0);
+    rot._11 = cos(env.rotation * 2.0 * PI);
+    rot._12 = -sin(env.rotation * 2.0 * PI);
+    rot._21 = sin(env.rotation * 2.0 * PI);
+    rot._22 = cos(env.rotation * 2.0 * PI);
+    rot._33 = 1.0;
+
+    float2 oct = Toyrender::Octa::encode(mul(normal, rot));
+    float2 octNorm = (oct + 1.0) * 0.5;
+
+    int width, height;
+    images[pc.conv_idx].GetDimensions(width, height);
+    float convDim = float(width);
+
+    octNorm *= (convDim - 1.0) / convDim;
+    octNorm += 0.5 / convDim;
+    float3 convRes = images[pc.conv_idx].Sample(octNorm).xyz;
 
     storages[pc.out_idx].Store(int2(x, y), float4(convRes * pow(2.0, env.exposure), 1.0));
 }
