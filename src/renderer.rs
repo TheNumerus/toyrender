@@ -10,7 +10,7 @@ use crate::vulkan::{
 use ash::vk;
 use gpu_allocator::MemoryLocation;
 use log::info;
-use nalgebra_glm::{Mat4, vec4};
+use nalgebra_glm::{Mat4, vec3, vec4};
 use std::cell::{Ref, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -53,7 +53,7 @@ mod push_const;
 pub use push_const::PushConstBuilder;
 
 mod reference_renderer;
-use crate::renderer::passes::ConvolutionInputs;
+use crate::renderer::passes::{ConvolutionInputs, GizmoInputs, GizmoPass};
 pub use reference_renderer::VulkanMcPathTracer;
 
 mod stats;
@@ -71,6 +71,7 @@ pub(crate) struct VulkanRendererPasses {
     tonemap: TonemapPass,
     depth_debug: DepthDebugPass,
     pub conv: ConvolutionPass,
+    gizmos: GizmoPass,
 }
 
 pub struct VulkanRenderer {
@@ -399,6 +400,7 @@ impl VulkanRenderer {
         let pt = PathTracePass::create(context, render_targets, pipeline_builder, descriptor_layouts)?;
         let depth_debug = DepthDebugPass::create(device.clone(), pipeline_builder, descriptor_layouts)?;
         let conv = ConvolutionPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
+        let gizmos = GizmoPass::create(device.clone(), pipeline_builder, descriptor_layouts, 1, 2)?;
 
         Ok(VulkanRendererPasses {
             pt,
@@ -411,6 +413,7 @@ impl VulkanRenderer {
             shading,
             taa,
             conv,
+            gizmos,
         })
     }
 
@@ -878,13 +881,15 @@ impl VulkanRenderer {
     ) -> Result<(), AppError> {
         let descriptors = self.descriptors[self.current_frame].borrow();
 
-        self.passes.gbuffer.record(
-            raster_command_buffer,
-            Ref::clone(&descriptors),
-            resource_subsystem,
-            draw_data,
-            viewport_size,
-        )?;
+        if !context.skip_primary_render {
+            self.passes.gbuffer.record(
+                raster_command_buffer,
+                Ref::clone(&descriptors),
+                resource_subsystem,
+                draw_data,
+                viewport_size,
+            )?;
+        }
 
         raster_command_buffer.end()?;
 
@@ -938,25 +943,30 @@ impl VulkanRenderer {
         };
 
         let sky_src = match &scene.env.sky.variant {
-            SkyVariant::Shader => Some(self.passes.sky.render_target.borrow().sampler_index.unwrap()),
-            SkyVariant::SingleColor(_) => None,
-            SkyVariant::Textured(ir, _) => Some(descriptors.samplers[&ir.id]),
+            SkyVariant::Shader => self.passes.sky.render_target.borrow().sampler_index.unwrap(),
+            SkyVariant::SingleColor(_) => 0,
+            SkyVariant::Textured(ir, _) => descriptors.samplers[&ir.id],
         };
 
-        if let Some(idx) = sky_src {
-            self.passes.conv.record(
-                compute_command_buffer,
-                &descriptors,
-                ConvolutionInputs {
-                    src_sampler: idx,
-                    target_sampler: 0,
-                    clamp: self.quality.indirect_light_clamp,
-                    iteration: context.frame_index + 1,
-                    buf_src: &self.output_buf,
-                    buf_dst: &self.output_buf_cpu,
-                },
-            )?;
+        let sky_storage_src = match &scene.env.sky.variant {
+            SkyVariant::Shader => self.passes.sky.render_target.borrow().storage_index.unwrap(),
+            SkyVariant::SingleColor(_) => 0,
+            SkyVariant::Textured(ir, _) => descriptors.storages[&ir.id],
         };
+
+        self.passes.conv.record(
+            compute_command_buffer,
+            &descriptors,
+            ConvolutionInputs {
+                src_sampler: sky_src,
+                src_storage: sky_storage_src,
+                target_sampler: 0,
+                clamp: self.quality.indirect_light_clamp,
+                iteration: context.conv_index,
+                buf_src: &self.output_buf,
+                buf_dst: &self.output_buf_cpu,
+            },
+        )?;
 
         compute_command_buffer.end()?;
 
@@ -971,96 +981,115 @@ impl VulkanRenderer {
         })?;
 
         command_buffer.begin()?;
-        self.passes.pt.record(
-            command_buffer,
-            &descriptors,
-            PathTraceInputs {
-                color: &self.passes.gbuffer.render_target_color.borrow(),
-                depth: &self.passes.gbuffer.render_target_depth.borrow(),
-                normal: &self.passes.gbuffer.render_target_normal.borrow(),
-                sky_sampler,
-                sky: &scene.env.sky.variant,
-                sbt: &self.shader_binding_tables[self.current_frame],
-                bounces: self.quality.pt_bounces,
-                direct_trace_distance: self.quality.rt_direct_trace_distance,
-                indirect_trace_distance: self.quality.rt_indirect_trace_distance,
-                indirect_intensity_clamp: self.quality.indirect_light_clamp,
-            },
-            viewport_size,
-        )?;
-        self.passes.denoise.record(
-            command_buffer,
-            &descriptors,
-            DenoiseInputs {
-                depth: &self.passes.gbuffer.render_target_depth.borrow(),
-                last_depth: &self.last_depth.borrow(),
-                normal: &self.passes.gbuffer.render_target_normal.borrow(),
-                rt_direct: &self.passes.pt.direct_render_target.borrow(),
-                rt_indirect: &self.passes.pt.indirect_render_target.borrow(),
-                clear: context.clear_taa,
-                use_spatial_denoise: self.quality.use_spatial_denoise,
-            },
-            viewport_size,
-        )?;
-        self.passes.shading.record(
-            command_buffer,
-            &descriptors,
-            ShadingInputs {
-                color: &self.passes.gbuffer.render_target_color.borrow(),
-                depth: &self.passes.gbuffer.render_target_depth.borrow(),
-                normal: &self.passes.gbuffer.render_target_normal.borrow(),
-                direct: &self.passes.denoise.direct_render_target_acc.borrow(),
-                indirect: &self.passes.denoise.indirect_render_target_acc.borrow(),
-                conv: &self.passes.conv.conv_render_target.borrow(),
-                sky_sampler,
-            },
-            viewport_size,
-        )?;
-        self.passes.taa.record(
-            command_buffer,
-            &descriptors,
-            TaaInputs {
-                depth: &self.passes.gbuffer.render_target_depth.borrow(),
-                last_depth: &self.last_depth.borrow(),
-                src: &self.passes.shading.render_target.borrow(),
-                clear: context.clear_taa,
-            },
-            viewport_size,
-        )?;
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
-                    dst_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    old_layout: vk::ImageLayout::UNDEFINED,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    image: self.passes.tonemap.render_target.borrow().image.inner,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                }],
-            );
+        if !context.skip_primary_render {
+            self.passes.pt.record(
+                command_buffer,
+                &descriptors,
+                PathTraceInputs {
+                    color: &self.passes.gbuffer.render_target_color.borrow(),
+                    depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                    normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                    sky_sampler,
+                    sky: &scene.env.sky.variant,
+                    sbt: &self.shader_binding_tables[self.current_frame],
+                    bounces: self.quality.pt_bounces,
+                    direct_trace_distance: self.quality.rt_direct_trace_distance,
+                    indirect_trace_distance: self.quality.rt_indirect_trace_distance,
+                    indirect_intensity_clamp: self.quality.indirect_light_clamp,
+                },
+                viewport_size,
+            )?;
+            self.passes.denoise.record(
+                command_buffer,
+                &descriptors,
+                DenoiseInputs {
+                    depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                    last_depth: &self.last_depth.borrow(),
+                    normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                    rt_direct: &self.passes.pt.direct_render_target.borrow(),
+                    rt_indirect: &self.passes.pt.indirect_render_target.borrow(),
+                    clear: context.clear_taa,
+                    use_spatial_denoise: self.quality.use_spatial_denoise,
+                },
+                viewport_size,
+            )?;
+            self.passes.shading.record(
+                command_buffer,
+                &descriptors,
+                ShadingInputs {
+                    color: &self.passes.gbuffer.render_target_color.borrow(),
+                    depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                    normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                    direct: &self.passes.denoise.direct_render_target_acc.borrow(),
+                    indirect: &self.passes.denoise.indirect_render_target_acc.borrow(),
+                    conv: &self.passes.conv.conv_render_target.borrow(),
+                    sky_sampler,
+                },
+                viewport_size,
+            )?;
+            self.passes.taa.record(
+                command_buffer,
+                &descriptors,
+                TaaInputs {
+                    depth: &self.passes.gbuffer.render_target_depth.borrow(),
+                    last_depth: &self.last_depth.borrow(),
+                    src: &self.passes.shading.render_target.borrow(),
+                    clear: context.clear_taa,
+                },
+                viewport_size,
+            )?;
+
+            unsafe {
+                self.device.inner.cmd_pipeline_barrier(
+                    command_buffer.inner,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                        dst_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::GENERAL,
+                        image: self.passes.tonemap.render_target.borrow().image.inner,
+                        subresource_range: vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        },
+                        ..Default::default()
+                    }],
+                );
+            }
+
+            self.passes.tonemap.record(
+                command_buffer,
+                &descriptors,
+                self.passes.taa.render_target.clone(),
+                viewport_size,
+                false,
+            )?;
+
+            self.passes.gizmos.record(
+                command_buffer,
+                &descriptors,
+                resource_subsystem,
+                GizmoInputs {
+                    target: &self.passes.tonemap.render_target.borrow(),
+                    draw_sky_gizmo: true,
+                    viewport: viewport_size,
+                    arrow_rot: nalgebra_glm::look_at_rh(
+                        &scene.env.sun_direction.normalize(),
+                        &vec3(0.0, 0.0, 0.0),
+                        &vec3(0.0, 0.0, 1.0),
+                    ),
+                },
+            )?;
         }
-
-        self.passes.tonemap.record(
-            command_buffer,
-            &descriptors,
-            self.passes.taa.render_target.clone(),
-            viewport_size,
-            false,
-        )?;
 
         self.record_end_copy(command_buffer, target, viewport_size)?;
 
@@ -1295,11 +1324,13 @@ pub struct FrameContext {
     pub delta_time: f32,
     pub total_time: f32,
     pub clear_taa: bool,
+    pub conv_index: u32,
     pub culling: bool,
     pub importance_sampling: bool,
     pub frame_index: u32,
     pub russian_roulette: bool,
     pub disable_materials: bool,
+    pub skip_primary_render: bool,
 }
 
 fn create_buffer_update<'a>(

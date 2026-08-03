@@ -20,6 +20,7 @@ pub(crate) struct ConvolutionPass {
     pub run: RefCell<bool>,
     conv_pipeline: Rc<Pipeline<Compute>>,
     sum_pipeline: Rc<Pipeline<Compute>>,
+    max_pipeline: Rc<Pipeline<Compute>>,
 }
 
 impl ConvolutionPass {
@@ -35,6 +36,8 @@ impl ConvolutionPass {
     ) -> Result<Self, AppError> {
         let conv_pipeline = pipeline_builder.build_compute("conv", "conv|main", descriptor_layouts)?;
         let sum_pipeline = pipeline_builder.build_compute("image_diff", "image_diff|main", descriptor_layouts)?;
+        let max_pipeline =
+            pipeline_builder.build_compute("find_bright_spot", "find_bright_spot|main", descriptor_layouts)?;
 
         Ok(Self {
             device,
@@ -43,6 +46,7 @@ impl ConvolutionPass {
             run: RefCell::new(true),
             conv_pipeline,
             sum_pipeline,
+            max_pipeline,
         })
     }
 
@@ -165,6 +169,23 @@ impl ConvolutionPass {
 
         command_buffer.dispatch(1, 1, 1);
 
+        let pipeline = &self.max_pipeline;
+
+        command_buffer.bind_compute_pipeline(pipeline);
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::COMPUTE,
+            pipeline.layout,
+            [descriptors.global_set.inner, descriptors.compute_set.inner],
+        );
+
+        let pc = PushConstBuilder::with_capacity(1 * size_of::<f32>())
+            .add_u32(inputs.src_storage)
+            .build();
+
+        command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
+
+        command_buffer.dispatch(1, 1, 1);
+
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
@@ -187,7 +208,7 @@ impl ConvolutionPass {
                 inputs.buf_src.inner,
                 inputs.buf_dst.inner,
                 &[vk::BufferCopy {
-                    size: 64,
+                    size: 128,
                     dst_offset: 0,
                     src_offset: 0,
                 }],
@@ -218,6 +239,7 @@ impl ConvolutionPass {
 
 pub struct ConvolutionInputs<'a> {
     pub src_sampler: u32,
+    pub src_storage: u32,
     pub target_sampler: u32,
     pub clamp: f32,
     pub iteration: u32,

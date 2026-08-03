@@ -33,7 +33,9 @@ float luminance(float3 v) {
     return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-[numthreads(1, 1, 1)]
+groupshared float4 values[65];
+
+[numthreads(65, 1, 1)]
 [shader("compute")]
 void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     int width1;
@@ -50,33 +52,42 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float acc = 0.0;
     float minVal = float.maxValue;
     float maxVal = float.minValue;
-
-    for (int y = 0; y < height; y++) {
-        for (int x = 0; x < width; x++) {
-            float lum = luminance(storages[pc.src1_idx].Load(uint2(x, y)).xyz);
-            minVal = min(minVal, lum);
-            maxVal = max(maxVal, lum);
-            acc += lum;
-        }
-    }
-
     float variance = 0.0;
 
-    for (int y = 1; y < height - 1; y++) {
-        for (int x = 1; x < width - 1; x++) {
-            float pixel = luminance(storages[pc.src1_idx].Load(uint2(x, y)).xyz);
+    uint y = tid.x;
 
-            pixel -= luminance(storages[pc.src1_idx].Load(uint2(x - 1, y)).xyz) * 0.25;
-            pixel -= luminance(storages[pc.src1_idx].Load(uint2(x + 1, y)).xyz) * 0.25;
-            pixel -= luminance(storages[pc.src1_idx].Load(uint2(x, y - 1)).xyz) * 0.25;
-            pixel -= luminance(storages[pc.src1_idx].Load(uint2(x, y + 1)).xyz) * 0.25;
+    for (int x = 0; x < width; x++) {
+        float lum = luminance(storages[pc.src1_idx].Load(uint2(x, y)).xyz);
+        minVal = min(minVal, lum);
+        maxVal = max(maxVal, lum);
+        acc += lum;
 
-            variance += abs(pixel);
-        }
+        lum -= luminance(storages[pc.src1_idx].Load(uint2(x - 1, y)).xyz) * 0.25;
+        lum -= luminance(storages[pc.src1_idx].Load(uint2(x + 1, y)).xyz) * 0.25;
+        lum -= luminance(storages[pc.src1_idx].Load(uint2(x, y - 1)).xyz) * 0.25;
+        lum -= luminance(storages[pc.src1_idx].Load(uint2(x, y + 1)).xyz) * 0.25;
+
+        variance += abs(lum);
     }
 
-    outBuf[0] = acc / float(width * height);
-    outBuf[1] = minVal;
-    outBuf[2] = maxVal;
-    outBuf[3] = variance / float(width * height);
+    values[tid.x] = float4(acc, minVal, maxVal, variance);
+
+    GroupMemoryBarrierWithGroupSync();
+
+    for (uint s = 65 / 2; s > 0; s >>= 1) {
+        if (tid.x < s) {
+            values[tid.x].xw += values[tid.x + s].xw;
+            values[tid.x].y = min(values[tid.x + s].y, values[tid.x].y);
+            values[tid.x].z = max(values[tid.x + s].z, values[tid.x].z);
+        }
+
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    if (tid.x == 0) {
+        outBuf[0] = values[tid.x].x / float(width * height);
+        outBuf[1] = values[tid.x].y;
+        outBuf[2] = values[tid.x].z;
+        outBuf[3] = values[tid.x].w / float(width * height);
+    }
 }

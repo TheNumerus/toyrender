@@ -81,7 +81,7 @@ impl ResourceSubsystem {
                 self.context.allocator.clone(),
                 vk::Format::R32G32B32A32_SFLOAT,
                 extent,
-                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
+                vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::STORAGE,
             )?;
             image.name(format!("Sky image {}", ir.id))?;
 

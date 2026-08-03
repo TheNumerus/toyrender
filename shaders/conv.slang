@@ -87,11 +87,19 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 hemi = rand_hemi(rand_vars_sphere);
     let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * dirBase;
 
-    float3 col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
-    if (pc.clamp > 0.0) {
-        float luma = max(luminance(col), 0.0001);
-        col *= min(pc.clamp / luma, 1.0);
+    float3 col;
+    switch (env.mode) {
+    case SkyMode::Shader:
+        col = Toyrender::Sky::sample_distorted(dir, images[pc.src_idx]);
+            break;
+    case SkyMode::SingleColor:
+        col = env.sky_color_intensity.xyz;
+            break;
+    case SkyMode::Textured:
+        col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+            break;
     }
+
     acc += col;
 
     colors[tid.z] = acc;
@@ -156,10 +164,17 @@ void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float weight = step(0.95, dot(env.sun_dir_sun_angle.xyz, dir));
 
-    float3 col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
-    if (pc.clamp > 0.0) {
-        float luma = max(luminance(col), 0.0001);
-        col *= min(pc.clamp / luma, 1.0);
+    float3 col;
+    switch (env.mode) {
+    case SkyMode::Shader:
+        col = Toyrender::Sky::sample_distorted(dir, images[pc.src_idx]);
+        break;
+    case SkyMode::SingleColor:
+        col = env.sky_color_intensity.xyz;
+        break;
+    case SkyMode::Textured:
+        col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+        break;
     }
     acc += float4(col, weight);
 

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 pub struct Image {
     pub inner: RawImage,
+    pub usage: vk::ImageUsageFlags,
     allocation: Option<Allocation>,
     device: Rc<Device>,
     pub allocator: Arc<Mutex<Allocator>>,
@@ -66,6 +67,7 @@ impl Image {
 
         Ok(Self {
             inner,
+            usage,
             allocation: Some(allocation),
             device,
             allocator,
@@ -80,6 +82,10 @@ impl Image {
             base_array_layer: 0,
             layer_count: 1,
         }
+    }
+
+    pub fn is_storage(&self) -> bool {
+        self.usage.contains(vk::ImageUsageFlags::STORAGE)
     }
 }
 

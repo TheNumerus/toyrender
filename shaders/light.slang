@@ -99,8 +99,8 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float3x3 rot = float3x3(0.0);
     rot._11 = cos(env.rotation * 2.0 * PI);
-    rot._12 = -sin(env.rotation * 2.0 * PI);
-    rot._21 = sin(env.rotation * 2.0 * PI);
+    rot._12 = sin(env.rotation * 2.0 * PI);
+    rot._21 = -sin(env.rotation * 2.0 * PI);
     rot._22 = cos(env.rotation * 2.0 * PI);
     rot._33 = 1.0;
 

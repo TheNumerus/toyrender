@@ -55,7 +55,7 @@ public float3 sample(float3 view_dir, Sampler2D image, float rotation) {
     u = clamp(u, 0.0, 1.0);
     v = clamp(v, 0.0, 1.0);
 
-    u = fract(u + rotation);
+    u = fract(u - rotation);
 
     return image.SampleLevelZero(float2(u, v)).xyz;
 }

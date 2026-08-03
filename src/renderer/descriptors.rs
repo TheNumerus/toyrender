@@ -166,7 +166,7 @@ impl RendererDescriptors {
         }
 
         if let Some(rs) = resource_subsystem {
-            for (id, (_, iw, s)) in &rs.textures {
+            for (id, (i, iw, s)) in &rs.textures {
                 let image_info = vec![vk::DescriptorImageInfo {
                     sampler: s.inner,
                     image_view: iw.inner,
@@ -204,6 +204,33 @@ impl RendererDescriptors {
                 });
 
                 self.samplers.insert(*id, index);
+
+                if i.is_storage() {
+                    let image_info = vec![vk::DescriptorImageInfo {
+                        sampler: s.inner,
+                        image_view: iw.inner,
+                        image_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    }];
+
+                    let index = self.storages.len() as u32;
+
+                    let write = vk::WriteDescriptorSet {
+                        dst_set: self.compute_set.inner,
+                        dst_binding: 1,
+                        dst_array_element: index,
+                        descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
+                        ..Default::default()
+                    };
+
+                    writes.push(DescriptorWrite {
+                        write,
+                        buffer_info: None,
+                        image_info: Some(image_info),
+                        tlases: None,
+                    });
+
+                    self.storages.insert(*id, index);
+                }
             }
         }
 

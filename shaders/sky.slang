@@ -227,7 +227,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform int out_idx) {
         hor = hor * hor * sign(hor);
         float vert_intensity = sqrt(1.0 - (hor * hor));
 
-        float3 camera_vector = normalize(float3(-cos(vert) * vert_intensity, -sin(vert) * vert_intensity, hor));
+        float3 camera_vector = normalize(float3(-cos(vert) * vert_intensity, sin(vert) * vert_intensity, hor));
 
         float3 camera_position = float3(0.0, 0.0, PLANET_RADIUS + 100.0);
 
