@@ -16,9 +16,11 @@ use std::rc::Rc;
 pub(crate) struct ConvolutionPass {
     device: Rc<Device>,
     pub conv_render_target: Rc<RefCell<RenderTarget>>,
+    pub conv_sun_render_target: Rc<RefCell<RenderTarget>>,
     init: RefCell<bool>,
-    pub run: RefCell<bool>,
+    pub state: ConvolutionPassState,
     conv_pipeline: Rc<Pipeline<Compute>>,
+    conv_sunless_pipeline: Rc<Pipeline<Compute>>,
     sum_pipeline: Rc<Pipeline<Compute>>,
     max_pipeline: Rc<Pipeline<Compute>>,
 }
@@ -35,16 +37,19 @@ impl ConvolutionPass {
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
         let conv_pipeline = pipeline_builder.build_compute("conv", "conv|main", descriptor_layouts)?;
-        let sum_pipeline = pipeline_builder.build_compute("image_diff", "image_diff|main", descriptor_layouts)?;
+        let conv_sunless_pipeline = pipeline_builder.build_compute("conv", "conv|mainSunless", descriptor_layouts)?;
+        let sum_pipeline = pipeline_builder.build_compute("image_avg", "image_avg|main", descriptor_layouts)?;
         let max_pipeline =
             pipeline_builder.build_compute("find_bright_spot", "find_bright_spot|main", descriptor_layouts)?;
 
         Ok(Self {
             device,
             conv_render_target: render_targets.add(Self::octa_render_target_def())?,
+            conv_sun_render_target: render_targets.add(Self::octa_render_target_def().duplicate("conv_sun_sky"))?,
             init: RefCell::new(false),
-            run: RefCell::new(true),
+            state: ConvolutionPassState::Init,
             conv_pipeline,
+            conv_sunless_pipeline,
             sum_pipeline,
             max_pipeline,
         })
@@ -66,8 +71,6 @@ impl ConvolutionPass {
         inputs: ConvolutionInputs,
     ) -> Result<(), VulkanError> {
         self.device.begin_label("Convolution", command_buffer);
-
-        let pipeline = &self.conv_pipeline;
 
         if !*self.init.borrow() {
             let image_color_res = vk::ImageSubresourceRange {
@@ -101,10 +104,82 @@ impl ConvolutionPass {
             self.init.replace(true);
         }
 
-        if !*self.run.borrow() {
+        if self.state == ConvolutionPassState::Finished {
             return Ok(());
         }
 
+        let sun_storage = self.conv_sun_render_target.borrow().storage_index.unwrap();
+        let sunless_storage = self.conv_render_target.borrow().storage_index.unwrap();
+
+        match self.state {
+            ConvolutionPassState::Init => {}
+            ConvolutionPassState::FindingMax => {
+                self.find_max(command_buffer, descriptors, &inputs);
+                self.copy_buf(command_buffer, &inputs);
+            }
+            ConvolutionPassState::SunProbe(i) => {
+                self.conv(
+                    command_buffer,
+                    descriptors,
+                    &inputs,
+                    i,
+                    &self.conv_pipeline,
+                    sun_storage,
+                );
+                self.sum(command_buffer, descriptors, sun_storage);
+                self.copy_buf(command_buffer, &inputs);
+            }
+            ConvolutionPassState::SunlessProbe(i) => {
+                self.conv(
+                    command_buffer,
+                    descriptors,
+                    &inputs,
+                    i,
+                    &self.conv_sunless_pipeline,
+                    sunless_storage,
+                );
+                self.sum(command_buffer, descriptors, sunless_storage);
+                self.copy_buf(command_buffer, &inputs);
+            }
+            ConvolutionPassState::Finished => {}
+            ConvolutionPassState::Debug => {
+                self.conv(
+                    command_buffer,
+                    descriptors,
+                    &inputs,
+                    0,
+                    &self.conv_pipeline,
+                    sun_storage,
+                );
+                self.sum(command_buffer, descriptors, sun_storage);
+                self.find_max(command_buffer, descriptors, &inputs);
+                self.conv(
+                    command_buffer,
+                    descriptors,
+                    &inputs,
+                    0,
+                    &self.conv_sunless_pipeline,
+                    sunless_storage,
+                );
+                self.sum(command_buffer, descriptors, sunless_storage);
+                self.copy_buf(command_buffer, &inputs);
+            }
+        }
+
+        self.device.end_label(command_buffer);
+
+        Ok(())
+    }
+
+    fn conv(
+        &self,
+        command_buffer: &CommandBuffer,
+        descriptors: &RendererDescriptors,
+        inputs: &ConvolutionInputs,
+        iteration: u32,
+        pipeline: &Rc<Pipeline<Compute>>,
+        dst_storage: u32,
+    ) {
         command_buffer.bind_compute_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::COMPUTE,
@@ -114,9 +189,8 @@ impl ConvolutionPass {
 
         let pc = PushConstBuilder::with_capacity(4 * size_of::<f32>())
             .add_u32(inputs.src_sampler)
-            .add_u32(self.conv_render_target.borrow().storage_index.unwrap())
-            .add_f32(inputs.clamp)
-            .add_u32(inputs.iteration)
+            .add_u32(dst_storage)
+            .add_u32(iteration + 1)
             .build();
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
@@ -150,7 +224,9 @@ impl ConvolutionPass {
                 }],
             );
         }
+    }
 
+    fn sum(&self, command_buffer: &CommandBuffer, descriptors: &RendererDescriptors, src_storage: u32) {
         let pipeline = &self.sum_pipeline;
 
         command_buffer.bind_compute_pipeline(pipeline);
@@ -160,15 +236,16 @@ impl ConvolutionPass {
             [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
-        let pc = PushConstBuilder::with_capacity(2 * size_of::<f32>())
-            .add_u32(self.conv_render_target.borrow().storage_index.unwrap())
-            .add_u32(self.conv_render_target.borrow().storage_index.unwrap())
+        let pc = PushConstBuilder::with_capacity(size_of::<f32>())
+            .add_u32(src_storage)
             .build();
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
         command_buffer.dispatch(1, 1, 1);
+    }
 
+    fn find_max(&self, command_buffer: &CommandBuffer, descriptors: &RendererDescriptors, inputs: &ConvolutionInputs) {
         let pipeline = &self.max_pipeline;
 
         command_buffer.bind_compute_pipeline(pipeline);
@@ -185,7 +262,9 @@ impl ConvolutionPass {
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
         command_buffer.dispatch(1, 1, 1);
+    }
 
+    fn copy_buf(&self, command_buffer: &CommandBuffer, inputs: &ConvolutionInputs) {
         unsafe {
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
@@ -230,10 +309,6 @@ impl ConvolutionPass {
                 &[],
             );
         }
-
-        self.device.end_label(command_buffer);
-
-        Ok(())
     }
 }
 
@@ -242,7 +317,17 @@ pub struct ConvolutionInputs<'a> {
     pub src_storage: u32,
     pub target_sampler: u32,
     pub clamp: f32,
-    pub iteration: u32,
     pub buf_src: &'a Buffer,
     pub buf_dst: &'a Buffer,
+}
+
+#[derive(PartialEq, Copy, Clone, Debug)]
+pub(crate) enum ConvolutionPassState {
+    /// Resets the convolution
+    Init,
+    FindingMax,
+    SunProbe(u32),
+    SunlessProbe(u32),
+    Finished,
+    Debug,
 }

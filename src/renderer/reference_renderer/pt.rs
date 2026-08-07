@@ -1,6 +1,7 @@
 use crate::err::AppError;
 use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::{PipelineBuilder, SpecConsts};
+use crate::renderer::reference_renderer::quality::QualitySettings;
 use crate::renderer::render_target::{RenderTarget, RenderTargetBuilder, RenderTargets};
 use crate::renderer::{FrameContext, PushConstBuilder, VulkanContext};
 use crate::scene::SkyVariant;
@@ -71,11 +72,12 @@ impl ReferencePathtracePass {
         descriptors: &RendererDescriptors,
         inputs: ReferencePathTraceInputs,
         context: &FrameContext,
+        quality_settings: &QualitySettings,
         viewport: (u32, u32),
     ) -> Result<(), VulkanError> {
         self.context.device.begin_label("Path Tracing", command_buffer);
 
-        let pipeline = self.get_active_pipeline(inputs.sky, context);
+        let pipeline = self.get_active_pipeline(quality_settings, inputs.sky);
 
         command_buffer.bind_rt_pipeline(pipeline);
 
@@ -144,20 +146,22 @@ impl ReferencePathtracePass {
         Ok(())
     }
 
-    pub fn get_active_pipeline(&self, sky: &SkyVariant, context: &FrameContext) -> &Pipeline<Rt> {
+    pub fn get_active_pipeline(&self, quality_settings: &QualitySettings, sky: &SkyVariant) -> &Pipeline<Rt> {
         let sky_variant = match sky {
             SkyVariant::Shader => 0,
             SkyVariant::SingleColor(_) => 1,
             SkyVariant::Textured(_, _) => 2,
         };
 
-        let mut is = context.importance_sampling;
+        let mut is = quality_settings.importance_sampling;
 
         if sky_variant != 2 {
             is = false;
         }
 
-        let flags = (is as u32) + ((context.russian_roulette as u32) << 1) + ((context.disable_materials as u32) << 2);
+        let flags = (is as u32)
+            + ((quality_settings.russian_roulette as u32) << 1)
+            + ((quality_settings.disable_materials as u32) << 2);
 
         self.pipelines
             .get(&(sky_variant, flags))

@@ -32,6 +32,7 @@ mod resource_subsystem;
 pub use resource_subsystem::ResourceSubsystem;
 
 mod passes;
+pub(crate) use passes::ConvolutionPassState;
 use passes::{
     ConvolutionPass, DenoiseInputs, DenoisePass, DepthDebugPass, GBufferPass, ImportanceMapPass, PathTraceInputs,
     PathTracePass, ShadingInputs, ShadingPass, SkyPass, TaaInputs, TaaPass, TonemapPass,
@@ -639,7 +640,7 @@ impl VulkanRenderer {
 
         let collected_meshes = MeshCollector::collect_transforms(
             scene,
-            context.culling,
+            self.quality.culling,
             &view_proj.view,
             &view_proj.projection_inverse,
             &mut report,
@@ -962,7 +963,6 @@ impl VulkanRenderer {
                 src_storage: sky_storage_src,
                 target_sampler: 0,
                 clamp: self.quality.indirect_light_clamp,
-                iteration: context.conv_index,
                 buf_src: &self.output_buf,
                 buf_dst: &self.output_buf_cpu,
             },
@@ -1014,6 +1014,17 @@ impl VulkanRenderer {
                 },
                 viewport_size,
             )?;
+
+            let conv_probe = if self.passes.conv.state == ConvolutionPassState::Debug {
+                if context.frame_index % 120 > 60 {
+                    self.passes.conv.conv_render_target.borrow()
+                } else {
+                    self.passes.conv.conv_sun_render_target.borrow()
+                }
+            } else {
+                self.passes.conv.conv_render_target.borrow()
+            };
+
             self.passes.shading.record(
                 command_buffer,
                 &descriptors,
@@ -1023,7 +1034,7 @@ impl VulkanRenderer {
                     normal: &self.passes.gbuffer.render_target_normal.borrow(),
                     direct: &self.passes.denoise.direct_render_target_acc.borrow(),
                     indirect: &self.passes.denoise.indirect_render_target_acc.borrow(),
-                    conv: &self.passes.conv.conv_render_target.borrow(),
+                    conv: &conv_probe,
                     sky_sampler,
                 },
                 viewport_size,
@@ -1324,12 +1335,7 @@ pub struct FrameContext {
     pub delta_time: f32,
     pub total_time: f32,
     pub clear_taa: bool,
-    pub conv_index: u32,
-    pub culling: bool,
-    pub importance_sampling: bool,
     pub frame_index: u32,
-    pub russian_roulette: bool,
-    pub disable_materials: bool,
     pub skip_primary_render: bool,
 }
 

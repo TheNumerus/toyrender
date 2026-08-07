@@ -17,5 +17,5 @@ pub(crate) use sky::SkyPass;
 pub(crate) use sky::importance_map::{ImportanceMapInputs, ImportanceMapPass};
 pub(crate) use taa::{TaaInputs, TaaPass};
 pub(crate) use tonemap::TonemapPass;
-pub(crate) use util::conv::{ConvolutionInputs, ConvolutionPass};
+pub(crate) use util::conv::{ConvolutionInputs, ConvolutionPass, ConvolutionPassState};
 pub(crate) use util::gizmo::{GizmoInputs, GizmoPass};

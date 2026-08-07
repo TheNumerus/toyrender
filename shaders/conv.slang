@@ -21,7 +21,6 @@ RWTexture2D<float4> storages[];
 struct PushConsts {
     int src_idx;
     int out_idx;
-    float clamp;
     int iteration;
 };
 
@@ -100,7 +99,7 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
             break;
     }
 
-    acc += col;
+    acc = col;
 
     colors[tid.z] = acc;
 
@@ -154,7 +153,8 @@ void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 tangent, bitangent;
     compute_default_basis(dirBase, tangent, bitangent);
 
-    hash_state = (1024 * tid.z + pc.iteration * 1024 * 1024);
+    hash_state = (tid.z + pc.iteration * 1024);
+    rand(hash_state);
 
     float4 acc = 0.0;
 
@@ -162,7 +162,7 @@ void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 hemi = rand_hemi(rand_vars_sphere);
     let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * dirBase;
 
-    float weight = step(0.95, dot(env.sun_dir_sun_angle.xyz, dir));
+    float weight = 1.0 - step(0.95, dot(normalize(env.sun_dir_sun_angle.xyz), dir));
 
     float3 col;
     switch (env.mode) {
@@ -176,7 +176,7 @@ void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
         col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
         break;
     }
-    acc += float4(col, weight);
+    acc = float4(col * weight, 1.0);
 
     colorWeigths[tid.z] = acc;
 
@@ -191,7 +191,7 @@ void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     }
 
     if (tid.z == 0) {
-        float3 blend = (colorWeigths[0].xyz / colorWeigths[0].w);
+        float3 blend = (colorWeigths[0].xyz / max(colorWeigths[0].w, 0.00001));
 
         float3 orig = storages[pc.out_idx].Load(tid.xy).xyz;
 

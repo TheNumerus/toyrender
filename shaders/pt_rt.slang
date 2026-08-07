@@ -138,18 +138,49 @@ float luminance(float3 v) {
     return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
-float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in Payload payload) {
+struct LightWeights {
+    float3 intensity;
+    float weight;
+}
+
+LightWeights sunWeight(float sunDot) {
+    float3 intensity = env.sun_color_intensity.xyz * env.sun_color_intensity.w;
+    float lumaIntensity = luminance(intensity);
+    float weight = lumaIntensity;
+
+    if (sunDot > 0.0 && lumaIntensity > 0.0) {
+        weight = max(weight, 0.01);
+    }
+
+    LightWeights lw;
+    lw.intensity = intensity;
+    lw.weight = weight;
+
+    return lw;
+}
+
+float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in Payload payload, out float3 light_dir) {
     float3 radiance = 0.0;
 
+    float sunDot = max(dot(dir_ray, normal), 0.0);
+
     // select light
-    float sun_light_intensity = max(dot(dir_ray, normal) * env.sun_color_intensity.w, 0.0) * luminance(env.sun_color_intensity.xyz);
-    float sum = sun_light_intensity;
+    let sunLw = sunWeight(sunDot);
+    float sum = sunLw.weight;
 
     float2 rand_vars_sphere = float2(pcg_hash(), pcg_hash());
+    float3 hemi = rand_hemi(rand_vars_sphere);
 
     for (int i = 0; i < env.point_lights; i++) {
         let light = env.lights[i];
-        let light_pos = light.pos_radius.xyz + rand_sphere(rand_vars_sphere) * light.pos_radius.w;
+
+        let light_main_dir = normalize(light.pos_radius.xyz - pos);
+
+        float3 tangent, bitangent;
+        compute_default_basis(light_main_dir, tangent, bitangent);
+        let hemi_dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * light_main_dir;
+
+        let light_pos = light.pos_radius.xyz + hemi_dir * light.pos_radius.w;
         let dir = normalize(light_pos - pos);
         let len = distance(light_pos, pos);
         let intensity = ((light.color_intensity.w * luminance(light.color_intensity.xyz)) / (len * len));
@@ -159,8 +190,8 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
     float rand_light = pcg_hash() * sum;
 
-    if (rand_light > sun_light_intensity) {
-        sum = sun_light_intensity;
+    if (rand_light > (sunLw.weight)) {
+        sum = sunLw.weight;
         var light : Optional<PointLight> = none;
         float3 light_pos;
         float3 dir;
@@ -170,7 +201,15 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
         for (int i = 0; i < env.point_lights; i++) {
             light = env.lights[i];
-            light_pos = light.value.pos_radius.xyz + rand_sphere(rand_vars_sphere) * light.value.pos_radius.w;
+
+            let light_main_dir = normalize(light.value.pos_radius.xyz - pos);
+
+            float3 tangent, bitangent;
+            compute_default_basis(light_main_dir, tangent, bitangent);
+            let hemi_dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * light_main_dir;
+
+            light_pos = light.value.pos_radius.xyz + hemi_dir * light.value.pos_radius.w;
+
             dir = normalize(light_pos - pos);
             len = distance(light_pos, pos);
             intensity = ((light.value.color_intensity.w * luminance(light.value.color_intensity.xyz)) / (len * len));
@@ -187,33 +226,52 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         ray.TMax = len;
         ray.TMin = 0.0001;
 
+        payload.isMiss = false;
         TraceRay(
             tlas,
-            RAY_FLAG_FORCE_OPAQUE,
+            RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_SKIP_CLOSEST_HIT_SHADER,
             0xFF,
             0,
             0,
-            0,
+            1,
             ray,
             payload
         );
 
-        float compensate = max(sum / max(intensity * angle, 0.000001), 1.0);
+        float compensate = max(sum / max(intensity * angle, 0.000001), 0.001);
 
-        float shadow = float(payload.isMiss) * max(dot(ray.Direction, normal), 0.0);
-        radiance = shadow * intensity * light.value.color_intensity.xyz * color * compensate;
-    } else {
-        float compensate = max(sum / max(sun_light_intensity, 0.000001), 1.0);
-        if (dot(dir_ray, normal) > 0.0 && env.sun_color_intensity.w > 0.0) {
+        float shadow = float(payload.isMiss);
+        radiance = shadow * intensity * light.value.color_intensity.xyz * compensate;
+        light_dir = ray.Direction;
+    } else if (sunLw.weight > 0.0) {
+        float compensate = max(sum / max(sunLw.weight, 0.000001), 0.001);
+        if (sunDot > 0.0 && sunLw.weight > 0.0) {
             payload.isMiss = true;
             traceShadow(pos, dir_ray, payload);
         }
 
-        float shadow = float(payload.isMiss) * max(dot(dir_ray, normal), 0.0);
-        radiance = shadow * env.sun_color_intensity.xyz * env.sun_color_intensity.w * color * compensate;
+        float shadow = float(payload.isMiss);
+        radiance = shadow * sunLw.intensity * compensate;
+        light_dir = dir_ray;
     }
 
     return radiance;
+}
+
+float3 fresnel(float angle, float3 value) {
+    return (pow(1.0 - angle, 5.0) * (1.0 - value) + value);
+}
+
+float GGX(float a2, float angle) {
+    float p = ((a2 - 1.0) * angle * angle + 1.0);
+
+    return a2 / (PI * p * p);
+}
+
+float GGX_Vis(float viewAngle, float lightAngle, float a2) {
+    float a = viewAngle * sqrt(a2 + lightAngle * (lightAngle - a2 * lightAngle));
+    float b = lightAngle * sqrt(a2 + viewAngle * (viewAngle - a2 * viewAngle));
+    return 0.5f / (a + b);
 }
 
 
@@ -282,66 +340,91 @@ void raygen() {
     float3 hitNormal = normal;
     float3 dir = view_dir;
 
-    // TODO model proper energy passing from material
-    float bounce_energy = 0.95;
-
     // current surface_color
     float3 current_color = color;
 
     float3 direct = 0.0;
 
-    float roughness = 0.3;
-    for (int i = 0; i < pc.bounces; i++) {
+    float metallic = 0.0;
+
+    float roughness = 1.0;
+    for (int i = 0; i <= pc.bounces; i++) {
         compute_default_basis(hitNormal, tangent, bitangent);
 
         float d = roughness + (1.0 - roughness) * pow(1.0 - abs(dot(-hitNormal, dir)), 5.0);
+        d = lerp(d, 1.0, metallic);
 
-        if (pcg_hash() < d) {
-            // specular ray
-            float ddot = dot(dir, hitNormal);
-            dir = dir - 2.0 * hitNormal * (ddot);
+        bool specular = pcg_hash() < d;
 
-            float2 new_rand = float2(pcg_hash(), pcg_hash());
+        float3 dirInc = dir;
+        float3 specColor = lerp(float3(1.0), current_color, metallic);
+        // TODO replace for proper BRDF result
+        float3 bounceColor = lerp(float3(1.0), current_color, specular);
 
-            float3 ggx_half_vector = ggx(new_rand, roughness);
+        float2 new_rand = float2(pcg_hash(), pcg_hash());
+        if (specular) {
+            float3 ggx_half_vector = ggx(new_rand, roughness * roughness);
 
             float3 new_norm = ggx_half_vector.x * tangent + ggx_half_vector.y * bitangent + ggx_half_vector.z * hitNormal;
-
-            // TODO fix this monstrosity
             dir = reflect(dir, new_norm);
-            dir = reflect(dir, hitNormal);
 
             if (dot(dir, hitNormal) <= 0.0) {
                 break;
             }
-            // if tracing specular, reset color - not true for metals
-            current_color = float3(1.0);
         } else {
-            float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
+            float3 hemi = rand_hemi(new_rand);
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
-        trace(offset_ray(pos, hitNormal), dir, payload);
-        pos = payload.hit;
-        hitNormal = payload.normal;
+        float3 lightDir = 0.0;
 
-        // sky
+        float3 radiance = intensity_indirect * lightSample(pos, hitNormal, ray_shadow_dir, float3(1.0), payload, lightDir);
+        float lightNormalDot = dot(hitNormal, lightDir);
+
+        lightNormalDot = max(lightNormalDot, 0.000001);
+
+        float3 newHalf = normalize((lightDir - dirInc));
+        float lightHalfDot = max(dot(lightDir, newHalf), 0.000001);
+        float normalHalfDot = max(dot(hitNormal, newHalf), 0.000001);
+        float normalViewDot = max(dot(hitNormal, -dirInc), 0.000001);
+        float alpha = roughness * roughness;
+        float a2 = alpha * alpha;
+
+        float3 f0 = lerp(0.04, current_color, metallic);
+        float3 F = fresnel(lightHalfDot, f0);
+
+        float3 diffuseLobe = lightNormalDot * (current_color / PI) * (1.0 - metallic);
+        float3 specularLobe = F * GGX(a2, normalHalfDot) * GGX_Vis(normalViewDot, lightNormalDot, a2) * lightNormalDot;
+
+        radiance *= diffuseLobe + specularLobe;
+
+        if (pc.indirect_intensity_clamp > 0.0) {
+            float luma = max(luminance(radiance), 0.0001);
+            radiance *= min(pc.indirect_intensity_clamp / luma, 1.0);
+        }
+
+        direct += radiance;
+        intensity_indirect *= current_color;
+
+        trace(offset_ray(pos, hitNormal), dir, payload);
+
         if (payload.isMiss) {
-            indirect += intensity_indirect * bounce_energy * payload.color * env.sky_color_intensity.w * current_color;
             break;
         } else {
-            float3 irradiance = intensity_indirect * bounce_energy * lightSample(payload.hit, payload.normal, ray_shadow_dir, payload.color, payload);
-
-            if (pc.indirect_intensity_clamp != 0.0) {
-                irradiance = min(float3(pc.indirect_intensity_clamp), irradiance);
-            }
-
-            indirect += irradiance;
-            intensity_indirect *= bounce_energy * current_color * payload.color;
+            pos = payload.hit;
+            hitNormal = payload.normal;
         }
     }
 
-    direct += lightSample(vertPos, normal, ray_shadow_dir, color, payload);
+    compute_default_basis(hitNormal, tangent, bitangent);
+    float3 hemi = rand_hemi(float2(pcg_hash(), pcg_hash()));
+    dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
+
+    trace(offset_ray(pos, hitNormal), dir, payload);
+
+    if (payload.isMiss) {
+        indirect = 1.0;
+    }
 
     uint end = getRealtimeClockLow().x;
 

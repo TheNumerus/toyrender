@@ -5,16 +5,16 @@ use crate::image::ImageResource;
 use crate::import;
 use crate::import::ImportedScene;
 use crate::input::InputMapper;
-use crate::renderer::{FrameContext, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer};
-use crate::scene::{Node, PointLight, Scene, SkyVariant, Transform};
+use crate::renderer::{
+    ConvolutionPassState, FrameContext, ResourceSubsystem, VulkanContext, VulkanMcPathTracer, VulkanRenderer,
+};
+use crate::scene::{Scene, SkyVariant};
 
 use image::DynamicImage;
 
-use imgui::Ui;
-
 use log::info;
 
-use nalgebra_glm::{Mat4, Vec3};
+use nalgebra_glm::{Vec3, vec3};
 
 use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::Keycode;
@@ -33,10 +33,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::Instant;
-
 use uuid::Uuid;
 
 use zip::ZipArchive;
+
+pub(crate) mod gui;
 
 pub(crate) mod shader_loader;
 use shader_loader::ShaderLoader;
@@ -165,13 +166,10 @@ impl App {
         let movement_speed = 16.0;
         let mut focused = true;
         let mut taa_enable = true;
-        let mut culling = true;
-        let mut importance_sampling = true;
 
         let mut sel_sky = 0;
 
         let mut frame = 1;
-        let mut conv_iter = 1;
 
         let mut platform = imgui_sdl2_support::SdlPlatform::new(&mut self.imgui);
 
@@ -183,6 +181,9 @@ impl App {
         let mut values = VecDeque::with_capacity(100);
 
         let mut messages = BTreeSet::new();
+
+        let mut last_sun_sum = vec3(0.0, 0.0, 0.0);
+        let mut last_sum = vec3(0.0, 0.0, 0.0);
 
         // need to do this because of borrowing
         let Self {
@@ -304,7 +305,7 @@ impl App {
                         messages.insert(UiMessage::CompleteRenderReset);
                         messages.insert(UiMessage::ConvReset);
 
-                        *renderer.passes.conv.run.borrow_mut() = true;
+                        renderer.passes.conv.state = ConvolutionPassState::Init;
                     }
                     ThreadReply::OpenScene { data: is, name } => {
                         vulkan_context.device.wait_idle()?;
@@ -429,16 +430,27 @@ impl App {
                     match state.selected_renderer {
                         SelectedRenderer::Realtime => {
                             ui.checkbox("Spatial denoise", &mut renderer.quality.use_spatial_denoise);
-                            ui.checkbox("Culling", &mut culling);
+                            ui.checkbox("Culling", &mut renderer.quality.culling);
+
+                            if ui.button("Debug Probes") {
+                                renderer.passes.conv.state = ConvolutionPassState::Debug;
+                            }
+
+                            if ui.button("Reset probes") {
+                                messages.insert(UiMessage::ConvReset);
+                            }
                         }
                         SelectedRenderer::Reference => {
-                            if ui.checkbox("Importance Sampling", &mut importance_sampling) {
+                            if ui.checkbox(
+                                "Importance Sampling",
+                                &mut reference_renderer.quality.importance_sampling,
+                            ) {
                                 messages.insert(UiMessage::ReferenceRenderReset);
                             }
-                            if ui.checkbox("Russian roulette", &mut state.russian_roulette) {
+                            if ui.checkbox("Russian roulette", &mut reference_renderer.quality.russian_roulette) {
                                 messages.insert(UiMessage::ReferenceRenderReset);
                             }
-                            if ui.checkbox("Disable materials", &mut state.disable_materials) {
+                            if ui.checkbox("Disable materials", &mut reference_renderer.quality.disable_materials) {
                                 messages.insert(UiMessage::ReferenceRenderReset);
                             }
                         }
@@ -549,34 +561,16 @@ impl App {
                     }
                 }
                 if ui.collapsing_header("Stats", imgui::TreeNodeFlags::DEFAULT_OPEN) {
-                    Self::stats_tab(ui, &frame_stats, delta);
+                    gui::stats_tab(ui, &frame_stats, delta);
                 }
                 if ui.collapsing_header("Lights", imgui::TreeNodeFlags::DEFAULT_OPEN) {
-                    Self::lights_tab(ui, &mut scene);
+                    gui::lights_tab(ui, &mut scene);
                 }
-                if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty())
-                    && let Some(tt) = ui.begin_table_with_flags("Scene", 3, imgui::TableFlags::SIZING_FIXED_FIT)
-                {
-                    for (index, mesh) in &mut scene.meshes.iter_mut().enumerate() {
-                        ui.table_next_column();
-                        if ui.checkbox(format!("##{}", index), &mut mesh.visible) {
-                            messages.insert(UiMessage::ReferenceRenderReset);
-                        }
-                        ui.table_next_column();
-                        ui.text(format!("'{}'", mesh.resource.name));
-                        ui.table_next_column();
-                        ui.text(format!(
-                            "'{:?}'",
-                            mesh.resource.culling_info.bb_max - mesh.resource.culling_info.bb_min
-                        ));
-
-                        ui.table_next_row();
-                    }
-                    tt.end();
+                if ui.collapsing_header("Scene", imgui::TreeNodeFlags::empty()) {
+                    gui::scene_tab(ui, scene.meshes.iter_mut(), &mut messages);
                 }
-
                 if ui.collapsing_header("Textures", imgui::TreeNodeFlags::empty()) {
-                    Self::textures_tab(ui, &textures);
+                    gui::textures_tab(ui, &textures);
                 }
 
                 iw.end();
@@ -626,9 +620,8 @@ impl App {
                         window.drawable_size(),
                     )?,
                     UiMessage::ConvReset => {
-                        conv_iter = 1;
                         values.clear();
-                        *renderer.passes.conv.run.borrow_mut() = true;
+                        renderer.passes.conv.state = ConvolutionPassState::Init;
                     }
                     _ => {}
                 }
@@ -637,21 +630,19 @@ impl App {
             let skip_primary_render = match state.selected_renderer {
                 SelectedRenderer::Reference => false,
                 SelectedRenderer::Realtime => {
-                    *renderer.passes.conv.run.borrow() && conv_iter % 30 != 0 && !state.fixed_sample
+                    (renderer.passes.conv.state != ConvolutionPassState::Finished
+                        && renderer.passes.conv.state != ConvolutionPassState::Debug)
+                        && !state.fixed_sample
+                        && frame % 15 != 0
                 }
             };
 
-            let mut context = FrameContext {
+            let context = FrameContext {
                 delta_time: delta,
                 total_time: frame_end.duration_since(start).as_secs_f32(),
                 clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
                 frame_index: frame as u32,
-                conv_index: conv_iter as u32,
-                culling,
-                importance_sampling,
                 skip_primary_render,
-                russian_roulette: state.russian_roulette,
-                disable_materials: state.disable_materials,
             };
 
             let draw_data = match state.ui_visible {
@@ -679,24 +670,29 @@ impl App {
             };
 
             if state.selected_renderer == SelectedRenderer::Realtime {
+                let state = &mut renderer.passes.conv.state;
+
+                if *state != ConvolutionPassState::Finished {
+                    vulkan_context.device.wait_idle()?;
+                }
+
                 let mem = renderer.output_buf_cpu.read_host();
                 let s = unsafe { std::slice::from_raw_parts(mem.as_ptr() as *const f32, mem.len() / 4) };
 
-                if values.len() >= 100 {
-                    values.pop_front();
+                match *state {
+                    ConvolutionPassState::SunProbe(_) | ConvolutionPassState::SunlessProbe(_) => {
+                        if values.len() >= 100 {
+                            values.pop_front();
+                        }
+
+                        let luma = s[0] * 0.2126 + s[1] * 0.7152 + s[2] * 0.0722;
+
+                        values.push_back(luma);
+                    }
+                    _ => {}
                 }
 
-                values.push_back(s[0]);
-
-                let z = 1.0 - s[5] * 2.0;
-                if let SkyVariant::Textured(_, r) = scene.env.sky.variant {
-                    let rot = s[4] + r;
-                    scene.env.sun_direction.x = -(rot * std::f32::consts::PI * 2.0).cos() * (1.0 - z).powf(2.0);
-                    scene.env.sun_direction.y = (rot * std::f32::consts::PI * 2.0).sin() * (1.0 - z).powf(2.0);
-                    scene.env.sun_direction.z = z;
-                };
-
-                if values.len() > 10 {
+                let avg = if values.len() > 10 {
                     let mut diffs = VecDeque::with_capacity(100);
 
                     for x in values.iter().collect::<Vec<_>>().windows(2) {
@@ -708,19 +704,88 @@ impl App {
 
                     let avg = diffs.iter().fold(0.0, |acc, x| acc + x) / diffs.len() as f32;
 
-                    if *renderer.passes.conv.run.borrow() && conv_iter % 500 == 0 {
-                        info!("Avg log step: {}", -avg.ln());
-                    }
+                    Some(-avg.ln())
+                } else {
+                    None
+                };
 
-                    // good enough quality for sun probe
-                    if -avg.ln() > 11.0 && *renderer.passes.conv.run.borrow() {
-                        info!("Conv finished in {} iterations", conv_iter);
+                *state = match *state {
+                    ConvolutionPassState::Init => {
+                        values.clear();
+                        ConvolutionPassState::SunProbe(0)
+                    }
+                    ConvolutionPassState::SunProbe(i) => {
+                        match avg {
+                            Some(a) if a > 11.0 => {
+                                // good enough quality for sun probe
+                                info!("Sun conv finished in {} iterations", i + 1);
+                                values.clear();
+                                last_sun_sum = vec3(s[0], s[1], s[2]);
+                                ConvolutionPassState::FindingMax
+                            }
+                            Some(a) if i % 500 == 0 => {
+                                info!("Sun probe avg log step {}: {}/11", i, a);
+                                ConvolutionPassState::SunProbe(i + 1)
+                            }
+                            _ => ConvolutionPassState::SunProbe(i + 1),
+                        }
+                    }
+                    ConvolutionPassState::FindingMax => {
                         info!("Sun pos: {},{}", s[4], s[5]);
-                        *renderer.passes.conv.run.borrow_mut() = false;
-                    }
-                }
 
-                conv_iter += 1;
+                        let z = 1.0 - s[5] * 2.0;
+                        let amplitude = (z * std::f32::consts::PI * 0.5).cos();
+                        if let SkyVariant::Textured(_, r) = scene.env.sky.variant {
+                            let rot = s[4] + r;
+                            scene.env.sun_direction.x = -(rot * std::f32::consts::PI * 2.0).cos() * amplitude;
+                            scene.env.sun_direction.y = (rot * std::f32::consts::PI * 2.0).sin() * amplitude;
+                            scene.env.sun_direction.z = (z * std::f32::consts::PI * 0.5).sin();
+                        };
+
+                        ConvolutionPassState::SunlessProbe(0)
+                    }
+                    ConvolutionPassState::SunlessProbe(i) => {
+                        match avg {
+                            Some(a) if a > 14.0 => {
+                                // better quality for sunless probe
+                                info!("Conv finished in {} iterations", i + 1);
+                                values.clear();
+                                last_sum = vec3(s[0], s[1], s[2]);
+
+                                dbg!(last_sum, last_sun_sum);
+
+                                if let SkyVariant::Textured(_, r) = scene.env.sky.variant {
+                                    let sun_only = last_sun_sum - last_sum;
+                                    let color_adjust = sun_only.max();
+
+                                    let sun_color = sun_only / color_adjust;
+
+                                    scene.env.sun_color = sun_color;
+                                    scene.env.sun_intensity = color_adjust * std::f32::consts::PI * 2.0;
+                                };
+
+                                ConvolutionPassState::Finished
+                            }
+                            Some(a) if i % 500 == 0 => {
+                                info!("Sunless probe avg log step {}: {}/14", i, a);
+                                ConvolutionPassState::SunlessProbe(i + 1)
+                            }
+                            _ => ConvolutionPassState::SunlessProbe(i + 1),
+                        }
+                    }
+                    ConvolutionPassState::Debug => {
+                        let z = 1.0 - s[5] * 2.0;
+                        if let SkyVariant::Textured(_, r) = scene.env.sky.variant {
+                            let rot = s[4] + r;
+                            scene.env.sun_direction.x = -(rot * std::f32::consts::PI * 2.0).cos() * (1.0 - z);
+                            scene.env.sun_direction.y = (rot * std::f32::consts::PI * 2.0).sin() * (1.0 - z);
+                            scene.env.sun_direction.z = z;
+                        };
+
+                        ConvolutionPassState::Debug
+                    }
+                    a => a,
+                };
             }
 
             frame_stats.update(report);
@@ -740,77 +805,6 @@ impl App {
         handle.join().unwrap();
 
         Ok(())
-    }
-
-    fn stats_tab(ui: &Ui, frame_stats: &FrameStats, delta: f32) {
-        let stats = frame_stats.compute();
-
-        ui.text(format!("FPS: {:>8.3} ms", 1.0 / delta));
-        ui.text(format!("Frame time: {:>8.3} ms", delta * 1000.0));
-
-        for (desc, value) in stats.iter() {
-            match value {
-                StatStorage::Int(i) => {
-                    ui.text(format!("{}: {}", desc, i.latest));
-                }
-                StatStorage::Float(f) => {
-                    ui.text(format!("{}: {:>8.3}", desc, f.avg));
-                }
-            }
-        }
-    }
-
-    fn lights_tab(ui: &Ui, scene: &mut Scene) {
-        if ui.button("Add light") {
-            scene.nodes.push(
-                Node::new()
-                    .add_component(Transform(Mat4::new_translation(&Vec3::from_element(0.0))))
-                    .add_component(PointLight {
-                        color: Vec3::new(1.0, 0.1, 0.1),
-                        intensity: 10.0,
-                        radius: 0.1,
-                    }),
-            )
-        }
-
-        for (index, node) in &mut scene.nodes.iter_mut().enumerate() {
-            if let Some(pl) = node.get_component_mut::<PointLight>() {
-                ui.color_edit3(format!("Color##{index}"), pl.color.as_mut());
-                ui.input_float(format!("Intensity##{index}"), &mut pl.intensity).build();
-                ui.input_float(format!("Radius##{index}"), &mut pl.radius).build();
-            }
-
-            if let Some(t) = node.get_component_mut::<Transform>() {
-                let mut transform = t.0.data.0[3];
-
-                if ui.input_float4(format!("Pos##{index}"), &mut transform).build() {
-                    t.0.data.0[3] = transform;
-                }
-            }
-
-            ui.separator();
-        }
-    }
-
-    fn textures_tab(ui: &Ui, textures: &[ImageResource]) {
-        if let Some(tt) = ui.begin_table_with_flags("Textures", 4, imgui::TableFlags::SIZING_FIXED_FIT) {
-            for tex in textures {
-                ui.table_next_column();
-                ui.text(&tex.name);
-                ui.table_next_column();
-                ui.text(format!("{}x{}", tex.data.width(), tex.data.height()));
-                ui.table_next_column();
-                ui.text(format!(
-                    "CPU Mem: {:.02}MB",
-                    (tex.data.as_bytes().len() as f32) / 1024.0 / 1024.0
-                ));
-                ui.table_next_column();
-                ui.text(format!("{:?}", tex.data.color()));
-
-                ui.table_next_row();
-            }
-            tt.end();
-        }
     }
 
     fn on_file_drop(filename: String) -> Result<FileDroppedAction, AppError> {
@@ -876,12 +870,7 @@ impl App {
                 total_time: frame_start.duration_since(start).as_secs_f32(),
                 clear_taa: false,
                 frame_index: frame as u32,
-                conv_index: 0,
                 skip_primary_render: false,
-                culling: true,
-                importance_sampling: true,
-                russian_roulette: true,
-                disable_materials: false,
             };
 
             self.renderer.render_frame(
@@ -1002,8 +991,6 @@ pub struct AppState {
     selected_renderer: SelectedRenderer,
     ui_visible: bool,
     fixed_sample: bool,
-    russian_roulette: bool,
-    disable_materials: bool,
 }
 
 impl AppState {
@@ -1012,8 +999,6 @@ impl AppState {
             selected_renderer: SelectedRenderer::Reference,
             ui_visible: true,
             fixed_sample: false,
-            russian_roulette: true,
-            disable_materials: false,
         }
     }
 }

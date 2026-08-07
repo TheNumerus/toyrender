@@ -16,6 +16,7 @@ pub(crate) struct PathTracePass {
     pub shader_pipeline_handle: Rc<Pipeline<Rt>>,
     pub solid_sky_pipeline_handle: Rc<Pipeline<Rt>>,
     pub texture_sky_pipeline_handle: Rc<Pipeline<Rt>>,
+    pub ao_pipeline_handle: Rc<Pipeline<Rt>>,
 }
 
 impl PathTracePass {
@@ -58,6 +59,15 @@ impl PathTracePass {
             Some(SpecConsts::new().push(2)),
         )?;
 
+        let ao_pipeline_handle = pipeline_builder.build_rt(
+            "rt_ao",
+            "rt_ao|raygen",
+            &["rt_ao|miss"],
+            &["rt_ao|chit"],
+            descriptor_layouts,
+            None,
+        )?;
+
         Ok(Self {
             context,
             direct_render_target,
@@ -65,6 +75,7 @@ impl PathTracePass {
             shader_pipeline_handle,
             solid_sky_pipeline_handle,
             texture_sky_pipeline_handle,
+            ao_pipeline_handle,
         })
     }
 

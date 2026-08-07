@@ -91,12 +91,6 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 direct = images[pc.direct_idx].Sample(uv).xyz * pow(2.0, env.exposure);
     float3 indirect = images[pc.indirect_idx].Sample(uv).xyz * pow(2.0, env.exposure);
 
-    float3 diffuse_dir = direct + indirect;
-    float3 specular = float3(0.0);
-    float3 lighted = ((diffuse_dir + specular));
-
-    storages[pc.out_idx].Store(int2(x, y), float4(lighted, 1.0));
-
     float3x3 rot = float3x3(0.0);
     rot._11 = cos(env.rotation * 2.0 * PI);
     rot._12 = sin(env.rotation * 2.0 * PI);
@@ -114,6 +108,11 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     octNorm *= (convDim - 1.0) / convDim;
     octNorm += 0.5 / convDim;
     float3 convRes = images[pc.conv_idx].Sample(octNorm).xyz;
+    indirect *= convRes;
 
-    storages[pc.out_idx].Store(int2(x, y), float4(convRes * pow(2.0, env.exposure), 1.0));
+    float3 diffuse_dir = direct + indirect;
+    float3 specular = float3(0.0);
+    float3 lighted = ((diffuse_dir + specular));
+
+    storages[pc.out_idx].Store(int2(x, y), float4(lighted, 1.0));
 }

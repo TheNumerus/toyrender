@@ -332,21 +332,20 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
                 if (payload.isMiss) {
                     float pdf = images[pc.pdf_idx].SampleLevelZero(mapped).x;
-                    float uniformPdf = 1.0 / (1024.0 * 1024.0);
-                    // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
-                    float adjust = 4.0 * uniformPdf / (pdf);
+                    float adjust = ((pdf * (1024.0 * 1024.0)) / (4.0 * PI));
 
-                    radiance = env.sky_color_intensity.w * adjust * payload.color_rough.rgb;
+                    radiance = env.sky_color_intensity.w * payload.color_rough.rgb / adjust;
                 }
             }
         } else {
             float3 tangent, bitangent;
             compute_default_basis(normal, tangent, bitangent);
+            float pdf = hemi.z / PI;
             let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * normal;
 
             trace(offset_ray(pos, normal), dir, payload);
             // TODO FIX - specular rays should not use hemi smapling here 
-            radiance = env.sky_color_intensity.w * float(payload.isMiss) * payload.color_rough.rgb;
+            radiance = env.sky_color_intensity.w * float(payload.isMiss) * payload.color_rough.rgb / pdf;
             light_dir = dir;
         }
     } else if (sunLw.weight > 0.0) {
@@ -497,12 +496,17 @@ void raygen() {
 
         bool specular = pcg_hash() < d;
 
+        if (disableMaterials) {
+            specular = false;
+        }
+
         float3 dirInc = dir;
         float3 specColor = lerp(float3(1.0), current_color, metallic);
         // TODO replace for proper BRDF result
         float3 bounceColor = lerp(float3(1.0), current_color, specular);
 
         float2 new_rand = float2(pcg_hash(), pcg_hash());
+        float pdf = 1.0;
         if (specular) {
             float3 ggx_half_vector = ggx(new_rand, roughness * roughness);
 
@@ -514,6 +518,7 @@ void raygen() {
             }
         } else {
             float3 hemi = rand_hemi(new_rand);
+            pdf = hemi.z / PI;
             dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * hitNormal;
         }
 
@@ -528,13 +533,14 @@ void raygen() {
         float lightHalfDot = max(dot(lightDir, newHalf), 0.000001);
         float normalHalfDot = max(dot(hitNormal, newHalf), 0.000001);
         float normalViewDot = max(dot(hitNormal, -dirInc), 0.000001);
+        float normalNewDirDot = max(dot(hitNormal, dir), 0.000001);
         float alpha = roughness * roughness;
         float a2 = alpha * alpha;
 
         float3 f0 = lerp(0.04, current_color, metallic);
         float3 F = fresnel(lightHalfDot, f0);
 
-        float3 diffuseLobe = lightNormalDot * (current_color / PI) * (1.0 - metallic);
+        float3 diffuseLobe = lightNormalDot * (current_color / PI) * (1.0 - metallic) * pdf;
         float3 specularLobe = F * GGX(a2, normalHalfDot) * GGX_Vis(normalViewDot, lightNormalDot, a2) * lightNormalDot;
 
         radiance *= diffuseLobe + specularLobe;
@@ -550,7 +556,7 @@ void raygen() {
         trace(offset_ray(pos, hitNormal), dir, payload);
 
         if (payload.isMiss) {
-            float3 radiance = intensity_indirect * payload.color_rough.rgb * env.sky_color_intensity.w / (4.0 / PI);
+            float3 radiance = intensity_indirect * payload.color_rough.rgb * env.sky_color_intensity.w * normalNewDirDot;
 
             if (pc.indirect_intensity_clamp > 0.0) {
                 float luma = luminance(radiance);

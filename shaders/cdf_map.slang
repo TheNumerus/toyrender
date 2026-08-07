@@ -32,11 +32,6 @@ void horizontal(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
     uint y = tid.y;
 
-    // workaround to force usage of desc set 0
-    if (env.mode != SkyMode::Textured) {
-        return;
-    }
-
     float value = storages[pc.src_idx].Load(int2(x, y)).x;
     row[x] = value;
 
@@ -44,7 +39,7 @@ void horizontal(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float sum = 0.0;
 
-    for (int i = 0; i < x; i++) {
+    for (int i = 0; i <= x; i++) {
         sum += row[i];
     }
 
@@ -58,11 +53,6 @@ void vertical(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
     uint y = tid.y;
 
-    // workaround to force usage of desc set 0
-    if (env.mode != SkyMode::Textured) {
-        return;
-    }
-
     float value = storages[pc.src_idx].Load(int2(1023, x)).x;
     row[x] = value;
 
@@ -70,7 +60,7 @@ void vertical(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float sum = 0.0;
 
-    for (int i = 0; i < x; i++) {
+    for (int i = 0; i <= x; i++) {
         sum += row[i];
     }
 
@@ -83,11 +73,6 @@ void vertical(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 void pdfNormalize(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
     uint y = tid.y;
-
-    // workaround to force usage of desc set 0
-    if (env.mode != SkyMode::Textured) {
-        return;
-    }
 
     float value = storages[pc.out_idx].Load(int2(x, y)).x;
     float total = storages[pc.src_idx].Load(int2(1024, 1023)).x;
@@ -103,11 +88,6 @@ void cdfNormalize(uint3 tid: SV_DispatchThreadID, uint3 gid: SV_GroupID, uint in
 
     float totalRow = storages[pc.src_idx].Load(int2(1023, y)).x;
     float total = storages[pc.src_idx].Load(int2(1024, 1023)).x;
-
-    // workaround to force usage of desc set 0
-    if (env.mode != SkyMode::Textured) {
-        return;
-    }
 
     float value = storages[pc.src_idx].Load(int2(x, y)).x / totalRow;
     storages[pc.out_idx].Store(int2(x, y), value);
