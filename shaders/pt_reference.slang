@@ -338,6 +338,8 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
                 }
             }
         } else {
+            float compensate = max(sum / max(sky_intensity, 0.000001), 0.001);
+
             float3 tangent, bitangent;
             compute_default_basis(normal, tangent, bitangent);
             float pdf = hemi.z / PI;
@@ -345,7 +347,7 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
 
             trace(offset_ray(pos, normal), dir, payload);
             // TODO FIX - specular rays should not use hemi smapling here 
-            radiance = env.sky_color_intensity.w * float(payload.isMiss) * payload.color_rough.rgb / pdf;
+            radiance = env.sky_color_intensity.w * compensate * float(payload.isMiss) * payload.color_rough.rgb / pdf;
             light_dir = dir;
         }
     } else if (sunLw.weight > 0.0) {
@@ -494,10 +496,11 @@ void raygen() {
         float d = roughness + (1.0 - roughness) * pow(1.0 - abs(dot(-hitNormal, dir)), 5.0);
         d = lerp(d, 1.0, metallic);
 
-        bool specular = pcg_hash() < d;
-
+        bool specular;
         if (disableMaterials) {
             specular = false;
+        } else {
+            specular = pcg_hash() < d;
         }
 
         float3 dirInc = dir;
@@ -709,12 +712,12 @@ void chit(inout Payload payload, in BuiltInTriangleIntersectionAttributes attr) 
 
         let color_idx = NonUniformResourceIndex(meshData[InstanceIndex()].color_idx);
         if (color_idx != -1) {
-            payload.color_rough.rgb *= images[color_idx].Sample(uvBlend).xyz;
+            payload.color_rough.rgb *= images[color_idx].SampleLevelZero(uvBlend).xyz;
         }
 
         let orm_idx = NonUniformResourceIndex(meshData[InstanceIndex()].orm_idx);
         if (orm_idx != -1) {
-            let orm = pow(images[orm_idx].Sample(uvBlend).xyz, 1.0 / 2.2);
+            let orm = pow(images[orm_idx].SampleLevelZero(uvBlend).xyz, 1.0 / 2.2);
             payload.color_rough.w *= orm.g;
             payload.emissive_metallic.w *= orm.b;
         }

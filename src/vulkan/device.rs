@@ -158,7 +158,14 @@ impl Device {
             runtime_descriptor_array: 1,
             buffer_device_address: 1,
             descriptor_binding_partially_bound: 1,
+            shader_sampled_image_array_non_uniform_indexing: 1,
             p_next: std::ptr::addr_of!(vk_13_info) as *mut c_void,
+            ..Default::default()
+        };
+
+        let vk_11_info = vk::PhysicalDeviceVulkan11Features {
+            shader_draw_parameters: 1,
+            p_next: std::ptr::addr_of!(vk_12_info) as *mut c_void,
             ..Default::default()
         };
 
@@ -168,7 +175,7 @@ impl Device {
             pp_enabled_extension_names: device_extensions_ptr.as_ptr(),
             enabled_extension_count: device_extensions.len() as u32,
             p_enabled_features: &vk::PhysicalDeviceFeatures::default(),
-            p_next: std::ptr::addr_of!(vk_12_info) as *const c_void,
+            p_next: std::ptr::addr_of!(vk_11_info) as *const c_void,
             ..Default::default()
         };
 

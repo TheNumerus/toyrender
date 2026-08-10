@@ -96,7 +96,7 @@ impl VulkanMcPathTracer {
                     ty: vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
                 },
                 vk::DescriptorPoolSize {
-                    descriptor_count: MAX_FRAMES_IN_FLIGHT as u32,
+                    descriptor_count: 4 * MAX_FRAMES_IN_FLIGHT as u32,
                     ty: vk::DescriptorType::STORAGE_BUFFER,
                 },
             ],
@@ -318,6 +318,7 @@ impl VulkanMcPathTracer {
             descriptor_layouts,
             1,
             2,
+            3,
         )?;
 
         let passes = VulkanMcPathTracerPasses {
@@ -869,7 +870,7 @@ impl VulkanMcPathTracer {
             resource_subsystem,
             GizmoInputs {
                 target: &self.passes.tonemap.render_target.borrow(),
-                draw_sky_gizmo: true,
+                draw_sky_gizmo: context.draw_sky_gizmo,
                 viewport: viewport_size,
                 arrow_rot: nalgebra_glm::look_at_rh(
                     &scene.env.sun_direction.normalize(),

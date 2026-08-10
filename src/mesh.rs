@@ -35,6 +35,7 @@ impl Default for Material {
     }
 }
 
+#[derive(Copy, Clone)]
 pub struct Primitive {
     pub id: u64,
     pub index_count: usize,

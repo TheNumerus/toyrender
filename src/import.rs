@@ -8,7 +8,6 @@ use gltf::image::Source;
 use gltf::json::accessor::ComponentType;
 use gltf::mesh::Mode;
 use gltf::{Accessor, Gltf, Primitive as GltfPrimitive, Semantic};
-use log::info;
 use nalgebra::{Point3, Quaternion, Rotation3};
 use nalgebra_glm::{Mat4, Vec2, Vec3, Vec4, inverse, quat_cast, vec3};
 use std::collections::BTreeMap;
@@ -302,13 +301,6 @@ pub fn extract_scene(slice: &[u8]) -> Result<ImportedScene, AppError> {
         gltf.document.scenes().next().unwrap().nodes(),
         &mut meshes,
         &mut instances,
-    );
-
-    info!("Loaded {} meshes in {} instances", meshes.len(), instances.len());
-    info!(
-        "Loaded {} textures, total size {:.3} MB",
-        textures.len(),
-        textures.iter().fold(0, |acc, t| acc + t.data.as_bytes().len()) as f32 / 1024.0 / 1024.0
     );
 
     Ok(ImportedScene {

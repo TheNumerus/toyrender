@@ -110,6 +110,7 @@ pub struct VulkanRenderer {
     prev_jitter: (f32, f32),
     frames_in_flight: usize,
     pub passes: VulkanRendererPasses,
+    pub scratch_bufs: Vec<Buffer>,
 }
 
 impl VulkanRenderer {
@@ -196,6 +197,7 @@ impl VulkanRenderer {
         let mut mesh_data = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut descriptors = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
         let mut lights = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
+        let mut scratch_bufs = Vec::with_capacity(MAX_FRAMES_IN_FLIGHT);
 
         Self::init_history_images(
             &context.device,
@@ -330,6 +332,24 @@ impl VulkanRenderer {
                 &mesh_bufs[i].inner,
                 &output_buf.inner,
             ));
+
+            let scratch_buf = Buffer::new(
+                device.clone(),
+                context.allocator.clone(),
+                MemoryLocation::GpuOnly,
+                vk::BufferUsageFlags::STORAGE_BUFFER,
+                // 1 MB
+                1024 * 1024 * 4,
+            )?;
+            scratch_buf.name(format!("scratch_buffer[{}]", i))?;
+            writes.push(create_buffer_update(
+                &scratch_buf.inner,
+                1024 * 1024 * 4,
+                &descriptors[i].borrow().compute_set.inner,
+                2,
+                vk::DescriptorType::STORAGE_BUFFER,
+            ));
+            scratch_bufs.push(scratch_buf);
         }
 
         for i in 0..context.swap_chain.borrow().images.len() {
@@ -380,6 +400,7 @@ impl VulkanRenderer {
             passes,
             output_buf,
             output_buf_cpu,
+            scratch_bufs,
         })
     }
 
@@ -401,7 +422,7 @@ impl VulkanRenderer {
         let pt = PathTracePass::create(context, render_targets, pipeline_builder, descriptor_layouts)?;
         let depth_debug = DepthDebugPass::create(device.clone(), pipeline_builder, descriptor_layouts)?;
         let conv = ConvolutionPass::create(device.clone(), render_targets, pipeline_builder, descriptor_layouts)?;
-        let gizmos = GizmoPass::create(device.clone(), pipeline_builder, descriptor_layouts, 1, 2)?;
+        let gizmos = GizmoPass::create(device.clone(), pipeline_builder, descriptor_layouts, 1, 2, 3)?;
 
         Ok(VulkanRendererPasses {
             pt,
@@ -644,6 +665,7 @@ impl VulkanRenderer {
             &view_proj.view,
             &view_proj.projection_inverse,
             &mut report,
+            &self.descriptors[self.current_frame].borrow(),
         );
 
         let target_size = (collected_meshes.data.len() * size_of::<RasterMeshInstanceDataGPU>()) as u64;
@@ -955,16 +977,27 @@ impl VulkanRenderer {
             SkyVariant::Textured(ir, _) => descriptors.storages[&ir.id],
         };
 
+        let src_res = match &scene.env.sky.variant {
+            SkyVariant::Shader => {
+                let ext = self.passes.sky.render_target.borrow().image.extent;
+                (ext.width, ext.height)
+            }
+            SkyVariant::SingleColor(_) => (0, 0),
+            SkyVariant::Textured(ir, _) => (ir.data.width(), ir.data.height()),
+        };
+
         self.passes.conv.record(
             compute_command_buffer,
             &descriptors,
             ConvolutionInputs {
                 src_sampler: sky_src,
                 src_storage: sky_storage_src,
+                src_res,
                 target_sampler: 0,
                 clamp: self.quality.indirect_light_clamp,
                 buf_src: &self.output_buf,
                 buf_dst: &self.output_buf_cpu,
+                buf_scratch: &self.scratch_bufs[self.current_frame],
             },
         )?;
 
@@ -990,6 +1023,7 @@ impl VulkanRenderer {
                     color: &self.passes.gbuffer.render_target_color.borrow(),
                     depth: &self.passes.gbuffer.render_target_depth.borrow(),
                     normal: &self.passes.gbuffer.render_target_normal.borrow(),
+                    orm: &self.passes.gbuffer.render_target_mat.borrow(),
                     sky_sampler,
                     sky: &scene.env.sky.variant,
                     sbt: &self.shader_binding_tables[self.current_frame],
@@ -1077,6 +1111,24 @@ impl VulkanRenderer {
                 );
             }
 
+            self.passes.gizmos.record_spheres(
+                command_buffer,
+                &descriptors,
+                resource_subsystem,
+                GizmoInputs {
+                    target: &self.passes.taa.render_target.borrow(),
+                    draw_sky_gizmo: context.draw_sky_gizmo,
+                    viewport: viewport_size,
+                    arrow_rot: nalgebra_glm::look_at_rh(
+                        &scene.env.sun_direction.normalize(),
+                        &vec3(0.0, 0.0, 0.0),
+                        &vec3(0.0, 0.0, 1.0),
+                    ),
+                },
+                &self.passes.conv.conv_render_target.borrow(),
+                &self.passes.conv.conv_sun_render_target.borrow(),
+            )?;
+
             self.passes.tonemap.record(
                 command_buffer,
                 &descriptors,
@@ -1091,7 +1143,7 @@ impl VulkanRenderer {
                 resource_subsystem,
                 GizmoInputs {
                     target: &self.passes.tonemap.render_target.borrow(),
-                    draw_sky_gizmo: true,
+                    draw_sky_gizmo: context.draw_sky_gizmo,
                     viewport: viewport_size,
                     arrow_rot: nalgebra_glm::look_at_rh(
                         &scene.env.sun_direction.normalize(),
@@ -1154,6 +1206,21 @@ impl VulkanRenderer {
                 z: 1,
             };
 
+            let range = vk::ImageSubresourceRange {
+                base_mip_level: 0,
+                level_count: 1,
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+
+            let subresource = vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+
             self.device.inner.cmd_pipeline_barrier(
                 command_buffer.inner,
                 vk::PipelineStageFlags::TOP_OF_PIPE,
@@ -1167,13 +1234,7 @@ impl VulkanRenderer {
                     old_layout: vk::ImageLayout::UNDEFINED,
                     new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     image: *target,
-                    subresource_range: vk::ImageSubresourceRange {
-                        base_mip_level: 0,
-                        level_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    subresource_range: range,
                     ..Default::default()
                 }],
             );
@@ -1185,19 +1246,9 @@ impl VulkanRenderer {
                 *target,
                 vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                 &[vk::ImageBlit {
-                    src_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    src_subresource: subresource,
                     src_offsets: [offset_min, offset_src_max],
-                    dst_subresource: vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    dst_subresource: subresource,
                     dst_offsets: [offset_min, offset_dst_max],
                 }],
                 vk::Filter::LINEAR,
@@ -1216,13 +1267,7 @@ impl VulkanRenderer {
                     old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     image: *target,
-                    subresource_range: vk::ImageSubresourceRange {
-                        base_mip_level: 0,
-                        level_count: 1,
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
+                    subresource_range: range,
                     ..Default::default()
                 }],
             );
@@ -1337,6 +1382,7 @@ pub struct FrameContext {
     pub clear_taa: bool,
     pub frame_index: u32,
     pub skip_primary_render: bool,
+    pub draw_sky_gizmo: bool,
 }
 
 fn create_buffer_update<'a>(

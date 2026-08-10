@@ -1,4 +1,6 @@
 use crate::app::frame_stats::FrameReport;
+use crate::mesh::Primitive;
+use crate::renderer::descriptors::RendererDescriptors;
 use crate::renderer::stats;
 use crate::scene::Scene;
 use nalgebra_glm::{Mat4, Vec3, vec3, vec4};
@@ -7,7 +9,7 @@ use std::collections::BTreeMap;
 pub struct MeshCollector {}
 
 pub struct DrawData {
-    pub primitive_id: u64,
+    pub primitive: Primitive,
     pub mesh_id: u64,
     pub count: u32,
     pub offset: u32,
@@ -20,7 +22,9 @@ pub struct RasterMeshInstanceDataGPU {
     pub base_color: [f32; 3],
     pub roughness: f32,
     pub is_flipped: i32,
-    pub _pad_0: [i32; 3],
+    pub base_color_tex: i32,
+    pub orm_tex: i32,
+    pub _pad_0: [i32; 1],
 }
 
 pub struct CollectedResult {
@@ -35,6 +39,7 @@ impl MeshCollector {
         view: &Mat4,
         proj_inverse: &Mat4,
         report: &mut FrameReport,
+        descriptors: &RendererDescriptors,
     ) -> CollectedResult {
         let mut transforms = BTreeMap::new();
 
@@ -74,7 +79,7 @@ impl MeshCollector {
                 let (_, entry) = transforms
                     .entry(id)
                     .or_insert_with(|| (mesh.resource.id, Vec::with_capacity(1)));
-                entry.push((mesh.transform, mesh.inverse, primitive.material));
+                entry.push((mesh.transform, mesh.inverse, primitive));
             }
         }
 
@@ -88,30 +93,43 @@ impl MeshCollector {
         let mut index = 0;
         let mut draws = Vec::with_capacity(count);
         for (key, (mesh_id, value)) in transforms.iter() {
-            for (transform, inverse, mat) in value {
+            for (transform, inverse, primitive) in value {
                 let is_flipped = if transform.view((0, 0), (3, 3)).determinant() > 0.0 {
                     0_i32
                 } else {
                     1_i32
                 };
 
+                let base_color_tex = match primitive.material.base_color_texture {
+                    Some(uuid) => descriptors.samplers.get(&uuid).map(|a| *a as i32).unwrap_or(-1),
+                    None => -1,
+                };
+
+                let orm_tex = match primitive.material.orm_texture {
+                    Some(uuid) => descriptors.samplers.get(&uuid).map(|a| *a as i32).unwrap_or(-1),
+                    None => -1,
+                };
+
                 let instance_data = RasterMeshInstanceDataGPU {
                     model: *transform,
                     inverse: *inverse,
-                    base_color: mat.base_color.data.0[0],
-                    roughness: mat.roughness,
+                    base_color: primitive.material.base_color.data.0[0],
+                    roughness: primitive.material.roughness,
                     is_flipped,
-                    _pad_0: [0; 3],
+                    base_color_tex,
+                    orm_tex,
+                    _pad_0: [0; 1],
                 };
                 data.push(instance_data);
+
+                draws.push(DrawData {
+                    primitive: **primitive,
+                    mesh_id: *mesh_id,
+                    count: value.len() as u32,
+                    offset: index as u32,
+                });
             }
 
-            draws.push(DrawData {
-                primitive_id: *key,
-                mesh_id: *mesh_id,
-                count: value.len() as u32,
-                offset: index as u32,
-            });
             index += value.len();
         }
 

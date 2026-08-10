@@ -22,6 +22,7 @@ pub(crate) struct ConvolutionPass {
     conv_pipeline: Rc<Pipeline<Compute>>,
     conv_sunless_pipeline: Rc<Pipeline<Compute>>,
     sum_pipeline: Rc<Pipeline<Compute>>,
+    max_init_pipeline: Rc<Pipeline<Compute>>,
     max_pipeline: Rc<Pipeline<Compute>>,
 }
 
@@ -39,8 +40,13 @@ impl ConvolutionPass {
         let conv_pipeline = pipeline_builder.build_compute("conv", "conv|main", descriptor_layouts)?;
         let conv_sunless_pipeline = pipeline_builder.build_compute("conv", "conv|mainSunless", descriptor_layouts)?;
         let sum_pipeline = pipeline_builder.build_compute("image_avg", "image_avg|main", descriptor_layouts)?;
-        let max_pipeline =
-            pipeline_builder.build_compute("find_bright_spot", "find_bright_spot|main", descriptor_layouts)?;
+        let max_init_pipeline =
+            pipeline_builder.build_compute("find_bright_spot_init", "find_bright_spot|mainInit", descriptor_layouts)?;
+        let max_pipeline = pipeline_builder.build_compute(
+            "find_bright_spot",
+            "find_bright_spot|mainSuccessive",
+            descriptor_layouts,
+        )?;
 
         Ok(Self {
             device,
@@ -52,6 +58,7 @@ impl ConvolutionPass {
             conv_sunless_pipeline,
             sum_pipeline,
             max_pipeline,
+            max_init_pipeline,
         })
     }
 
@@ -105,6 +112,7 @@ impl ConvolutionPass {
         }
 
         if self.state == ConvolutionPassState::Finished {
+            self.device.end_label(command_buffer);
             return Ok(());
         }
 
@@ -246,7 +254,9 @@ impl ConvolutionPass {
     }
 
     fn find_max(&self, command_buffer: &CommandBuffer, descriptors: &RendererDescriptors, inputs: &ConvolutionInputs) {
-        let pipeline = &self.max_pipeline;
+        let pipeline = &self.max_init_pipeline;
+
+        let mut count = inputs.src_res.0 * inputs.src_res.1;
 
         command_buffer.bind_compute_pipeline(pipeline);
         command_buffer.bind_descriptor_sets(
@@ -255,13 +265,98 @@ impl ConvolutionPass {
             [descriptors.global_set.inner, descriptors.compute_set.inner],
         );
 
-        let pc = PushConstBuilder::with_capacity(1 * size_of::<f32>())
+        let pc = PushConstBuilder::with_capacity(2 * size_of::<f32>())
             .add_u32(inputs.src_storage)
+            .add_u32(count)
             .build();
 
         command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
 
-        command_buffer.dispatch(1, 1, 1);
+        count /= 1024;
+        count = count.max(1);
+
+        command_buffer.dispatch(1, count, 1);
+
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[
+                    vk::BufferMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        buffer: inputs.buf_src.inner,
+                        size: inputs.buf_src.size,
+                        ..Default::default()
+                    },
+                    vk::BufferMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        buffer: inputs.buf_scratch.inner,
+                        size: inputs.buf_scratch.size,
+                        ..Default::default()
+                    },
+                ],
+                &[],
+            );
+        }
+
+        loop {
+            if count == 1 {
+                break;
+            }
+
+            let pipeline = &self.max_pipeline;
+
+            command_buffer.bind_compute_pipeline(pipeline);
+            command_buffer.bind_descriptor_sets(
+                vk::PipelineBindPoint::COMPUTE,
+                pipeline.layout,
+                [descriptors.global_set.inner, descriptors.compute_set.inner],
+            );
+
+            let pc = PushConstBuilder::with_capacity(2 * size_of::<f32>())
+                .add_u32(inputs.src_storage)
+                .add_u32(count)
+                .build();
+
+            command_buffer.push_constants(vk::ShaderStageFlags::COMPUTE, pipeline.layout, pc.as_ref());
+
+            count /= 1024;
+            count = count.max(1);
+
+            command_buffer.dispatch(1, count, 1);
+
+            unsafe {
+                self.device.inner.cmd_pipeline_barrier(
+                    command_buffer.inner,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[
+                        vk::BufferMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                            dst_access_mask: vk::AccessFlags::SHADER_READ,
+                            buffer: inputs.buf_src.inner,
+                            size: inputs.buf_src.size,
+                            ..Default::default()
+                        },
+                        vk::BufferMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                            dst_access_mask: vk::AccessFlags::SHADER_READ,
+                            buffer: inputs.buf_scratch.inner,
+                            size: inputs.buf_scratch.size,
+                            ..Default::default()
+                        },
+                    ],
+                    &[],
+                );
+            }
+        }
     }
 
     fn copy_buf(&self, command_buffer: &CommandBuffer, inputs: &ConvolutionInputs) {
@@ -315,10 +410,12 @@ impl ConvolutionPass {
 pub struct ConvolutionInputs<'a> {
     pub src_sampler: u32,
     pub src_storage: u32,
+    pub src_res: (u32, u32),
     pub target_sampler: u32,
     pub clamp: f32,
     pub buf_src: &'a Buffer,
     pub buf_dst: &'a Buffer,
+    pub buf_scratch: &'a Buffer,
 }
 
 #[derive(PartialEq, Copy, Clone, Debug)]

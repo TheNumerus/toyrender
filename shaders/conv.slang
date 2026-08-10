@@ -162,7 +162,7 @@ void mainSunless(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float3 hemi = rand_hemi(rand_vars_sphere);
     let dir = hemi.x * tangent + hemi.y * bitangent + hemi.z * dirBase;
 
-    float weight = 1.0 - step(0.95, dot(normalize(env.sun_dir_sun_angle.xyz), dir));
+    float weight = 1.0 - step(0.99, dot(normalize(env.sun_dir_sun_angle.xyz), dir));
 
     float3 col;
     switch (env.mode) {

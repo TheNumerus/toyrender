@@ -7,7 +7,10 @@ use crate::vulkan::{
 use ash::khr::acceleration_structure::Device as AccelerationStructureLoader;
 use ash::khr::ray_tracing_pipeline::Device as RayTracingPipelineLoader;
 use ash::vk;
-use ash::vk::{AccelerationStructureKHR, Packed24_8};
+use ash::vk::{
+    AccelerationStructureBuildRangeInfoKHR, AccelerationStructureGeometryKHR, AccelerationStructureKHR,
+    BuildAccelerationStructureFlagsKHR, DeviceSize, Packed24_8,
+};
 use gpu_allocator::MemoryLocation;
 use gpu_allocator::vulkan::Allocator;
 use std::collections::BTreeMap;
@@ -351,7 +354,6 @@ impl BottomLevelAs {
         flags: vk::BuildAccelerationStructureFlagsKHR,
     ) -> Result<BTreeMap<u64, Self>, AppError> {
         let mut blases = BTreeMap::new();
-        let mut bufs = BTreeMap::new();
 
         let cmd_buf = cmd_pool.allocate_cmd_buffers(1)?.pop().unwrap();
 
@@ -359,6 +361,16 @@ impl BottomLevelAs {
 
         let fence = Fence::new(device.clone())?;
         fence.reset()?;
+
+        let scratch_size = Self::find_scratchbuf_size(&rt_acc_struct_ext, &ranges, &geos, flags);
+        let scratch = Buffer::new_with_alignment(
+            device.clone(),
+            allocator.clone(),
+            MemoryLocation::GpuOnly,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            scratch_size,
+            device.rt_properties.min_bvh_scratch_alignment as u64,
+        )?;
 
         for id in geos.keys() {
             let geo = *geos.get(id).unwrap();
@@ -387,17 +399,6 @@ impl BottomLevelAs {
                 )
             };
 
-            let buf = Buffer::new_with_alignment(
-                device.clone(),
-                allocator.clone(),
-                MemoryLocation::GpuOnly,
-                vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-                size_info.build_scratch_size,
-                device.rt_properties.min_bvh_scratch_alignment as u64,
-            )?;
-
-            bufs.insert(*id, buf);
-
             let blas = Self::create(
                 device.clone(),
                 allocator.clone(),
@@ -407,7 +408,7 @@ impl BottomLevelAs {
 
             build_info.dst_acceleration_structure = blas.inner;
             build_info.scratch_data = vk::DeviceOrHostAddressKHR {
-                device_address: bufs[id].get_device_addr(),
+                device_address: scratch.get_device_addr(),
             };
 
             unsafe {
@@ -437,6 +438,46 @@ impl BottomLevelAs {
         }
 
         Ok(blases)
+    }
+
+    fn find_scratchbuf_size(
+        rt_acc_struct_ext: &Rc<RayTracingAs>,
+        ranges: &BTreeMap<u64, AccelerationStructureBuildRangeInfoKHR>,
+        geos: &BTreeMap<u64, AccelerationStructureGeometryKHR>,
+        flags: BuildAccelerationStructureFlagsKHR,
+    ) -> DeviceSize {
+        let mut scratch_size = 0;
+
+        for id in geos.keys() {
+            let geo = *geos.get(id).unwrap();
+            let range = *ranges.get(id).unwrap();
+
+            let geos = [geo];
+
+            let build_info = vk::AccelerationStructureBuildGeometryInfoKHR {
+                ty: vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
+                flags,
+                mode: vk::BuildAccelerationStructureModeKHR::BUILD,
+                src_acceleration_structure: vk::AccelerationStructureKHR::null(),
+                geometry_count: 1,
+                p_geometries: geos.as_ptr(),
+                ..Default::default()
+            };
+
+            let mut size_info = vk::AccelerationStructureBuildSizesInfoKHR::default();
+
+            unsafe {
+                rt_acc_struct_ext.loader.get_acceleration_structure_build_sizes(
+                    vk::AccelerationStructureBuildTypeKHR::DEVICE,
+                    &build_info,
+                    &[range.primitive_count],
+                    &mut size_info,
+                )
+            };
+
+            scratch_size = size_info.build_scratch_size.max(scratch_size);
+        }
+        scratch_size
     }
 }
 
@@ -470,7 +511,8 @@ impl TopLevelAs {
         blases: &BTreeMap<u64, BottomLevelAs>,
         tlas_index: TlasIndex,
     ) -> Result<Self, AppError> {
-        let mut instances = Vec::with_capacity(tlas_index.index.len());
+        // ensure something is allocated so that `as_ptr` later does not fail
+        let mut instances = Vec::with_capacity(tlas_index.index.len().max(1));
 
         for (_mesh_id, primitive_id, transform) in tlas_index.index {
             let blas = &blases[&primitive_id];

@@ -354,6 +354,13 @@ impl DescLayout {
                         descriptor_type: vk::DescriptorType::STORAGE_IMAGE,
                         ..Default::default()
                     },
+                    vk::DescriptorSetLayoutBinding {
+                        binding: 2,
+                        descriptor_count: 1,
+                        stage_flags: vk::ShaderStageFlags::COMPUTE,
+                        descriptor_type: vk::DescriptorType::STORAGE_BUFFER,
+                        ..Default::default()
+                    },
                 ]
             }
         }

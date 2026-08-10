@@ -80,7 +80,7 @@ impl PipelineBuilder {
             )));
         }
 
-        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info)
+        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info, DescLayout::Image)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
         let pipeline = Pipeline::new_graphics(
@@ -131,7 +131,7 @@ impl PipelineBuilder {
             )));
         }
 
-        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info)
+        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info, DescLayout::Compute)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
         let workgroup_size = refl
@@ -238,7 +238,7 @@ impl PipelineBuilder {
             )));
         }
 
-        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info)
+        let desc_layouts = Self::get_desc_layouts(descriptor_layouts, desc_sets_info, DescLayout::Compute)
             .map_err(|e| AppError::Import(format!("Error getting descriptor sets for '{}': {}", name.as_ref(), e)))?;
 
         let pipeline = Pipeline::new_rt(
@@ -285,14 +285,16 @@ impl PipelineBuilder {
     fn get_desc_layouts(
         descriptor_layouts: &DescriptorLayouts,
         desc_info: BTreeMap<u32, BTreeMap<u32, DescriptorInfo>>,
+        layout: DescLayout,
     ) -> Result<Vec<vk::DescriptorSetLayout>, AppError> {
         let mut sets = Vec::with_capacity(desc_info.len());
 
         // force global set on pos 0
         sets.push(descriptor_layouts.inner.get(&DescLayout::Global).unwrap().inner);
+        sets.push(descriptor_layouts.inner.get(&layout).unwrap().inner);
 
         // hope that no index is skipped in shader definition
-        for set in desc_info.values() {
+        /*for set in desc_info.values() {
             let layout = descriptor_layouts.guess_layout_from_reflection(set)?;
 
             // skip guessed global set
@@ -301,7 +303,7 @@ impl PipelineBuilder {
             }
 
             sets.push(layout);
-        }
+        }*/
 
         Ok(sets)
     }

@@ -62,7 +62,8 @@ fn main() -> Result<(), std::io::Error> {
         }
     }
 
-    archive.finish()?;
+    let writer = archive.finish()?;
+    writer.sync_all()?;
 
     let manifest_dir_string = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let build_type = std::env::var("PROFILE").unwrap();

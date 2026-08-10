@@ -6,6 +6,9 @@ ConstantBuffer<ViewProj> vp;
 [[vk::binding(4, 0)]]
 StructuredBuffer<MeshTransform> mesh;
 
+[[vk::binding(0, 1)]]
+Sampler2D images[];
+
 struct VSInput {
     float3 pos;
     float3 normal;
@@ -15,7 +18,6 @@ struct VSInput {
 
 struct FSInput {
     float4 pos : SV_Position;
-    float3 worldPos;
     float3 color;
     float3 mat;
     float2 uv;
@@ -34,7 +36,6 @@ FSInput vertMain(VSInput input, uint inst: SV_InstanceID, uniform uint first) {
 
     output.pos = mul(vp.proj[0], mul(vp.view[0], mul(mesh[inst + first].model, float4(input.pos, 1.0))));
     output.color = mesh[inst + first].color_rough.xyz * input.color.xyz;
-    output.worldPos = mul(mesh[inst + first].model, float4(input.pos, 1.0)).xyz;
     output.mat = mesh[inst + first].color_rough.w;
 
     int is_mirrored = mesh[inst + first].is_mirrored;
@@ -48,7 +49,7 @@ FSInput vertMain(VSInput input, uint inst: SV_InstanceID, uniform uint first) {
 }
 
 [shader("fragment")]
-FSOutput fragMain(FSInput input, bool ff: SV_IsFrontFace) {
+FSOutput fragMain(FSInput input, uint inst: SV_InstanceID, uniform uint first, bool ff: SV_IsFrontFace) {
     FSOutput output;
 
     output.color = float4(input.color, 1.0);
@@ -57,6 +58,19 @@ FSOutput fragMain(FSInput input, bool ff: SV_IsFrontFace) {
 
     if (!ff) {
         output.normal = float4((-input.normal + 1.0) * 0.5, 1.0);
+    }
+
+    if (mesh[inst + first].color_idx != -1) {
+        float4 tex = images[mesh[inst + first].color_idx].Sample(input.uv);
+        if (tex.a < 0.5) {
+            discard;
+        }
+        output.color *= tex;
+    }
+
+    if (mesh[inst + first].orm_idx != -1) {
+        float4 tex = images[mesh[inst + first].orm_idx].Sample(input.uv);
+        output.mat *= tex;
     }
 
     return output;

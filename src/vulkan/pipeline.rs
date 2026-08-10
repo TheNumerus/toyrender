@@ -96,11 +96,14 @@ impl Pipeline<Graphics> {
             ..Default::default()
         };
 
-        let ranges = [vk::PushConstantRange {
-            offset: 0,
-            size: push_consts_size,
-            stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-        }];
+        let mut ranges = Vec::with_capacity(if push_consts_size > 0 { 1 } else { 0 });
+        if push_consts_size > 0 {
+            ranges.push(vk::PushConstantRange {
+                offset: 0,
+                size: push_consts_size,
+                stage_flags: vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            });
+        }
 
         let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 
@@ -218,13 +221,16 @@ impl Pipeline<Rt> {
             ..Default::default()
         };
 
-        let ranges = [vk::PushConstantRange {
-            offset: 0,
-            size: push_consts_size,
-            stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
-                | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                | vk::ShaderStageFlags::MISS_KHR,
-        }];
+        let mut ranges = Vec::with_capacity(if push_consts_size > 0 { 1 } else { 0 });
+        if push_consts_size > 0 {
+            ranges.push(vk::PushConstantRange {
+                offset: 0,
+                size: push_consts_size,
+                stage_flags: vk::ShaderStageFlags::RAYGEN_KHR
+                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
+                    | vk::ShaderStageFlags::MISS_KHR,
+            });
+        }
 
         let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 
@@ -274,11 +280,14 @@ impl Pipeline<Compute> {
         push_consts_size: u32,
         workgroup_size: (u32, u32, u32),
     ) -> Result<Self, VulkanError> {
-        let ranges = [vk::PushConstantRange {
-            offset: 0,
-            size: push_consts_size,
-            stage_flags: vk::ShaderStageFlags::COMPUTE,
-        }];
+        let mut ranges = Vec::with_capacity(if push_consts_size > 0 { 1 } else { 0 });
+        if push_consts_size > 0 {
+            ranges.push(vk::PushConstantRange {
+                offset: 0,
+                size: push_consts_size,
+                stage_flags: vk::ShaderStageFlags::COMPUTE,
+            });
+        }
 
         let layout = create_layout(&device, &ranges, descriptor_layouts)?;
 

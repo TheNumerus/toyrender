@@ -1,5 +1,4 @@
 import Octa;
-
 import Common;
 import Sky;
 
@@ -64,7 +63,6 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     float ratio = global.res_x / global.res_y;
 
     float4 color = images[pc.color_idx].Sample(uv);
-    color.xyz = float3(0.7);
     float3 normal = images[pc.normal_idx].Sample(uv).xyz * 2.0 - 1.0;
     float depth = 1.0 - images[pc.depth_idx].Sample(uv).x;
 
@@ -107,12 +105,12 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     octNorm *= (convDim - 1.0) / convDim;
     octNorm += 0.5 / convDim;
-    float3 convRes = images[pc.conv_idx].Sample(octNorm).xyz;
+    float3 convRes = images[pc.conv_idx].Sample(octNorm).xyz * env.sky_color_intensity.w;
     indirect *= convRes;
 
     float3 diffuse_dir = direct + indirect;
     float3 specular = float3(0.0);
-    float3 lighted = ((diffuse_dir + specular));
+    float3 lighted = ((diffuse_dir + specular) * color.xyz);
 
     storages[pc.out_idx].Store(int2(x, y), float4(lighted, 1.0));
 }

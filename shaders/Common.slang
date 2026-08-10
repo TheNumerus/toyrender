@@ -46,6 +46,8 @@ public struct MeshTransform {
     public float4x4 inverse;
     public float4 color_rough;
     public int is_mirrored;
+    public int color_idx;
+    public int orm_idx;
 };
 
 public enum DebugMode {

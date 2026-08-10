@@ -119,6 +119,7 @@ impl PathTracePass {
             .add_u32(inputs.color.storage_index.unwrap())
             .add_u32(inputs.depth.storage_index.unwrap())
             .add_u32(inputs.normal.storage_index.unwrap())
+            .add_u32(inputs.orm.storage_index.unwrap())
             .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
             .add_u32(self.indirect_render_target.borrow().storage_index.unwrap())
             .add_u32(inputs.sky_sampler)
@@ -194,6 +195,7 @@ pub struct PathTraceInputs<'a> {
     pub color: &'a RenderTarget,
     pub depth: &'a RenderTarget,
     pub normal: &'a RenderTarget,
+    pub orm: &'a RenderTarget,
     pub sky_sampler: u32,
     pub sky: &'a SkyVariant,
     pub sbt: &'a ShaderBindingTable,

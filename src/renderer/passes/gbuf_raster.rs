@@ -278,7 +278,7 @@ impl GBufferPass {
         command_buffer.bind_descriptor_sets(
             vk::PipelineBindPoint::GRAPHICS,
             pipeline.layout,
-            [descriptors.global_set.inner],
+            [descriptors.global_set.inner, descriptors.image_set.inner],
         );
 
         for draw in draw_data {
@@ -306,9 +306,9 @@ impl GBufferPass {
 
                 self.device.inner.cmd_draw_indexed(
                     command_buffer.inner,
-                    mesh_data.index_count as u32,
+                    draw.primitive.index_count as u32,
                     draw.count,
-                    0,
+                    draw.primitive.index_offset as u32,
                     0,
                     0,
                 );

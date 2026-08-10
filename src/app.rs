@@ -43,7 +43,6 @@ pub(crate) mod shader_loader;
 use shader_loader::ShaderLoader;
 
 pub(crate) mod frame_stats;
-use crate::app::frame_stats::StatStorage;
 use frame_stats::FrameStats;
 
 static FONT: &[u8] = include_bytes!("../assets/Inter-Regular.ttf");
@@ -132,9 +131,16 @@ impl App {
         let mut gizmo_scene = import::extract_scene(debug::GIZMO_ARROW_SCENE)?;
         let arrow_gizmo = gizmo_scene.resources.pop().unwrap();
 
+        let mut gizmo_scene = import::extract_scene(debug::GIZMO_SPHERE_SCENE)?;
+        let sphere_gizmo = gizmo_scene.resources.pop().unwrap();
+
         //TODO move this elsewhere
-        self.resource_subsystem
-            .init_gizmo_meshes(&self.reference_renderer.tlas_prepare_cmd_buf, &[sun_gizmo, arrow_gizmo])?;
+        self.resource_subsystem.init_gizmo_meshes(
+            &self.reference_renderer.tlas_prepare_cmd_buf,
+            &[sun_gizmo, arrow_gizmo, sphere_gizmo],
+        )?;
+
+        info!("Loaded {} debug meshes", self.resource_subsystem.meshes.len(),);
 
         if let Some(path) = args.file_to_open {
             tx.send(ThreadAction::OpenScene {
@@ -184,6 +190,7 @@ impl App {
 
         let mut last_sun_sum = vec3(0.0, 0.0, 0.0);
         let mut last_sum = vec3(0.0, 0.0, 0.0);
+        let mut last_sky_update = None;
 
         // need to do this because of borrowing
         let Self {
@@ -309,6 +316,17 @@ impl App {
                     }
                     ThreadReply::OpenScene { data: is, name } => {
                         vulkan_context.device.wait_idle()?;
+
+                        info!(
+                            "Loaded {} meshes in {} instances",
+                            is.resources.len(),
+                            is.instances.len()
+                        );
+                        info!(
+                            "Loaded {} textures, total size {:.3} MB",
+                            is.textures.len(),
+                            is.textures.iter().fold(0, |acc, t| acc + t.data.as_bytes().len()) as f32 / 1024.0 / 1024.0
+                        );
 
                         messages.insert(UiMessage::ReferenceRenderReset);
 
@@ -516,6 +534,7 @@ impl App {
                             }
 
                             if ui.slider("Sky rotation", 0.0, 1.0, r) {
+                                last_sky_update = Some(std::time::Instant::now());
                                 messages.insert(UiMessage::ReferenceRenderReset);
                             }
                         }
@@ -547,6 +566,7 @@ impl App {
                         .build()
                     {
                         messages.insert(UiMessage::ReferenceRenderReset);
+                        last_sky_update = Some(std::time::Instant::now());
                         if let SkyVariant::Shader = scene.env.sky.variant {
                             messages.insert(UiMessage::ConvReset);
                         }
@@ -642,6 +662,10 @@ impl App {
                 total_time: frame_end.duration_since(start).as_secs_f32(),
                 clear_taa: resized || clear_taa || frame == 0 || !taa_enable,
                 frame_index: frame as u32,
+                draw_sky_gizmo: match last_sky_update {
+                    None => false,
+                    Some(t) => t.elapsed().as_secs_f32() < 3.0,
+                },
                 skip_primary_render,
             };
 
@@ -761,7 +785,7 @@ impl App {
                                     let sun_color = sun_only / color_adjust;
 
                                     scene.env.sun_color = sun_color;
-                                    scene.env.sun_intensity = color_adjust * std::f32::consts::PI * 2.0;
+                                    scene.env.sun_intensity = color_adjust * 4.0;
                                 };
 
                                 ConvolutionPassState::Finished
@@ -871,6 +895,7 @@ impl App {
                 clear_taa: false,
                 frame_index: frame as u32,
                 skip_primary_render: false,
+                draw_sky_gizmo: false,
             };
 
             self.renderer.render_frame(
@@ -991,6 +1016,7 @@ pub struct AppState {
     selected_renderer: SelectedRenderer,
     ui_visible: bool,
     fixed_sample: bool,
+    show_probe_debug: bool,
 }
 
 impl AppState {
@@ -999,6 +1025,7 @@ impl AppState {
             selected_renderer: SelectedRenderer::Reference,
             ui_visible: true,
             fixed_sample: false,
+            show_probe_debug: true,
         }
     }
 }

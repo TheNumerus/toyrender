@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 pub struct Image {
     pub inner: RawImage,
     pub usage: vk::ImageUsageFlags,
+    pub extent: vk::Extent3D,
     allocation: Option<Allocation>,
     device: Rc<Device>,
     pub allocator: Arc<Mutex<Allocator>>,
@@ -67,6 +68,7 @@ impl Image {
 
         Ok(Self {
             inner,
+            extent,
             usage,
             allocation: Some(allocation),
             device,

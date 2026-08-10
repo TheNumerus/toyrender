@@ -1,3 +1,4 @@
+use crate::camera::PerspectiveCamera;
 use crate::err::AppError;
 use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
 use crate::renderer::pipeline_builder::PipelineBuilder;
@@ -12,8 +13,11 @@ pub(crate) struct GizmoPass {
     device: Rc<Device>,
     pipeline: Rc<Pipeline<Graphics>>,
     pipeline_arrow: Rc<Pipeline<Graphics>>,
+    pipeline_sphere: Rc<Pipeline<Graphics>>,
+    pipeline_sphere_diff: Rc<Pipeline<Graphics>>,
     sun_gizmo_id: u64,
     arrow_gizmo_id: u64,
+    sphere_gizmo_id: u64,
 }
 
 impl GizmoPass {
@@ -23,6 +27,7 @@ impl GizmoPass {
         descriptor_layouts: &DescriptorLayouts,
         sun_gizmo_id: u64,
         arrow_gizmo_id: u64,
+        sphere_gizmo_id: u64,
     ) -> Result<Self, AppError> {
         let pipeline = pipeline_builder.build_graphics(
             "gizmo",
@@ -34,9 +39,27 @@ impl GizmoPass {
         )?;
 
         let pipeline_arrow = pipeline_builder.build_graphics(
-            "gizmo",
+            "gizmoArrow",
             "gizmo|vertArrow",
             "gizmo|frag",
+            descriptor_layouts,
+            &[vk::Format::R16G16B16A16_SFLOAT],
+            false,
+        )?;
+
+        let pipeline_sphere = pipeline_builder.build_graphics(
+            "gizmoSphere",
+            "gizmo_sphere|vert",
+            "gizmo_sphere|frag",
+            descriptor_layouts,
+            &[vk::Format::R16G16B16A16_SFLOAT],
+            false,
+        )?;
+
+        let pipeline_sphere_diff = pipeline_builder.build_graphics(
+            "gizmoSphereDiff",
+            "gizmo_sphere|vert",
+            "gizmo_sphere|fragDiff",
             descriptor_layouts,
             &[vk::Format::R16G16B16A16_SFLOAT],
             false,
@@ -46,8 +69,11 @@ impl GizmoPass {
             device,
             pipeline,
             pipeline_arrow,
+            pipeline_sphere,
+            pipeline_sphere_diff,
             sun_gizmo_id,
             arrow_gizmo_id,
+            sphere_gizmo_id,
         })
     }
 
@@ -60,161 +86,355 @@ impl GizmoPass {
     ) -> Result<(), VulkanError> {
         self.device.begin_label("Gizmos", command_buffer);
 
-        if inputs.draw_sky_gizmo {
-            let attachments = [vk::RenderingAttachmentInfo {
-                image_view: inputs.target.view.inner,
-                image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                load_op: vk::AttachmentLoadOp::DONT_CARE,
-                store_op: vk::AttachmentStoreOp::STORE,
-                ..Default::default()
-            }];
+        if !inputs.draw_sky_gizmo {
+            self.device.end_label(command_buffer);
 
-            let extent = vk::Extent2D {
-                width: inputs.viewport.0,
-                height: inputs.viewport.1,
-            };
+            return Ok(());
+        }
 
-            let rendering_info = vk::RenderingInfo {
-                render_area: vk::Rect2D {
-                    offset: vk::Offset2D::default(),
-                    extent,
-                },
-                layer_count: 1,
-                color_attachment_count: attachments.len() as u32,
-                p_color_attachments: attachments.as_ptr(),
-                p_depth_attachment: std::ptr::null(),
-                ..Default::default()
-            };
+        let attachments = [vk::RenderingAttachmentInfo {
+            image_view: inputs.target.view.inner,
+            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: vk::AttachmentLoadOp::DONT_CARE,
+            store_op: vk::AttachmentStoreOp::STORE,
+            ..Default::default()
+        }];
 
-            let image_color_res = vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
+        let extent = vk::Extent2D {
+            width: inputs.viewport.0,
+            height: inputs.viewport.1,
+        };
 
-            unsafe {
-                self.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::ALL_GRAPHICS,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        old_layout: vk::ImageLayout::GENERAL,
-                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        image: inputs.target.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    }],
-                );
-            }
-
-            command_buffer.begin_rendering(&rendering_info);
-
-            let viewport = vk::Viewport {
-                width: inputs.viewport.0 as f32,
-                height: inputs.viewport.1 as f32,
-                max_depth: 1.0,
-                ..Default::default()
-            };
-
-            command_buffer.bind_graphics_pipeline(&self.pipeline);
-            command_buffer.set_viewport(viewport);
-            command_buffer.set_scissor(vk::Rect2D {
+        let rendering_info = vk::RenderingInfo {
+            render_area: vk::Rect2D {
                 offset: vk::Offset2D::default(),
                 extent,
-            });
+            },
+            layer_count: 1,
+            color_attachment_count: attachments.len() as u32,
+            p_color_attachments: attachments.as_ptr(),
+            p_depth_attachment: std::ptr::null(),
+            ..Default::default()
+        };
+
+        let image_color_res = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    image: inputs.target.image.inner,
+                    subresource_range: image_color_res,
+                    ..Default::default()
+                }],
+            );
+        }
+
+        command_buffer.begin_rendering(&rendering_info);
+
+        let viewport = vk::Viewport {
+            width: inputs.viewport.0 as f32,
+            height: inputs.viewport.1 as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+
+        command_buffer.bind_graphics_pipeline(&self.pipeline);
+        command_buffer.set_viewport(viewport);
+        command_buffer.set_scissor(vk::Rect2D {
+            offset: vk::Offset2D::default(),
+            extent,
+        });
+
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline.layout,
+            [descriptors.global_set.inner],
+        );
+
+        let mesh_data = &resource_subsystem.meshes[&self.sun_gizmo_id];
+
+        command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
+
+        unsafe {
+            self.device
+                .inner
+                .cmd_set_cull_mode(command_buffer.inner, vk::CullModeFlags::NONE);
+
+            self.device.inner.cmd_bind_index_buffer(
+                command_buffer.inner,
+                mesh_data.buf.inner.inner,
+                mesh_data.indices_offset,
+                vk::IndexType::UINT32,
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
+        }
+
+        command_buffer.bind_graphics_pipeline(&self.pipeline_arrow);
+
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_arrow.layout,
+            [descriptors.global_set.inner],
+        );
+
+        let mesh_data = &resource_subsystem.meshes[&self.arrow_gizmo_id];
+
+        command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
+
+        let pc = PushConstBuilder::new().add_mat(inputs.arrow_rot).build();
+
+        command_buffer.push_constants(
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            self.pipeline_arrow.layout,
+            &pc,
+        );
+
+        unsafe {
+            self.device.inner.cmd_bind_index_buffer(
+                command_buffer.inner,
+                mesh_data.buf.inner.inner,
+                mesh_data.indices_offset,
+                vk::IndexType::UINT32,
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
+        }
+
+        let viewport = vk::Viewport {
+            width: extent.width as f32,
+            height: extent.height as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+        command_buffer.set_viewport(viewport);
+
+        command_buffer.end_rendering();
+
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    image: inputs.target.image.inner,
+                    subresource_range: image_color_res,
+                    ..Default::default()
+                }],
+            );
+        }
+
+        self.device.end_label(command_buffer);
+
+        Ok(())
+    }
+
+    pub fn record_spheres<'a>(
+        &self,
+        command_buffer: &'a CommandBuffer,
+        descriptors: &RendererDescriptors,
+        resource_subsystem: &ResourceSubsystem,
+        inputs: GizmoInputs<'a>,
+        render_target: &'a RenderTarget,
+        render_target_sun: &'a RenderTarget,
+    ) -> Result<(), VulkanError> {
+        self.device.begin_label("Gizmos", command_buffer);
+
+        let attachments = [vk::RenderingAttachmentInfo {
+            image_view: inputs.target.view.inner,
+            image_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            load_op: vk::AttachmentLoadOp::DONT_CARE,
+            store_op: vk::AttachmentStoreOp::STORE,
+            ..Default::default()
+        }];
+
+        let extent = vk::Extent2D {
+            width: inputs.viewport.0,
+            height: inputs.viewport.1,
+        };
+
+        let rendering_info = vk::RenderingInfo {
+            render_area: vk::Rect2D {
+                offset: vk::Offset2D::default(),
+                extent,
+            },
+            layer_count: 1,
+            color_attachment_count: attachments.len() as u32,
+            p_color_attachments: attachments.as_ptr(),
+            p_depth_attachment: std::ptr::null(),
+            ..Default::default()
+        };
+
+        let image_color_res = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        command_buffer.begin_rendering(&rendering_info);
+
+        let viewport = vk::Viewport {
+            width: inputs.viewport.0 as f32,
+            height: inputs.viewport.1 as f32,
+            max_depth: 1.0,
+            ..Default::default()
+        };
+
+        command_buffer.bind_graphics_pipeline(&self.pipeline_sphere);
+        command_buffer.set_viewport(viewport);
+        command_buffer.set_scissor(vk::Rect2D {
+            offset: vk::Offset2D::default(),
+            extent,
+        });
+
+        command_buffer.bind_descriptor_sets(
+            vk::PipelineBindPoint::GRAPHICS,
+            self.pipeline_sphere.layout,
+            [descriptors.global_set.inner, descriptors.image_set.inner],
+        );
+
+        let mesh_data = &resource_subsystem.meshes[&self.sphere_gizmo_id];
+
+        command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
+
+        let aspect_ratio = inputs.viewport.0 as f32 / inputs.viewport.1 as f32;
+
+        let scale = 3.0;
+
+        let mat = nalgebra_glm::ortho_rh_zo(-scale * aspect_ratio, scale * aspect_ratio, scale, -scale, -5.0, 5.0);
+
+        let pc = PushConstBuilder::new()
+            .add_mat(mat)
+            .add_f32((scale * aspect_ratio) - 3.0)
+            .add_f32(-2.0)
+            .add_f32(0.0)
+            .add_u32(render_target.sampler_index.unwrap())
+            .add_u32(0);
+
+        command_buffer.push_constants(
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            self.pipeline_sphere.layout,
+            pc.as_ref(),
+        );
+
+        unsafe {
+            self.device
+                .inner
+                .cmd_set_cull_mode(command_buffer.inner, vk::CullModeFlags::BACK);
+
+            self.device.inner.cmd_bind_index_buffer(
+                command_buffer.inner,
+                mesh_data.buf.inner.inner,
+                mesh_data.indices_offset,
+                vk::IndexType::UINT32,
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
+
+            let pc = pc
+                .update_f32((scale * aspect_ratio) - 1.0, 64)
+                .update_u32(render_target_sun.sampler_index.unwrap(), 76);
+
+            command_buffer.push_constants(
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                self.pipeline_sphere.layout,
+                pc.as_ref(),
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
+
+            let pc = pc
+                .update_f32((scale * aspect_ratio) - 5.0, 64)
+                .update_u32(render_target.sampler_index.unwrap(), 76)
+                .update_u32(1, 80);
+
+            command_buffer.push_constants(
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                self.pipeline_sphere.layout,
+                pc.as_ref(),
+            );
+
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
+
+            command_buffer.bind_graphics_pipeline(&self.pipeline_sphere_diff);
 
             command_buffer.bind_descriptor_sets(
                 vk::PipelineBindPoint::GRAPHICS,
-                self.pipeline.layout,
-                [descriptors.global_set.inner],
+                self.pipeline_sphere_diff.layout,
+                [descriptors.global_set.inner, descriptors.image_set.inner],
             );
 
-            let mesh_data = &resource_subsystem.meshes[&self.sun_gizmo_id];
+            let pc = pc
+                .update_f32((scale * aspect_ratio) - 7.0, 64)
+                .update_u32(render_target.sampler_index.unwrap(), 76)
+                .update_u32(render_target_sun.sampler_index.unwrap(), 80);
 
-            command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
+            command_buffer.push_constants(
+                vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                self.pipeline_sphere_diff.layout,
+                pc.as_ref(),
+            );
 
-            unsafe {
-                self.device
-                    .inner
-                    .cmd_set_cull_mode(command_buffer.inner, vk::CullModeFlags::NONE);
+            self.device
+                .inner
+                .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
+        }
 
-                self.device.inner.cmd_bind_index_buffer(
-                    command_buffer.inner,
-                    mesh_data.buf.inner.inner,
-                    mesh_data.indices_offset,
-                    vk::IndexType::UINT32,
-                );
+        command_buffer.end_rendering();
 
-                self.device
-                    .inner
-                    .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
-            }
-
-            command_buffer.bind_graphics_pipeline(&self.pipeline_arrow);
-
-            let mesh_data = &resource_subsystem.meshes[&self.arrow_gizmo_id];
-
-            command_buffer.bind_vertex_buffers(&[&mesh_data.buf], &[0]);
-
-            unsafe {
-                let pc = PushConstBuilder::new().add_mat(inputs.arrow_rot).build();
-
-                self.device.inner.cmd_push_constants(
-                    command_buffer.inner,
-                    self.pipeline.layout,
-                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-                    0,
-                    &pc,
-                );
-
-                self.device.inner.cmd_bind_index_buffer(
-                    command_buffer.inner,
-                    mesh_data.buf.inner.inner,
-                    mesh_data.indices_offset,
-                    vk::IndexType::UINT32,
-                );
-
-                self.device
-                    .inner
-                    .cmd_draw_indexed(command_buffer.inner, mesh_data.index_count as u32, 1, 0, 0, 0);
-            }
-
-            let viewport = vk::Viewport {
-                width: extent.width as f32,
-                height: extent.height as f32,
-                max_depth: 1.0,
-                ..Default::default()
-            };
-            command_buffer.set_viewport(viewport);
-
-            command_buffer.end_rendering();
-
-            unsafe {
-                self.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                    vk::PipelineStageFlags::ALL_GRAPHICS,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        image: inputs.target.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    }],
-                );
-            }
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                command_buffer.inner,
+                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                vk::PipelineStageFlags::ALL_GRAPHICS,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    image: inputs.target.image.inner,
+                    subresource_range: image_color_res,
+                    ..Default::default()
+                }],
+            );
         }
 
         self.device.end_label(command_buffer);
