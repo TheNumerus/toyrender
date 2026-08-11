@@ -107,6 +107,7 @@ impl PipelineBuilder {
         name: impl AsRef<str>,
         compute_name: impl AsRef<str>,
         descriptor_layouts: &DescriptorLayouts,
+        spec_consts: Option<SpecConsts>,
     ) -> Result<Rc<Pipeline<Compute>>, AppError> {
         let start = std::time::Instant::now();
 
@@ -114,9 +115,11 @@ impl PipelineBuilder {
         let (module, refl) = self.get_shader(compute_name, ShaderStage::Compute)?;
         module.set_name(compute_name.to_owned())?;
 
+        let spec_info = spec_consts.as_ref().map(|s| s.get_internal());
+
         let push_consts_size = refl
             .get_push_constant_range()
-            .map_err(|e| AppError::Import(e.to_string()))?
+            .map_err(|e| AppError::Import(format!("{}: '{}'", e, name.as_ref())))?
             .unwrap_or(rspirv_reflect::PushConstantInfo { offset: 0, size: 0 })
             .size;
 
@@ -138,9 +141,14 @@ impl PipelineBuilder {
             .get_compute_group_size()
             .ok_or_else(|| AppError::Import(format!("Error getting workgroup size for '{}'", name.as_ref())))?;
 
+        let stage_info = match &spec_info {
+            None => module.stage_info(),
+            Some(si) => module.stage_info().specialization_info(si),
+        };
+
         let pipeline = Pipeline::new_compute(
             self.device.clone(),
-            module.stage_info(),
+            stage_info,
             &desc_layouts,
             push_consts_size,
             workgroup_size,

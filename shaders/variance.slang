@@ -68,9 +68,10 @@ float compute_spatial_variance(int2 uv_int, float luma_base, int2 size) {
     float2 uv = (float2(uv_int) + 0.5) / float2(global.draw_res_x, global.draw_res_y);
     float3 base_normal = normalize(storages[pc.normal_idx].Load(uv_int).xyz * 2.0 - 1.0);
 
-    let base_depth = to_linear_depth(storages[pc.curr_depth_idx].Load(uv_int).x);
+    float depth = storages[pc.curr_depth_idx].Load(uv_int).x;
+    let base_depth = to_linear_depth(depth);
 
-    if (base_depth == 0.0) {
+    if (depth == 0.0) {
         return 0.0;
     }
 

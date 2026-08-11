@@ -24,7 +24,7 @@ impl TonemapPass {
     ) -> Result<Self, AppError> {
         let render_target = render_targets.add(Self::render_target_def())?;
 
-        let pipeline_handle = pipeline_builder.build_compute("tonemap", "tonemap|main", descriptor_layouts)?;
+        let pipeline_handle = pipeline_builder.build_compute("tonemap", "tonemap|main", descriptor_layouts, None)?;
 
         Ok(Self {
             device,

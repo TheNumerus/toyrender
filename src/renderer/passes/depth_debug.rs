@@ -20,7 +20,8 @@ impl DepthDebugPass {
         pipeline_builder: &mut PipelineBuilder,
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
-        let pipeline = pipeline_builder.build_compute("depth_convert", "depth_convert|main", descriptor_layouts)?;
+        let pipeline =
+            pipeline_builder.build_compute("depth_convert", "depth_convert|main", descriptor_layouts, None)?;
 
         Ok(Self {
             device,

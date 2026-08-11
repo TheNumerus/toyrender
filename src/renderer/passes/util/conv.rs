@@ -1,6 +1,6 @@
 use crate::err::AppError;
 use crate::renderer::descriptors::{DescriptorLayouts, RendererDescriptors};
-use crate::renderer::pipeline_builder::PipelineBuilder;
+use crate::renderer::pipeline_builder::{PipelineBuilder, SpecConsts};
 use crate::renderer::push_const::PushConstBuilder;
 use crate::renderer::render_target::{
     RenderTarget, RenderTargetBuilder, RenderTargetSampler, RenderTargetSize, RenderTargets,
@@ -37,15 +37,22 @@ impl ConvolutionPass {
         pipeline_builder: &mut PipelineBuilder,
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
-        let conv_pipeline = pipeline_builder.build_compute("conv", "conv|main", descriptor_layouts)?;
-        let conv_sunless_pipeline = pipeline_builder.build_compute("conv", "conv|mainSunless", descriptor_layouts)?;
-        let sum_pipeline = pipeline_builder.build_compute("image_avg", "image_avg|main", descriptor_layouts)?;
-        let max_init_pipeline =
-            pipeline_builder.build_compute("find_bright_spot_init", "find_bright_spot|mainInit", descriptor_layouts)?;
+        let conv_pipeline =
+            pipeline_builder.build_compute("conv", "conv|main", descriptor_layouts, Some(SpecConsts::new().push(0)))?;
+        let conv_sunless_pipeline =
+            pipeline_builder.build_compute("conv", "conv|main", descriptor_layouts, Some(SpecConsts::new().push(1)))?;
+        let sum_pipeline = pipeline_builder.build_compute("image_avg", "image_avg|main", descriptor_layouts, None)?;
+        let max_init_pipeline = pipeline_builder.build_compute(
+            "find_bright_spot_init",
+            "find_bright_spot|mainInit",
+            descriptor_layouts,
+            None,
+        )?;
         let max_pipeline = pipeline_builder.build_compute(
             "find_bright_spot",
             "find_bright_spot|mainSuccessive",
             descriptor_layouts,
+            None,
         )?;
 
         Ok(Self {

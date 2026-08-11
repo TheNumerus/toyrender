@@ -29,7 +29,7 @@ impl TaaPass {
         let render_target = render_targets.add(a)?;
         let render_target_history = render_targets.add(b)?;
 
-        let pipeline_handle = pipeline_builder.build_compute("taa", "taa|main", descriptor_layouts)?;
+        let pipeline_handle = pipeline_builder.build_compute("taa", "taa|main", descriptor_layouts, None)?;
 
         Ok(Self {
             device,

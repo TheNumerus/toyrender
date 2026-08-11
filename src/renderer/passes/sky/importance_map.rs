@@ -44,17 +44,18 @@ impl ImportanceMapPass {
         pipeline_builder: &mut PipelineBuilder,
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
-        let octa_pipeline_handle = pipeline_builder.build_compute("octa_map", "octa_map|main", descriptor_layouts)?;
+        let octa_pipeline_handle =
+            pipeline_builder.build_compute("octa_map", "octa_map|main", descriptor_layouts, None)?;
         let cdf_horizontal_pipeline_handle =
-            pipeline_builder.build_compute("cdf_horizontal_map", "cdf_map|horizontal", descriptor_layouts)?;
+            pipeline_builder.build_compute("cdf_horizontal_map", "cdf_map|horizontal", descriptor_layouts, None)?;
         let cdf_vertical_pipeline_handle =
-            pipeline_builder.build_compute("cdf_vertical_map", "cdf_map|vertical", descriptor_layouts)?;
+            pipeline_builder.build_compute("cdf_vertical_map", "cdf_map|vertical", descriptor_layouts, None)?;
         let pdf_normalize_pipeline_handle =
-            pipeline_builder.build_compute("pdf_normalize_map", "cdf_map|pdfNormalize", descriptor_layouts)?;
+            pipeline_builder.build_compute("pdf_normalize_map", "cdf_map|pdfNormalize", descriptor_layouts, None)?;
         let cdf_normalize_pipeline_handle =
-            pipeline_builder.build_compute("cdf_normalize_map", "cdf_map|cdfNormalize", descriptor_layouts)?;
+            pipeline_builder.build_compute("cdf_normalize_map", "cdf_map|cdfNormalize", descriptor_layouts, None)?;
         let cdf_invert_pipeline_handle =
-            pipeline_builder.build_compute("cdf_invert_map", "cdf_invert|main", descriptor_layouts)?;
+            pipeline_builder.build_compute("cdf_invert_map", "cdf_invert|main", descriptor_layouts, None)?;
 
         Ok(Self {
             device,

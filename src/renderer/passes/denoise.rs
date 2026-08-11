@@ -37,13 +37,13 @@ impl DenoisePass {
     ) -> Result<Self, AppError> {
         let denoise_pass_target = Self::render_target_def();
 
-        let spatial_pipeline = pipeline_builder.build_compute("atrous", "atrous|main", descriptor_layouts)?;
+        let spatial_pipeline = pipeline_builder.build_compute("atrous", "atrous|main", descriptor_layouts, None)?;
         let temporal_pipeline =
-            pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptor_layouts)?;
+            pipeline_builder.build_compute("denoise_temporal", "denoise_temporal|main", descriptor_layouts, None)?;
         let depth_gradient_pipeline =
-            pipeline_builder.build_compute("depth_gradient", "depth_gradient|main", descriptor_layouts)?;
+            pipeline_builder.build_compute("depth_gradient", "depth_gradient|main", descriptor_layouts, None)?;
         let variance_estimate_pipeline =
-            pipeline_builder.build_compute("variance", "variance|main", descriptor_layouts)?;
+            pipeline_builder.build_compute("variance", "variance|main", descriptor_layouts, None)?;
 
         Ok(Self {
             device,
@@ -112,7 +112,7 @@ impl DenoisePass {
 
         let clear = if inputs.clear { 1 } else { 0 };
 
-        let pc = PushConstBuilder::with_capacity(8 * size_of::<u32>())
+        let pc = PushConstBuilder::with_capacity(9 * size_of::<u32>())
             .add_u32(clear as u32)
             .add_u32(self.direct_render_target.borrow().storage_index.unwrap())
             .add_u32(inputs.depth.sampler_index.unwrap())

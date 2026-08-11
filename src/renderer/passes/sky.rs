@@ -28,7 +28,7 @@ impl SkyPass {
         pipeline_builder: &mut PipelineBuilder,
         descriptor_layouts: &DescriptorLayouts,
     ) -> Result<Self, AppError> {
-        let pipeline = pipeline_builder.build_compute("sky", "sky|main", descriptor_layouts)?;
+        let pipeline = pipeline_builder.build_compute("sky", "sky|main", descriptor_layouts, None)?;
 
         Ok(Self {
             device,
