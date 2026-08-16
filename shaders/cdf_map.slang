@@ -76,8 +76,9 @@ void pdfNormalize(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
 
     float value = storages[pc.out_idx].Load(int2(x, y)).x;
     float total = storages[pc.src_idx].Load(int2(1024, 1023)).x;
+    total /= 1024.0 * 1024.0;
 
-    storages[pc.out_idx].Store(int2(x, y), value / total);
+    storages[pc.out_idx].Store(int2(x, y), total);
 }
 
 [numthreads(16, 16, 1)]

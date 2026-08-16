@@ -166,54 +166,33 @@ impl GBufferPass {
             ..image_color_res
         };
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
-                        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        image: color_rt.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    },
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
-                        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        image: normal_rt.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    },
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
-                        dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        image: mat_rt.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    },
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
-                        dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-                        image: depth_rt.image.inner,
-                        subresource_range: image_depth_res,
-                        ..Default::default()
-                    },
-                ],
-            );
-        }
+        let mut barriers = [color_rt.image.inner, normal_rt.image.inner, mat_rt.image.inner]
+            .map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ,
+                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                old_layout: vk::ImageLayout::UNDEFINED,
+                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                image,
+                subresource_range: image_color_res,
+                ..Default::default()
+            })
+            .to_vec();
+
+        barriers.push(vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ,
+            dst_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            old_layout: vk::ImageLayout::UNDEFINED,
+            new_layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+            image: depth_rt.image.inner,
+            subresource_range: image_depth_res,
+            ..Default::default()
+        });
+
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::ALL_GRAPHICS,
+            vk::PipelineStageFlags::ALL_GRAPHICS | vk::PipelineStageFlags::TRANSFER,
+            &barriers,
+        );
 
         command_buffer.begin_rendering(&rendering_info);
 
@@ -325,54 +304,33 @@ impl GBufferPass {
 
         command_buffer.end_rendering();
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        image: color_rt.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    },
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        image: normal_rt.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    },
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        image: mat_rt.image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    },
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        image: depth_rt.image.inner,
-                        subresource_range: image_depth_res,
-                        ..Default::default()
-                    },
-                ],
-            );
-        }
+        let mut barriers = [color_rt.image.inner, normal_rt.image.inner, mat_rt.image.inner]
+            .map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                image,
+                subresource_range: image_color_res,
+                ..Default::default()
+            })
+            .to_vec();
+
+        barriers.push(vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
+            dst_access_mask: vk::AccessFlags::SHADER_READ,
+            old_layout: vk::ImageLayout::DEPTH_ATTACHMENT_OPTIMAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            image: depth_rt.image.inner,
+            subresource_range: image_depth_res,
+            ..Default::default()
+        });
+
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            &barriers,
+        );
 
         self.device.end_label(command_buffer);
         Ok(())

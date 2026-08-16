@@ -61,31 +61,19 @@ impl DepthDebugPass {
 
         command_buffer.dispatch(x, y, 1);
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    image: render_target.borrow().image.inner,
-                    subresource_range: vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    },
-                    ..Default::default()
-                }],
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                image: render_target.borrow().image.inner,
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
+            }],
+        );
 
         self.device.end_label(command_buffer);
 

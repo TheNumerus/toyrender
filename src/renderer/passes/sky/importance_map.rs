@@ -228,29 +228,21 @@ impl ImportanceMapPass {
     }
 
     fn intra_barrier(&self, command_buffer: &CommandBuffer, render_target: &Rc<RefCell<RenderTarget>>) {
-        unsafe {
-            let barriers = [render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                ..Default::default()
-            });
+        let barriers = [render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+            dst_access_mask: vk::AccessFlags::SHADER_READ,
+            old_layout: vk::ImageLayout::GENERAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        });
 
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &barriers,
+        );
     }
 }
 

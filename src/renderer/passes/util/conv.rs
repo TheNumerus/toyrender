@@ -95,25 +95,25 @@ impl ConvolutionPass {
                 layer_count: 1,
             };
 
-            unsafe {
-                self.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::ALL_COMMANDS,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::NONE,
-                        dst_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        image: self.conv_render_target.borrow().image.inner,
-                        subresource_range: image_color_res,
-                        ..Default::default()
-                    }],
-                );
-            }
+            let barriers = [
+                self.conv_render_target.borrow().image.inner,
+                self.conv_sun_render_target.borrow().image.inner,
+            ]
+            .map(|image| vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::NONE,
+                dst_access_mask: vk::AccessFlags::SHADER_WRITE,
+                old_layout: vk::ImageLayout::UNDEFINED,
+                new_layout: vk::ImageLayout::GENERAL,
+                image,
+                subresource_range: image_color_res,
+                ..Default::default()
+            });
+
+            command_buffer.pipeline_image_barrier(
+                vk::PipelineStageFlags::ALL_COMMANDS,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                &barriers,
+            );
 
             self.init.replace(true);
         }
@@ -205,6 +205,8 @@ impl ConvolutionPass {
         let pc = PushConstBuilder::with_capacity(4 * size_of::<f32>())
             .add_u32(inputs.src_sampler)
             .add_u32(dst_storage)
+            .add_u32(inputs.sky_pdf.sampler_index.unwrap())
+            .add_u32(inputs.sky_importance_map.storage_index.unwrap())
             .add_u32(iteration + 1)
             .build();
 
@@ -220,25 +222,19 @@ impl ConvolutionPass {
             layer_count: 1,
         };
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    image: self.conv_render_target.borrow().image.inner,
-                    subresource_range: image_color_res,
-                    ..Default::default()
-                }],
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                image: self.conv_render_target.borrow().image.inner,
+                subresource_range: image_color_res,
+                ..Default::default()
+            }],
+        );
     }
 
     fn sum(&self, command_buffer: &CommandBuffer, descriptors: &RendererDescriptors, src_storage: u32) {
@@ -284,32 +280,19 @@ impl ConvolutionPass {
 
         command_buffer.dispatch(1, count, 1);
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[
-                    vk::BufferMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        buffer: inputs.buf_src.inner,
-                        size: inputs.buf_src.size,
-                        ..Default::default()
-                    },
-                    vk::BufferMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        buffer: inputs.buf_scratch.inner,
-                        size: inputs.buf_scratch.size,
-                        ..Default::default()
-                    },
-                ],
-                &[],
-            );
-        }
+        let barriers = [inputs.buf_src, inputs.buf_scratch].map(|buf| vk::BufferMemoryBarrier {
+            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+            dst_access_mask: vk::AccessFlags::SHADER_READ,
+            buffer: buf.inner,
+            size: buf.size,
+            ..Default::default()
+        });
+
+        command_buffer.pipeline_buffer_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &barriers,
+        );
 
         loop {
             if count == 1 {
@@ -337,53 +320,28 @@ impl ConvolutionPass {
 
             command_buffer.dispatch(1, count, 1);
 
-            unsafe {
-                self.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[
-                        vk::BufferMemoryBarrier {
-                            src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                            dst_access_mask: vk::AccessFlags::SHADER_READ,
-                            buffer: inputs.buf_src.inner,
-                            size: inputs.buf_src.size,
-                            ..Default::default()
-                        },
-                        vk::BufferMemoryBarrier {
-                            src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                            dst_access_mask: vk::AccessFlags::SHADER_READ,
-                            buffer: inputs.buf_scratch.inner,
-                            size: inputs.buf_scratch.size,
-                            ..Default::default()
-                        },
-                    ],
-                    &[],
-                );
-            }
+            command_buffer.pipeline_buffer_barrier(
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                &barriers,
+            );
         }
     }
 
     fn copy_buf(&self, command_buffer: &CommandBuffer, inputs: &ConvolutionInputs) {
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[vk::BufferMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::TRANSFER_READ,
-                    buffer: inputs.buf_src.inner,
-                    size: inputs.buf_src.size,
-                    ..Default::default()
-                }],
-                &[],
-            );
+        command_buffer.pipeline_buffer_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            &[vk::BufferMemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                dst_access_mask: vk::AccessFlags::TRANSFER_READ,
+                buffer: inputs.buf_src.inner,
+                size: inputs.buf_src.size,
+                ..Default::default()
+            }],
+        );
 
+        unsafe {
             self.device.inner.cmd_copy_buffer(
                 command_buffer.inner,
                 inputs.buf_src.inner,
@@ -394,23 +352,19 @@ impl ConvolutionPass {
                     src_offset: 0,
                 }],
             );
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[vk::BufferMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    buffer: inputs.buf_dst.inner,
-                    size: inputs.buf_dst.size,
-                    ..Default::default()
-                }],
-                &[],
-            );
         }
+
+        command_buffer.pipeline_buffer_barrier(
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &[vk::BufferMemoryBarrier {
+                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                buffer: inputs.buf_dst.inner,
+                size: inputs.buf_dst.size,
+                ..Default::default()
+            }],
+        );
     }
 }
 
@@ -423,6 +377,8 @@ pub struct ConvolutionInputs<'a> {
     pub buf_src: &'a Buffer,
     pub buf_dst: &'a Buffer,
     pub buf_scratch: &'a Buffer,
+    pub sky_pdf: &'a RenderTarget,
+    pub sky_importance_map: &'a RenderTarget,
 }
 
 #[derive(PartialEq, Copy, Clone, Debug)]

@@ -21,6 +21,8 @@ RWTexture2D<float4> storages[];
 struct PushConsts {
     int src_idx;
     int out_idx;
+    int pdf_idx;
+    int importance_idx;
     int iteration;
 };
 
@@ -54,6 +56,10 @@ void compute_default_basis(const float3 normal, out float3 x, out float3 y) {
     y = normalize(((abs(z.z) > 0.99999f) ? float3(-z.x * z.y, 1.0f - z.y * z.y, yz) : float3(-z.x * z.z, yz, 1.0f - z.z * z.z)));
 
     x = cross(y, z);
+}
+
+float luminance(float3 v) {
+    return dot(v, float3(0.2126f, 0.7152f, 0.0722f));
 }
 
 groupshared float3 colors[1024];
@@ -114,6 +120,10 @@ void writeOut(float3 val, uint3 tid) {
 
     float3 orig = storages[pc.out_idx].Load(tid.xy).xyz;
 
+    if (any(isnan(orig))) {
+        orig = 0.0;
+    }
+
     float alpha = (pc.iteration - 1.0) / float(pc.iteration);
     blend = lerp(blend, orig, alpha);
 
@@ -139,13 +149,47 @@ void main(uint3 tid: SV_DispatchThreadID) {
     float x = (float(tid.x)) / width;
     float y = (float(tid.y)) / height;
 
-    let dir = dir(tid, float2(x, y));
+    float3 col = 0.0;
 
-    float3 col = sky(dir);
+    if (env.mode == SkyMode::Shader) {
+        let dir = dir(tid, float2(x, y));
+        col = Toyrender::Sky::sample_distorted(dir, images[pc.src_idx]);
 
-    if (skipSun != 0) {
-        float weight = 1.0 - step(0.99, dot(normalize(env.sun_dir_sun_angle.xyz), dir));
-        col *= weight;
+        if (skipSun != 0) {
+            float weight = 1.0 - step(0.99, dot(normalize(env.sun_dir_sun_angle.xyz), dir));
+            col *= weight;
+        }
+    } else if (env.mode == SkyMode::Textured) {
+        if (skipSun == 0) {
+            float3 dirBase = Toyrender::Octa::decode(2.0 * float2(x, y) - 1.0);
+
+            hash_state = (tid.z + pc.iteration * 1024);
+            rand(hash_state);
+
+            float2 rand_vars_sphere = float2(rand(hash_state), rand(hash_state));
+            float2 mapped = rand_vars_sphere;
+
+            mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
+            mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
+
+            float3 dir = Toyrender::Octa::rand(mapped);
+            if (dot(dir, dirBase) >= 0.0) {
+                float3 sky_color = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+
+                float pdf = luminance(sky_color) / images[pc.pdf_idx].SampleLevelZero(mapped).x;
+                float adjust = pdf / 4.0;
+
+                col = (sky_color / adjust) * dot(dir, dirBase);
+            }
+        } else {
+            let dir = dir(tid, float2(x, y));
+            col = Toyrender::Sky::sample(dir, images[pc.src_idx], 0.0);
+
+            float weight = 1.0 - step(0.99, dot(normalize(env.sun_dir_sun_angle.xyz), dir));
+            col *= weight;
+        }
+    } else {
+        col = env.sky_color_intensity.xyz;
     }
 
     colors[tid.z] = col;

@@ -1,3 +1,5 @@
+import Common;
+
 module Octa;
 
 float signNotZero(in float k) {
@@ -24,5 +26,18 @@ public float3 decode(float2 o) {
         v.xy = (1.f - abs(v.yx)) * signNotZero(v.xy);
     }
     return normalize(v);
+}
+
+public float3 rand(float2 u) {
+    float2 u = 2.0 * u - 1.0;
+    float d = 1.0 - (abs(u.x) + abs(u.y));
+    float r = 1.0 - abs(d);
+
+    float phi = (r == 0.0) ? 0.0 : (PI / 4.0) * ((abs(u.y) - abs(u.x)) / r + 1.0);
+    float f = r * sqrt(2.0 - r * r);
+    float x = f * sign(u.x) * cos(phi);
+    float y = f * sign(u.y) * sin(phi);
+    float z = sign(d) * (1.0 - r * r);
+    return normalize(float3(x, y, z));
 }
 }

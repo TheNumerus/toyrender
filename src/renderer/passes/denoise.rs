@@ -141,50 +141,42 @@ impl DenoisePass {
 
         command_buffer.dispatch(x, y, 1);
 
+        let barriers = [
+            self.direct_render_target.borrow().image.inner,
+            self.indirect_render_target.borrow().image.inner,
+            self.moments_direct_render_target.borrow().image.inner,
+            self.moments_indirect_render_target.borrow().image.inner,
+        ]
+        .map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+            dst_access_mask: vk::AccessFlags::SHADER_READ,
+            old_layout: vk::ImageLayout::GENERAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        });
+
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &barriers,
+        );
+
+        let extent_3d = vk::Extent3D {
+            width: viewport.0,
+            height: viewport.1,
+            depth: 1,
+        };
+
+        let image_color_res = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
         unsafe {
-            let barriers = [
-                self.direct_render_target.borrow().image.inner,
-                self.indirect_render_target.borrow().image.inner,
-                self.moments_direct_render_target.borrow().image.inner,
-                self.moments_indirect_render_target.borrow().image.inner,
-            ]
-            .map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                ..Default::default()
-            });
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
-
-        unsafe {
-            let extent_3d = vk::Extent3D {
-                width: viewport.0,
-                height: viewport.1,
-                depth: 1,
-            };
-
-            let image_color_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
-
             self.device.inner.cmd_copy_image(
                 command_buffer.inner,
                 self.moments_direct_render_target.borrow().image.inner,
@@ -265,54 +257,44 @@ impl DenoisePass {
 
         command_buffer.dispatch(x, y, 1);
 
-        unsafe {
-            let mut barriers = [
-                self.direct_render_target_acc.borrow().image.inner,
-                self.indirect_render_target_acc.borrow().image.inner,
-                self.depth_gradient.borrow().image.inner,
+        let mut barriers = [
+            self.direct_render_target_acc.borrow().image.inner,
+            self.indirect_render_target_acc.borrow().image.inner,
+            self.depth_gradient.borrow().image.inner,
+        ]
+        .into_iter()
+        .map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+            dst_access_mask: vk::AccessFlags::SHADER_READ,
+            old_layout: vk::ImageLayout::GENERAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+
+        barriers.extend(
+            [
+                self.moments_direct_history.borrow().image.inner,
+                self.moments_indirect_history.borrow().image.inner,
             ]
-            .into_iter()
             .map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                dst_access_mask: vk::AccessFlags::MEMORY_READ,
                 old_layout: vk::ImageLayout::GENERAL,
                 new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                 image,
                 subresource_range: crate::vulkan::Image::single_color_layer_range(),
                 ..Default::default()
-            })
-            .collect::<Vec<_>>();
+            }),
+        );
 
-            barriers.extend(
-                [
-                    self.moments_direct_history.borrow().image.inner,
-                    self.moments_indirect_history.borrow().image.inner,
-                ]
-                .map(|image| vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                    dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                    image,
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }),
-            );
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &barriers,
+        );
 
         self.device.end_label(command_buffer);
 
@@ -378,75 +360,57 @@ impl DenoisePass {
                 };
 
                 if level != 1 {
-                    unsafe {
-                        let barriers = barriers.map(|image| vk::ImageMemoryBarrier {
+                    let barriers = barriers.map(|image| vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        old_layout: vk::ImageLayout::GENERAL,
+                        new_layout: vk::ImageLayout::GENERAL,
+                        image,
+                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                        ..Default::default()
+                    });
+
+                    command_buffer.pipeline_image_barrier(
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        &barriers,
+                    );
+                } else {
+                    // wait for second level and copy result at the same time
+                    let mut barriers = barriers
+                        .map(|image| vk::ImageMemoryBarrier {
                             src_access_mask: vk::AccessFlags::SHADER_WRITE,
                             dst_access_mask: vk::AccessFlags::SHADER_READ,
                             old_layout: vk::ImageLayout::GENERAL,
                             new_layout: vk::ImageLayout::GENERAL,
-                            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
                             image,
                             subresource_range: crate::vulkan::Image::single_color_layer_range(),
                             ..Default::default()
-                        });
+                        })
+                        .into_iter()
+                        .collect::<Vec<_>>();
 
-                        self.device.inner.cmd_pipeline_barrier(
-                            command_buffer.inner,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &barriers,
-                        );
-                    }
-                } else {
-                    // wait for second level and copy result at the same time
-                    unsafe {
-                        let mut barriers = barriers
-                            .map(|image| vk::ImageMemoryBarrier {
-                                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                                old_layout: vk::ImageLayout::GENERAL,
-                                new_layout: vk::ImageLayout::GENERAL,
-                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                image,
-                                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                                ..Default::default()
-                            })
-                            .into_iter()
-                            .collect::<Vec<_>>();
+                    barriers.extend(
+                        [
+                            self.direct_render_target_history.borrow().image.inner,
+                            self.indirect_render_target_history.borrow().image.inner,
+                        ]
+                        .map(|image| vk::ImageMemoryBarrier {
+                            src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+                            dst_access_mask: vk::AccessFlags::MEMORY_READ,
+                            old_layout: vk::ImageLayout::GENERAL,
+                            new_layout: vk::ImageLayout::GENERAL,
+                            image,
+                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                            ..Default::default()
+                        }),
+                    );
 
-                        barriers.extend(
-                            [
-                                self.direct_render_target_history.borrow().image.inner,
-                                self.indirect_render_target_history.borrow().image.inner,
-                            ]
-                            .map(|image| vk::ImageMemoryBarrier {
-                                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                                old_layout: vk::ImageLayout::GENERAL,
-                                new_layout: vk::ImageLayout::GENERAL,
-                                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                                image,
-                                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                                ..Default::default()
-                            }),
-                        );
-
-                        self.device.inner.cmd_pipeline_barrier(
-                            command_buffer.inner,
-                            vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
-                            vk::PipelineStageFlags::COMPUTE_SHADER,
-                            vk::DependencyFlags::empty(),
-                            &[],
-                            &[],
-                            &barriers,
-                        );
-                    }
+                    command_buffer.pipeline_image_barrier(
+                        vk::PipelineStageFlags::COMPUTE_SHADER | vk::PipelineStageFlags::TRANSFER,
+                        vk::PipelineStageFlags::COMPUTE_SHADER,
+                        &barriers,
+                    );
                 }
 
                 // after first level copy denoised result to history buffer

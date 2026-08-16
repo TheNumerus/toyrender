@@ -1,6 +1,7 @@
+use crate::renderer::VulkanContext;
 use crate::vulkan::{
-    Buffer, Compute, DebugMarker, Device, Graphics, Image, IntoVulkanError, Pipeline, Rt, VertexIndexBuffer,
-    VulkanError,
+    Buffer, Compute, DebugMarker, Device, Graphics, Image, IntoVulkanError, Pipeline, Rt, ShaderBindingTable,
+    VertexIndexBuffer, VulkanError,
 };
 use ash::vk;
 use ash::vk::{CommandBuffer as RawCommandBuffer, Handle, Rect2D, Viewport};
@@ -159,6 +160,80 @@ impl CommandBuffer {
             self.device
                 .inner
                 .cmd_copy_image_to_buffer(self.inner, src.inner, src_layout, dst.inner, &[*region]);
+        }
+    }
+
+    pub fn pipeline_barrier(
+        &self,
+        src_stage_mask: vk::PipelineStageFlags,
+        dst_stage_mask: vk::PipelineStageFlags,
+        memory_barriers: &[vk::MemoryBarrier],
+        buffer_memory_barriers: &[vk::BufferMemoryBarrier],
+        image_memory_barriers: &[vk::ImageMemoryBarrier],
+    ) {
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                self.inner,
+                src_stage_mask,
+                dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                memory_barriers,
+                buffer_memory_barriers,
+                image_memory_barriers,
+            );
+        }
+    }
+
+    pub fn pipeline_buffer_barrier(
+        &self,
+        src_stage_mask: vk::PipelineStageFlags,
+        dst_stage_mask: vk::PipelineStageFlags,
+        buffer_memory_barriers: &[vk::BufferMemoryBarrier],
+    ) {
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                self.inner,
+                src_stage_mask,
+                dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                &[],
+                buffer_memory_barriers,
+                &[],
+            );
+        }
+    }
+
+    pub fn pipeline_image_barrier(
+        &self,
+        src_stage_mask: vk::PipelineStageFlags,
+        dst_stage_mask: vk::PipelineStageFlags,
+        image_memory_barriers: &[vk::ImageMemoryBarrier],
+    ) {
+        unsafe {
+            self.device.inner.cmd_pipeline_barrier(
+                self.inner,
+                src_stage_mask,
+                dst_stage_mask,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                image_memory_barriers,
+            );
+        }
+    }
+
+    pub fn trace_rays(&self, context: &VulkanContext, sbt: &ShaderBindingTable, width: u32, height: u32) {
+        unsafe {
+            context.rt_pipeline_ext.loader.cmd_trace_rays(
+                self.inner,
+                &sbt.raygen_region,
+                &sbt.miss_region,
+                &sbt.hit_region,
+                &sbt.call_region,
+                width,
+                height,
+                1,
+            );
         }
     }
 }

@@ -389,77 +389,68 @@ impl VulkanMcPathTracer {
         color_images: &[vk::Image],
         depth_images: &[vk::Image],
     ) -> Result<(), VulkanError> {
+        let cmd_buf = command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
+
+        cmd_buf.begin_one_time()?;
+
+        let mut barriers = Vec::with_capacity(color_images.len() + depth_images.len());
+
+        let barrier_base = vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::empty(),
+            dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
+            old_layout: vk::ImageLayout::UNDEFINED,
+            new_layout: vk::ImageLayout::GENERAL,
+            ..Default::default()
+        };
+
+        let color_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let depth_range = vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            ..color_range
+        };
+
+        for image in color_images {
+            barriers.push(vk::ImageMemoryBarrier {
+                image: *image,
+                subresource_range: color_range,
+                ..barrier_base
+            });
+        }
+
+        for image in depth_images {
+            barriers.push(vk::ImageMemoryBarrier {
+                image: *image,
+                subresource_range: depth_range,
+                ..barrier_base
+            });
+        }
+
+        cmd_buf.pipeline_image_barrier(
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            &barriers,
+        );
+
+        cmd_buf.end()?;
+
+        let submit_info = vk::SubmitInfo {
+            command_buffer_count: 1,
+            p_command_buffers: &cmd_buf.inner,
+            ..Default::default()
+        };
+
         unsafe {
-            let cmd_buf = command_pool.allocate_cmd_buffers(1)?.pop().unwrap();
-
-            cmd_buf.begin_one_time()?;
-
-            let mut barriers = Vec::with_capacity(color_images.len() + depth_images.len());
-
-            let barrier_base = vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::empty(),
-                dst_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                old_layout: vk::ImageLayout::UNDEFINED,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                ..Default::default()
-            };
-
-            let color_range = vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                base_mip_level: 0,
-                level_count: 1,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
-            let depth_range = vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::DEPTH,
-                ..color_range
-            };
-
-            for image in color_images {
-                barriers.push(vk::ImageMemoryBarrier {
-                    image: *image,
-                    subresource_range: color_range,
-                    ..barrier_base
-                });
-            }
-
-            for image in depth_images {
-                barriers.push(vk::ImageMemoryBarrier {
-                    image: *image,
-                    subresource_range: depth_range,
-                    ..barrier_base
-                });
-            }
-
-            device.inner.cmd_pipeline_barrier(
-                cmd_buf.inner,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-
-            cmd_buf.end()?;
-
-            let submit_info = vk::SubmitInfo {
-                command_buffer_count: 1,
-                p_command_buffers: &cmd_buf.inner,
-                ..Default::default()
-            };
-
             device
                 .inner
                 .queue_submit(device.graphics_queue, &[submit_info], vk::Fence::null())
                 .map_to_err("Cannot submit queue")?;
-            device
-                .inner
-                .queue_wait_idle(device.graphics_queue)
-                .map_to_err("Cannot wait idle")
+            device.wait_idle()
         }
     }
 
@@ -654,25 +645,19 @@ impl VulkanMcPathTracer {
 
         command_buffer.end_rendering();
 
-        unsafe {
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                    dst_access_mask: vk::AccessFlags::TRANSFER_READ,
-                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
-                    image: self.context.swap_chain.borrow().images[image_index as usize],
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }],
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::ALL_GRAPHICS,
+            vk::PipelineStageFlags::TRANSFER,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: vk::AccessFlags::TRANSFER_READ,
+                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                new_layout: vk::ImageLayout::PRESENT_SRC_KHR,
+                image: self.context.swap_chain.borrow().images[image_index as usize],
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
+            }],
+        );
 
         command_buffer.end()?;
 
@@ -760,33 +745,27 @@ impl VulkanMcPathTracer {
             SkyVariant::Textured(ir, _) => descriptors.samplers[&ir.id],
         };
 
-        unsafe {
-            let barriers = [self.passes.sky.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                dst_access_mask: vk::AccessFlags::SHADER_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                ..Default::default()
-            });
+        let barriers = [self.passes.sky.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::SHADER_WRITE | vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+            dst_access_mask: vk::AccessFlags::SHADER_READ,
+            old_layout: vk::ImageLayout::GENERAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        });
 
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[vk::MemoryBarrier {
-                    src_access_mask: vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
-                    ..Default::default()
-                }],
-                &[],
-                &barriers,
-            );
-        }
+        command_buffer.pipeline_barrier(
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
+            &[vk::MemoryBarrier {
+                src_access_mask: vk::AccessFlags::ACCELERATION_STRUCTURE_WRITE_KHR,
+                dst_access_mask: vk::AccessFlags::SHADER_READ | vk::AccessFlags::ACCELERATION_STRUCTURE_READ_KHR,
+                ..Default::default()
+            }],
+            &[],
+            &barriers,
+        );
 
         if let SkyVariant::Textured(_, _) = &scene.env.sky.variant {
             self.passes.importance_map.record(
@@ -797,35 +776,29 @@ impl VulkanMcPathTracer {
                 },
             )?;
 
-            unsafe {
-                let barriers = [self.passes.importance_map.cdf_render_target.borrow().image.inner].map(|image| {
-                    vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::GENERAL,
-                        new_layout: vk::ImageLayout::GENERAL,
-                        src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                        dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                        image,
-                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                        ..Default::default()
-                    }
-                });
+            let barriers = [self.passes.importance_map.cdf_render_target.borrow().image.inner].map(|image| {
+                vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    old_layout: vk::ImageLayout::GENERAL,
+                    new_layout: vk::ImageLayout::GENERAL,
+                    image,
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                    ..Default::default()
+                }
+            });
 
-                self.context.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[vk::MemoryBarrier {
-                        src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        ..Default::default()
-                    }],
-                    &[],
-                    &barriers,
-                );
-            }
+            command_buffer.pipeline_barrier(
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                &[vk::MemoryBarrier {
+                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    ..Default::default()
+                }],
+                &[],
+                &barriers,
+            );
         }
 
         self.passes.pt.record_pt(
@@ -897,24 +870,16 @@ impl VulkanMcPathTracer {
             dst_access_mask: vk::AccessFlags::SHADER_WRITE,
             old_layout: vk::ImageLayout::UNDEFINED,
             new_layout: vk::ImageLayout::GENERAL,
-            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
             image,
             subresource_range: crate::vulkan::Image::single_color_layer_range(),
             ..Default::default()
         });
 
-        unsafe {
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::ACCELERATION_STRUCTURE_BUILD_KHR,
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR | vk::PipelineStageFlags::COMPUTE_SHADER,
+            &barriers,
+        );
     }
 
     fn record_end_copy(
@@ -925,44 +890,40 @@ impl VulkanMcPathTracer {
     ) -> Result<(), VulkanError> {
         let src_image = self.render_targets.get("tonemap_out").unwrap().borrow().image.inner;
 
+        let offset_min = vk::Offset3D { x: 0, y: 0, z: 0 };
+        let offset_src_max = vk::Offset3D {
+            x: viewport_size.0 as i32,
+            y: viewport_size.1 as i32,
+            z: 1,
+        };
+        let offset_dst_max = vk::Offset3D {
+            x: self.context.swap_chain.borrow().extent.width as i32,
+            y: self.context.swap_chain.borrow().extent.height as i32,
+            z: 1,
+        };
+
+        let subresource = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::NONE,
+                dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                old_layout: vk::ImageLayout::UNDEFINED,
+                new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                image: *target,
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
+            }],
+        );
+
         unsafe {
-            let offset_min = vk::Offset3D { x: 0, y: 0, z: 0 };
-            let offset_src_max = vk::Offset3D {
-                x: viewport_size.0 as i32,
-                y: viewport_size.1 as i32,
-                z: 1,
-            };
-            let offset_dst_max = vk::Offset3D {
-                x: self.context.swap_chain.borrow().extent.width as i32,
-                y: self.context.swap_chain.borrow().extent.height as i32,
-                z: 1,
-            };
-
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::TOP_OF_PIPE,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::NONE,
-                    dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                    old_layout: vk::ImageLayout::UNDEFINED,
-                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    image: *target,
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }],
-            );
-
-            let subresource = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
-
             self.context.device.inner.cmd_blit_image(
                 command_buffer.inner,
                 src_image,
@@ -977,25 +938,21 @@ impl VulkanMcPathTracer {
                 }],
                 vk::Filter::LINEAR,
             );
-
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                    old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    image: *target,
-                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                    ..Default::default()
-                }],
-            );
         }
+
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::ALL_GRAPHICS,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                image: *target,
+                subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                ..Default::default()
+            }],
+        );
 
         Ok(())
     }

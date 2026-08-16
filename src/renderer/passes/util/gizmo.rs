@@ -124,25 +124,19 @@ impl GizmoPass {
             layer_count: 1,
         };
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                    old_layout: vk::ImageLayout::GENERAL,
-                    new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    image: inputs.target.image.inner,
-                    subresource_range: image_color_res,
-                    ..Default::default()
-                }],
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::ALL_GRAPHICS,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::SHADER_WRITE,
+                dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                old_layout: vk::ImageLayout::GENERAL,
+                new_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                image: inputs.target.image.inner,
+                subresource_range: image_color_res,
+                ..Default::default()
+            }],
+        );
 
         command_buffer.begin_rendering(&rendering_info);
 
@@ -230,25 +224,19 @@ impl GizmoPass {
 
         command_buffer.end_rendering();
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    image: inputs.target.image.inner,
-                    subresource_range: image_color_res,
-                    ..Default::default()
-                }],
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            vk::PipelineStageFlags::ALL_GRAPHICS,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                image: inputs.target.image.inner,
+                subresource_range: image_color_res,
+                ..Default::default()
+            }],
+        );
 
         self.device.end_label(command_buffer);
 
@@ -416,25 +404,19 @@ impl GizmoPass {
 
         command_buffer.end_rendering();
 
-        unsafe {
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
-                vk::PipelineStageFlags::ALL_GRAPHICS,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &[vk::ImageMemoryBarrier {
-                    src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
-                    dst_access_mask: vk::AccessFlags::SHADER_READ,
-                    old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    new_layout: vk::ImageLayout::GENERAL,
-                    image: inputs.target.image.inner,
-                    subresource_range: image_color_res,
-                    ..Default::default()
-                }],
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+            vk::PipelineStageFlags::ALL_GRAPHICS,
+            &[vk::ImageMemoryBarrier {
+                src_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                dst_access_mask: vk::AccessFlags::SHADER_READ,
+                old_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                new_layout: vk::ImageLayout::GENERAL,
+                image: inputs.target.image.inner,
+                subresource_range: image_color_res,
+                ..Default::default()
+            }],
+        );
 
         self.device.end_label(command_buffer);
 

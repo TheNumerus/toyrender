@@ -128,54 +128,35 @@ impl PathTracePass {
             .add_f32(inputs.indirect_intensity_clamp)
             .build();
 
-        unsafe {
-            self.context.device.inner.cmd_push_constants(
-                command_buffer.inner,
-                pipeline.layout,
-                vk::ShaderStageFlags::RAYGEN_KHR
-                    | vk::ShaderStageFlags::CLOSEST_HIT_KHR
-                    | vk::ShaderStageFlags::MISS_KHR,
-                0,
-                &pc,
-            );
+        command_buffer.push_constants(
+            vk::ShaderStageFlags::RAYGEN_KHR | vk::ShaderStageFlags::CLOSEST_HIT_KHR | vk::ShaderStageFlags::MISS_KHR,
+            pipeline.layout,
+            &pc,
+        );
 
-            self.context.rt_pipeline_ext.loader.cmd_trace_rays(
-                command_buffer.inner,
-                &inputs.sbt.raygen_region,
-                &inputs.sbt.miss_region,
-                &inputs.sbt.hit_region,
-                &inputs.sbt.call_region,
-                viewport.0,
-                viewport.1,
-                1,
-            );
+        command_buffer.trace_rays(&self.context, inputs.sbt, viewport.0, viewport.1);
 
-            let barriers = [
-                self.direct_render_target.borrow().image.inner,
-                self.indirect_render_target.borrow().image.inner,
-            ]
-            .map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::MEMORY_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                ..Default::default()
-            });
+        let barriers = [
+            self.direct_render_target.borrow().image.inner,
+            self.indirect_render_target.borrow().image.inner,
+        ]
+        .map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::MEMORY_WRITE,
+            dst_access_mask: vk::AccessFlags::MEMORY_READ,
+            old_layout: vk::ImageLayout::GENERAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        });
 
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &barriers,
+        );
 
         self.context.device.end_label(command_buffer);
 

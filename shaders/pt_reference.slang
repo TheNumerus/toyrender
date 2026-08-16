@@ -229,16 +229,14 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
         mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
 
-        float3 dir = Toyrender::Octa::decode((mapped - 0.5) * 2.0);
+        float3 dir = Toyrender::Octa::rand(mapped);
         if (dot(normal, dir) >= 0.0) {
             float3 sky_color = Toyrender::Sky::sample(dir, images[pc.sky_idx], env.rotation);
 
-            float pdf = images[pc.pdf_idx].SampleLevelZero(mapped).x;
-            const float uniformPdf = 1.0 / (1024.0 * 1024.0);
-            // surface of hemi is 2*pi*r^2, circle is pi*r^2 -> 2x factor + additional 2x factor because of dot -- half of samples can go below surface
-            float adjust = 4.0 * uniformPdf / (pdf);
+            float pdf = luminance(sky_color) / images[pc.pdf_idx].SampleLevelZero(mapped).x;
+            float adjust = pdf / 4.0;
 
-            sky_intensity = env.sky_color_intensity.w * adjust * luminance(sky_color);
+            sky_intensity = (env.sky_color_intensity.w / adjust) * luminance(sky_color);
         }
     } else {
         float3 tangent, bitangent;
@@ -321,20 +319,22 @@ float3 lightSample(float3 pos, float3 normal, float3 dir_ray, float3 color, in P
         light_dir = ray.Direction;
     } else if (rand_light > (sunLw.weight)) {
         if ((flags & IMPORTANCE_SAMPLING) != 0 && skyVariant == SkyMode::Textured) {
+            float compensate = max(sum / max(sky_intensity, 0.000001), 0.001);
+
             float2 mapped = rand_vars_sphere;
             mapped.y = storages[pc.importance_idx].Load(int2(1024, int(floor(rand_vars_sphere.y * 1024)))).x;
             mapped.x = storages[pc.importance_idx].Load(int2(int(floor(rand_vars_sphere.x * 1024)), int(floor(mapped.y * 1024)))).x;
 
-            float3 dir = Toyrender::Octa::decode((mapped - 0.5) * 2.0);
+            float3 dir = Toyrender::Octa::rand(mapped);
             light_dir = dir;
             if (dot(normal, dir) >= 0.0) {
                 trace(offset_ray(pos, normal), dir, payload);
 
                 if (payload.isMiss) {
-                    float pdf = images[pc.pdf_idx].SampleLevelZero(mapped).x;
-                    float adjust = ((pdf * (1024.0 * 1024.0)) / (4.0 * PI));
+                    float pdf = luminance(payload.color_rough.xyz) / images[pc.pdf_idx].SampleLevelZero(mapped).x;
+                    float adjust = pdf / 4.0;
 
-                    radiance = env.sky_color_intensity.w * payload.color_rough.rgb / adjust;
+                    radiance = env.sky_color_intensity.w * compensate * payload.color_rough.rgb / adjust;
                 }
             }
         } else {

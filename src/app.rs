@@ -740,7 +740,7 @@ impl App {
                     }
                     ConvolutionPassState::SunProbe(i) => {
                         match avg {
-                            Some(a) if a > 11.0 => {
+                            Some(a) if a > 14.0 => {
                                 // good enough quality for sun probe
                                 info!("Sun conv finished in {} iterations", i + 1);
                                 values.clear();

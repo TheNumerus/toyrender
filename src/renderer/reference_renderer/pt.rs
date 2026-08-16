@@ -106,40 +106,21 @@ impl ReferencePathtracePass {
             &pc,
         );
 
-        unsafe {
-            self.context.rt_pipeline_ext.loader.cmd_trace_rays(
-                command_buffer.inner,
-                &inputs.sbt.raygen_region,
-                &inputs.sbt.miss_region,
-                &inputs.sbt.hit_region,
-                &inputs.sbt.call_region,
-                viewport.0,
-                viewport.1,
-                1,
-            );
+        command_buffer.trace_rays(&self.context, inputs.sbt, viewport.0, viewport.1);
 
-            let barriers = [self.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            &[vk::ImageMemoryBarrier {
                 src_access_mask: vk::AccessFlags::SHADER_WRITE,
                 dst_access_mask: vk::AccessFlags::SHADER_READ,
                 old_layout: vk::ImageLayout::GENERAL,
                 new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
+                image: self.render_target.borrow().image.inner,
                 subresource_range: crate::vulkan::Image::single_color_layer_range(),
                 ..Default::default()
-            });
-
-            self.context.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::RAY_TRACING_SHADER_KHR,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-        }
+            }],
+        );
 
         self.context.device.end_label(command_buffer);
 

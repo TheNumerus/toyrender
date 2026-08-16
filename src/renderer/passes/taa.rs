@@ -99,46 +99,34 @@ impl TaaPass {
             depth: 1,
         };
 
+        let barriers = [self.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
+            src_access_mask: vk::AccessFlags::SHADER_WRITE,
+            dst_access_mask: vk::AccessFlags::MEMORY_READ,
+            old_layout: vk::ImageLayout::GENERAL,
+            new_layout: vk::ImageLayout::GENERAL,
+            image,
+            subresource_range: crate::vulkan::Image::single_color_layer_range(),
+            ..Default::default()
+        });
+
+        command_buffer.pipeline_image_barrier(
+            vk::PipelineStageFlags::COMPUTE_SHADER,
+            vk::PipelineStageFlags::TRANSFER,
+            &barriers,
+        );
+
+        let image_color_res = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            base_array_layer: 0,
+            layer_count: 1,
+        };
+        let image_depth_res = vk::ImageSubresourceLayers {
+            aspect_mask: vk::ImageAspectFlags::DEPTH,
+            ..image_color_res
+        };
+
         unsafe {
-            let barriers = [self.render_target.borrow().image.inner].map(|image| vk::ImageMemoryBarrier {
-                src_access_mask: vk::AccessFlags::SHADER_WRITE,
-                dst_access_mask: vk::AccessFlags::MEMORY_READ,
-                old_layout: vk::ImageLayout::GENERAL,
-                new_layout: vk::ImageLayout::GENERAL,
-                src_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                dst_queue_family_index: vk::QUEUE_FAMILY_IGNORED,
-                image,
-                subresource_range: vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::COLOR,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                },
-                ..Default::default()
-            });
-
-            self.device.inner.cmd_pipeline_barrier(
-                command_buffer.inner,
-                vk::PipelineStageFlags::COMPUTE_SHADER,
-                vk::PipelineStageFlags::TRANSFER,
-                vk::DependencyFlags::empty(),
-                &[],
-                &[],
-                &barriers,
-            );
-
-            let image_color_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::COLOR,
-                mip_level: 0,
-                base_array_layer: 0,
-                layer_count: 1,
-            };
-            let image_depth_res = vk::ImageSubresourceLayers {
-                aspect_mask: vk::ImageAspectFlags::DEPTH,
-                ..image_color_res
-            };
-
             self.device.inner.cmd_copy_image(
                 command_buffer.inner,
                 inputs.depth.image.inner,

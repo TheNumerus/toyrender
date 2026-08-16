@@ -59,8 +59,9 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     }
 
     if (tid.x == 0) {
-        outBuf[0] = values[tid.x].x / float(width * height);
-        outBuf[1] = values[tid.x].y / float(width * height);
-        outBuf[2] = values[tid.x].z / float(width * height);
+        float pixels = float((width - 1) * (height - 1));
+        outBuf[0] = values[tid.x].x / pixels;
+        outBuf[1] = values[tid.x].y / pixels;
+        outBuf[2] = values[tid.x].z / pixels;
     }
 }

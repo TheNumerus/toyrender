@@ -93,25 +93,19 @@ impl ResourceSubsystem {
             )?;
             view.name(format!("Sky imageview {}", ir.id))?;
 
-            unsafe {
-                self.context.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::TOP_OF_PIPE,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::NONE,
-                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        old_layout: vk::ImageLayout::UNDEFINED,
-                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        image: image.inner,
-                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                        ..Default::default()
-                    }],
-                );
-            }
+            command_buffer.pipeline_image_barrier(
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::NONE,
+                    dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                    old_layout: vk::ImageLayout::UNDEFINED,
+                    new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    image: image.inner,
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                    ..Default::default()
+                }],
+            );
 
             let mut src_buf = Buffer::new(
                 self.context.device.clone(),
@@ -144,25 +138,19 @@ impl ResourceSubsystem {
 
             src_bufs.push(src_buf);
 
-            unsafe {
-                self.context.device.inner.cmd_pipeline_barrier(
-                    command_buffer.inner,
-                    vk::PipelineStageFlags::TRANSFER,
-                    vk::PipelineStageFlags::COMPUTE_SHADER,
-                    vk::DependencyFlags::empty(),
-                    &[],
-                    &[],
-                    &[vk::ImageMemoryBarrier {
-                        src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                        dst_access_mask: vk::AccessFlags::SHADER_READ,
-                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                        image: image.inner,
-                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                        ..Default::default()
-                    }],
-                );
-            }
+            command_buffer.pipeline_image_barrier(
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                &[vk::ImageMemoryBarrier {
+                    src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                    dst_access_mask: vk::AccessFlags::SHADER_READ,
+                    old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    image: image.inner,
+                    subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                    ..Default::default()
+                }],
+            );
 
             e.insert((
                 image,
@@ -210,25 +198,19 @@ impl ResourceSubsystem {
                 )?;
                 view.name(format!("Texture imageview {}", ir.name))?;
 
-                unsafe {
-                    self.context.device.inner.cmd_pipeline_barrier(
-                        command_buffer.inner,
-                        vk::PipelineStageFlags::TOP_OF_PIPE,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &[vk::ImageMemoryBarrier {
-                            src_access_mask: vk::AccessFlags::NONE,
-                            dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                            old_layout: vk::ImageLayout::UNDEFINED,
-                            new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            image: image.inner,
-                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                            ..Default::default()
-                        }],
-                    );
-                }
+                command_buffer.pipeline_image_barrier(
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    &[vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::NONE,
+                        dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                        old_layout: vk::ImageLayout::UNDEFINED,
+                        new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        image: image.inner,
+                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                        ..Default::default()
+                    }],
+                );
 
                 let mut src_buf = Buffer::new(
                     self.context.device.clone(),
@@ -267,25 +249,19 @@ impl ResourceSubsystem {
 
                 src_bufs.push(src_buf);
 
-                unsafe {
-                    self.context.device.inner.cmd_pipeline_barrier(
-                        command_buffer.inner,
-                        vk::PipelineStageFlags::TRANSFER,
-                        vk::PipelineStageFlags::COMPUTE_SHADER,
-                        vk::DependencyFlags::empty(),
-                        &[],
-                        &[],
-                        &[vk::ImageMemoryBarrier {
-                            src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-                            dst_access_mask: vk::AccessFlags::SHADER_READ,
-                            old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                            new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                            image: image.inner,
-                            subresource_range: crate::vulkan::Image::single_color_layer_range(),
-                            ..Default::default()
-                        }],
-                    );
-                }
+                command_buffer.pipeline_image_barrier(
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    &[vk::ImageMemoryBarrier {
+                        src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+                        dst_access_mask: vk::AccessFlags::SHADER_READ,
+                        old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                        new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                        image: image.inner,
+                        subresource_range: crate::vulkan::Image::single_color_layer_range(),
+                        ..Default::default()
+                    }],
+                );
 
                 e.insert((image, view, Rc::new(Sampler::new_repeat(self.context.device.clone())?)));
             }
@@ -443,11 +419,8 @@ impl ResourceSubsystem {
                     .inner
                     .queue_submit(self.context.device.compute_queue, &[submit_info], vk::Fence::null())
                     .map_to_err("Cannot submit queue")?;
-                self.context
-                    .device
-                    .inner
-                    .queue_wait_idle(self.context.device.compute_queue)
-                    .map_to_err("Cannot wait idle")?;
+
+                self.context.device.wait_idle()?;
             }
 
             for mesh in self.meshes.values_mut() {

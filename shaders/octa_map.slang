@@ -36,19 +36,12 @@ void main(uint3 tid: SV_DispatchThreadID, uniform PushConsts pc) {
     uint x = tid.x;
     uint y = tid.y;
 
-    // workaround to force usage of desc set 0
-    if (env.mode != SkyMode::Textured) {
-        return;
-    }
-
     int width;
     int height;
     storages[pc.out_idx].GetDimensions(width, height);
 
     float2 pixel = float2(x, y) / float2(width, height);
-    pixel = (pixel - float2(0.5f)) * 2.f;
-
-    float3 dir = Toyrender::Octa::decode(pixel);
+    float3 dir = Toyrender::Octa::rand(pixel);
 
     float3 sky = Toyrender::Sky::sample(dir, images[pc.src_idx], env.rotation);
 
